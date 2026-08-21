@@ -1,4 +1,12 @@
 import { clearToken, getToken } from "./auth";
+import { cascadeDisclosure, judgeSignal, lessonCountLabel } from "./regeneration-state";
+import type {
+  ApprovalGate,
+  CascadeSummary,
+  JudgeSignal,
+  JudgeStatus,
+  PhaseSelection,
+} from "./regeneration-state";
 import type {
   AgentStats,
   AvailableLanguages,
@@ -20,6 +28,24 @@ import type {
   NotionSubject,
   OutputLanguage,
   ProviderModelManifest,
+  RegenerationActorRequest,
+  RegenerationBucket,
+  RegenerationCampaignDetail,
+  RegenerationCampaignDraft,
+  RegenerationCampaignList,
+  RegenerationCampaignStatus,
+  RegenerationCampaignSummary,
+  RegenerationEligibleSources,
+  RegenerationEstimateRequest,
+  RegenerationEstimateResponse,
+  RegenerationOutputLanguage,
+  RegenerationPhasePlan,
+  RegenerationPhasePlanRequest,
+  RegenerationPublicationState,
+  RegenerationReasonRequest,
+  RegenerationTargetActionResult,
+  RegenerationTargetReport,
+  RegenerationTargetStatus,
   RoleTransport,
   SaKey,
   SaKeyAssignment,
@@ -114,6 +140,23 @@ function withTokenParam(url: string): string {
   if (!token) return url;
   const sep = url.includes("?") ? "&" : "?";
   return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * POST to a regeneration route.
+ *
+ * `body === undefined` sends NO body and no `Content-Type` at all: `canary`,
+ * `retry-generation` and `retry-publication` declare no request model, and an
+ * unexpected payload against an `extra="forbid"` router is noise at best.
+ */
+async function regenerationPost<T>(path: string, body?: unknown): Promise<T> {
+  const res = await authFetch(`/api/v1/regeneration${path}`, {
+    method: "POST",
+    ...(body === undefined
+      ? {}
+      : { headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }),
+  });
+  return unwrap<T>(res);
 }
 
 export const api = {
@@ -576,6 +619,163 @@ export const api = {
     return withTokenParam(`/api/v1/jobs/${encodeURIComponent(jobId)}/stream`);
   },
 
+  /* ── Versioned homework regeneration (app/api/v1/regeneration.py) ──────
+   *
+   * Thirteen routes under `/api/v1/regeneration`, mounted with the same
+   * router-level `get_current_user` dependency as books/batch/jobs — so
+   * `authFetch` is all the auth they need, exactly like every method above.
+   *
+   * With `REGENERATION_ENABLED=false` every route answers 404 by design: a
+   * stale bundle must not be able to learn that the feature exists, let alone
+   * mutate through it. `regenerationErrorView` turns that into operator prose.
+   */
+
+  /** Regenerable lessons with their current and next version, plus every
+   *  selected lineage that was left out and why. Filters are REPEATED query
+   *  params (`Query(default=[])`); omitting one means "do not filter on this
+   *  axis", which is not the same as selecting nothing. */
+  async listRegenerationEligible(
+    filters: {
+      bookIds?: string[];
+      tocEntryIds?: string[];
+      outputLanguages?: RegenerationOutputLanguage[];
+    } = {},
+  ): Promise<RegenerationEligibleSources> {
+    const q = new URLSearchParams();
+    for (const id of filters.bookIds ?? []) q.append("book_id", id);
+    for (const id of filters.tocEntryIds ?? []) q.append("toc_entry_id", id);
+    for (const language of filters.outputLanguages ?? []) q.append("output_language", language);
+    const suffix = q.toString();
+    const res = await authFetch(`/api/v1/regeneration/eligible${suffix ? `?${suffix}` : ""}`);
+    return unwrap<RegenerationEligibleSources>(res);
+  },
+
+  /** The real dependency closure for one subject, with the edges an exclusion
+   *  would break. Pure server-side: no database write, no model call. */
+  async previewRegenerationPhasePlan(
+    body: RegenerationPhasePlanRequest,
+  ): Promise<RegenerationPhasePlan> {
+    return regenerationPost<RegenerationPhasePlan>("/phase-plan", body);
+  },
+
+  /** Price a draft and preflight its Notion destinations. Creates nothing.
+   *
+   *  The create-only fields are STRIPPED here: `EstimateRequest` is
+   *  `extra="forbid"`, so posting a create-shaped draft is a 422, not a
+   *  tolerated superset. */
+  async estimateRegeneration(
+    draft: RegenerationCampaignDraft,
+  ): Promise<RegenerationEstimateResponse> {
+    return regenerationPost<RegenerationEstimateResponse>(
+      "/estimate",
+      regenerationEstimateBody(draft),
+    );
+  },
+
+  /** Freeze an immutable campaign and its targets. Still no job, no model
+   *  call and no Notion page — the canary launch is the first spend. */
+  async createRegenerationCampaign(
+    draft: RegenerationCampaignDraft,
+  ): Promise<RegenerationCampaignDetail> {
+    return regenerationPost<RegenerationCampaignDetail>(
+      "/campaigns",
+      regenerationCampaignBody(draft),
+    );
+  },
+
+  async listRegenerationCampaigns(
+    query: {
+      statuses?: RegenerationCampaignStatus[];
+      limit?: number;
+      offset?: number;
+    } = {},
+  ): Promise<RegenerationCampaignList> {
+    const q = new URLSearchParams();
+    // `status`, not `status_filter`: the route declares `alias="status"`.
+    for (const status of query.statuses ?? []) q.append("status", status);
+    if (query.limit != null) q.set("limit", String(query.limit));
+    if (query.offset != null) q.set("offset", String(query.offset));
+    const suffix = q.toString();
+    const res = await authFetch(`/api/v1/regeneration/campaigns${suffix ? `?${suffix}` : ""}`);
+    return unwrap<RegenerationCampaignList>(res);
+  },
+
+  /** The campaign report: every bucket, every reason, every dollar. */
+  async getRegenerationCampaign(campaignId: string): Promise<RegenerationCampaignDetail> {
+    const res = await authFetch(`/api/v1/regeneration/campaigns/${encodeURIComponent(campaignId)}`);
+    return unwrap<RegenerationCampaignDetail>(res);
+  },
+
+  /** Preflight every destination, then create ONLY the canary revision jobs.
+   *  Idempotent server-side: a target that already has a job is left alone. */
+  async launchRegenerationCanary(campaignId: string): Promise<RegenerationCampaignDetail> {
+    return regenerationPost<RegenerationCampaignDetail>(
+      `/campaigns/${encodeURIComponent(campaignId)}/canary`,
+    );
+  },
+
+  /** The one human gate. Releases the canaries for publication and creates
+   *  every remaining revision exactly once. Requires the publisher flag. */
+  async approveRegenerationCampaign(
+    campaignId: string,
+    body: RegenerationActorRequest,
+  ): Promise<RegenerationCampaignDetail> {
+    return regenerationPost<RegenerationCampaignDetail>(
+      `/campaigns/${encodeURIComponent(campaignId)}/approve`,
+      body,
+    );
+  },
+
+  /** Decline the canary: nothing publishes and no version is consumed. */
+  async rejectRegenerationCampaign(
+    campaignId: string,
+    body: RegenerationReasonRequest,
+  ): Promise<RegenerationCampaignDetail> {
+    return regenerationPost<RegenerationCampaignDetail>(
+      `/campaigns/${encodeURIComponent(campaignId)}/reject`,
+      body,
+    );
+  },
+
+  /** Stop a campaign. Published pages and reserved versions stand. */
+  async cancelRegenerationCampaign(
+    campaignId: string,
+    body: RegenerationReasonRequest,
+  ): Promise<RegenerationCampaignDetail> {
+    return regenerationPost<RegenerationCampaignDetail>(
+      `/campaigns/${encodeURIComponent(campaignId)}/cancel`,
+      body,
+    );
+  },
+
+  /** Re-run a failed revision on its EXISTING snapshot and frozen phase plan.
+   *  No new campaign, no new version. */
+  async retryRegenerationGeneration(targetId: string): Promise<RegenerationTargetActionResult> {
+    return regenerationPost<RegenerationTargetActionResult>(
+      `/targets/${encodeURIComponent(targetId)}/retry-generation`,
+    );
+  },
+
+  /** Re-queue the Notion write only: no model call, no new revision job, and
+   *  the reserved version stays the same. Requires the publisher flag. */
+  async retryRegenerationPublication(targetId: string): Promise<RegenerationTargetActionResult> {
+    return regenerationPost<RegenerationTargetActionResult>(
+      `/targets/${encodeURIComponent(targetId)}/retry-publication`,
+    );
+  },
+
+  /** Give up on one target. Audited, never deletes a Notion page, and never
+   *  reuses a version that was already reserved. */
+  async abandonRegenerationTarget(
+    targetId: string,
+    body: RegenerationReasonRequest,
+  ): Promise<RegenerationTargetActionResult> {
+    return regenerationPost<RegenerationTargetActionResult>(
+      `/targets/${encodeURIComponent(targetId)}/abandon`,
+      body,
+    );
+  },
+
   // --- SA key management ---
 
   async listSaKeys(): Promise<{ keys: SaKey[] }> {
@@ -648,3 +848,780 @@ export const api = {
 };
 
 export { ApiError };
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Regeneration: pure readers over the Task 9 response shapes
+ *
+ * Pure functions, no HTTP. They live in this module rather than in
+ * `regeneration-state.ts` because Task 10 does not own that file: the Task 4
+ * decision layer ships unchanged. Where a rule already exists there — the
+ * cascade headline, the exclusion warning, the judge vocabulary, the money
+ * format — this section REUSES it. Where the Task 4 type is narrower than the
+ * API (`PlanTarget.language` has no `"en"`, and forcing one in would mislabel
+ * an English lesson), the rule is restated here and `regeneration-state.test.ts`
+ * asserts the two agree, so they cannot drift apart silently.
+ *
+ * Three rules run through everything below.
+ *
+ * **The server is authoritative.** Nothing here recomputes a phase closure, a
+ * bucket membership or a cost; it renders what the API said. The one
+ * re-derivation — the cascade headline — is cross-checked against the server's
+ * own counts by a test.
+ *
+ * **A status code is never shown to an operator.** Every failure, park and
+ * abandonment renders as a sentence, including the ones this build has never
+ * seen.
+ *
+ * **Polling follows work, not screens.** A campaign parked on a human decision
+ * is not refreshed: it cannot change until that human acts.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** How often an ACTIVE campaign report is refreshed. */
+export const REGENERATION_POLL_MS = 4_000;
+/** The campaign list is a cheap rollup and never takes a write lock, but it
+ *  still only ticks while at least one campaign is doing something. */
+export const REGENERATION_LIST_POLL_MS = 10_000;
+
+export const REGENERATION_CREATE_LABEL = "Create campaign";
+/** Deliberately "Generate canary", never Fleet's first-run vocabulary. */
+export const REGENERATION_LAUNCH_LABEL = "Generate canary";
+
+export const REGENERATION_NO_SPEND_NOTE =
+  "Previewing the phase plan, pricing the estimate and creating the campaign make no model " +
+  "calls and create no Notion page. Nothing is spent and nothing is published until you " +
+  "generate the canary and approve it.";
+
+export const REGENERATION_LAUNCH_SPEND_NOTE =
+  "Generating the canary is the first step that costs money. It still publishes nothing: the " +
+  "canary waits here for your review, and no Notion page is created until you approve.";
+
+export const REGENERATION_APPROVE_NOTE =
+  "Approving is the only gate in this campaign. The remaining lessons regenerate automatically, " +
+  "and every version that generates successfully publishes to Notion automatically — there is " +
+  "no per-lesson publication approval.";
+
+export const REGENERATION_REJECT_CONFIRMATION =
+  "Reject this canary? No existing Notion version is deleted, no new page is created and no " +
+  "publication version is consumed. The canary revisions stay readable here for audit, and " +
+  "regenerating these lessons later needs a new campaign.";
+
+export const REGENERATION_CANCEL_CONFIRMATION =
+  "Cancel this campaign? Unfinished work stops. No existing Notion version is deleted: pages " +
+  "that already published stay published, and any version that was already reserved stays " +
+  "consumed. There is no automatic resume.";
+
+/** Turn an internal snake/kebab token into operator prose. Used only for codes
+ *  this build has no mapping for — an unknown code is spelled out, never
+ *  echoed raw. */
+function humanise(code: string): string {
+  const words = code.replace(/[_-]+/g, " ").trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : "";
+}
+
+function plural(n: number, one: string, many: string): string {
+  return n === 1 ? one : many;
+}
+
+/* ── request bodies ───────────────────────────────────────────────────── */
+
+/**
+ * The `/estimate` body: the draft MINUS every create-only field.
+ *
+ * `EstimateRequest` inherits `extra="forbid"`, so `actor`, `notes`,
+ * `estimated_cost_low_usd`, `estimated_cost_high_usd` and `app_git_revision`
+ * are each a 422 rather than an ignored extra. One draft object drives both
+ * calls; only this function decides what each route is allowed to see.
+ */
+export function regenerationEstimateBody(
+  draft: RegenerationCampaignDraft,
+): RegenerationEstimateRequest {
+  return {
+    selection: draft.selection,
+    contract: draft.contract,
+    selected_phases: draft.selected_phases,
+    excluded_affected_phases: draft.excluded_affected_phases,
+    refresh_extraction: draft.refresh_extraction,
+    exclusion_acknowledged: draft.exclusion_acknowledged,
+    canary_size: draft.canary_size,
+  };
+}
+
+/** The `/campaigns` body: the estimate body plus the figures the operator was
+ *  SHOWN, echoed back so the frozen campaign records what was approved. */
+export function regenerationCampaignBody(
+  draft: RegenerationCampaignDraft,
+): RegenerationCampaignDraft {
+  return {
+    ...regenerationEstimateBody(draft),
+    estimated_cost_low_usd: draft.estimated_cost_low_usd,
+    estimated_cost_high_usd: draft.estimated_cost_high_usd,
+    app_git_revision: draft.app_git_revision,
+    actor: draft.actor,
+    notes: draft.notes,
+  };
+}
+
+/* ── vocabulary ───────────────────────────────────────────────────────── */
+
+const REGENERATION_CAMPAIGN_STATUS_LABELS: Record<RegenerationCampaignStatus, string> = {
+  draft: "Draft",
+  canary_running: "Canary regenerating",
+  awaiting_canary_approval: "Waiting for your review",
+  approved: "Approved",
+  bulk_running: "Regenerating the rest",
+  attention_required: "Needs your attention",
+  completed: "Completed",
+  completed_with_abandonments: "Completed, some lessons abandoned",
+  rejected: "Rejected",
+  cancelled: "Cancelled",
+};
+
+export function regenerationCampaignStatusLabel(status: RegenerationCampaignStatus): string {
+  return REGENERATION_CAMPAIGN_STATUS_LABELS[status] ?? humanise(status);
+}
+
+const REGENERATION_TARGET_STATUS_LABELS: Record<RegenerationTargetStatus, string> = {
+  planned: "Planned",
+  generating: "Regenerating",
+  awaiting_canary_approval: "Canary ready for review",
+  publication_pending: "Queued to publish",
+  publishing: "Publishing",
+  published: "Published",
+  generation_failed: "Regeneration failed",
+  publication_failed: "Publishing failed",
+  abandoned: "Abandoned",
+};
+
+export function regenerationTargetStatusLabel(status: RegenerationTargetStatus): string {
+  return REGENERATION_TARGET_STATUS_LABELS[status] ?? humanise(status);
+}
+
+/**
+ * The delivery situation, in words.
+ *
+ * `backing_off`, `retry_due` and `action_required` are the three shapes of
+ * `publication_failed` and they are three DIFFERENT situations: the publisher
+ * owns the first two, and only the third needs a human. Rendering them
+ * identically buries every row that is actually stuck.
+ */
+const REGENERATION_PUBLICATION_STATE_LABELS: Record<RegenerationPublicationState, string> = {
+  published: "Published to Notion",
+  abandoned: "Abandoned before it published",
+  publishing: "Writing the page now",
+  queued: "Queued to publish",
+  backing_off: "Waiting for an automatic retry",
+  retry_due: "Automatic retry is due now",
+  action_required: "Parked: no automatic retry left, so you have to decide",
+  not_started: "Not published yet",
+};
+
+export function regenerationPublicationStateLabel(state: RegenerationPublicationState): string {
+  return REGENERATION_PUBLICATION_STATE_LABELS[state] ?? humanise(state);
+}
+
+/* ── report buckets ───────────────────────────────────────────────────── */
+
+export const REGENERATION_BUCKET_ORDER: RegenerationBucket[] = [
+  "published",
+  "publication_pending",
+  "publication_failed",
+  "generation_failed",
+  "abandoned",
+  "in_flight",
+];
+
+const REGENERATION_BUCKET_COPY: Record<RegenerationBucket, { label: string; description: string }> =
+  {
+    published: {
+      label: "Regenerated and published",
+      description:
+        "A new versioned Homework page exists in Notion beside the original. Nothing that was " +
+        "already published was cleared, renamed or overwritten.",
+    },
+    publication_pending: {
+      label: "Regenerated, waiting to publish",
+      description:
+        "The revision is complete and queued. The publisher writes these pages by itself — " +
+        "there is nothing for you to do.",
+    },
+    publication_failed: {
+      label: "Regenerated, publishing failed",
+      description:
+        "The homework itself is fine; only the Notion write failed. Retrying publication never " +
+        "re-runs the model and never allocates a new version.",
+    },
+    generation_failed: {
+      label: "Regeneration failed",
+      description:
+        "No complete snapshot was produced, so there is nothing to publish. Each of these holds " +
+        "its lesson's active lineage until you retry it or abandon it.",
+    },
+    abandoned: {
+      label: "Abandoned",
+      description:
+        "You gave up on these. No Notion page was deleted, and a version that had already been " +
+        "reserved stays consumed — the next successful regeneration publishes at the following " +
+        "version.",
+    },
+    in_flight: {
+      label: "Still working",
+      description:
+        "Planned, being rebuilt, or being written to Notion right now. Nothing here needs a " +
+        "decision yet.",
+    },
+  };
+
+export interface RegenerationBucketView {
+  bucket: RegenerationBucket;
+  label: string;
+  description: string;
+  count: number;
+  targets: RegenerationTargetReport[];
+}
+
+/**
+ * All six buckets, always, in the documented order.
+ *
+ * An empty bucket is still rendered: a report that silently drops a bucket
+ * tells an operator the campaign is smaller than it is. Membership comes from
+ * the server's own `bucket` field — this never re-derives it from `status`.
+ */
+export function regenerationBucketViews(
+  detail: RegenerationCampaignDetail | null | undefined,
+): RegenerationBucketView[] {
+  const targets = detail?.targets ?? [];
+  return REGENERATION_BUCKET_ORDER.map((bucket) => {
+    const rows = targets.filter((t) => t.bucket === bucket);
+    return { bucket, ...REGENERATION_BUCKET_COPY[bucket], count: rows.length, targets: rows };
+  });
+}
+
+/* ── polling ──────────────────────────────────────────────────────────── */
+
+export interface RegenerationPollDecision {
+  shouldPoll: boolean;
+  /** Straight into TanStack Query's `refetchInterval`. */
+  intervalMs: number | false;
+  /** What is moving right now, in operator words. Empty when nothing is. */
+  activity: string[];
+  /** Why we are, or are not, refreshing. */
+  reason: string;
+}
+
+/** Campaign states in which the backend itself still has work to hand out, even
+ *  if no individual target looks busy this instant. */
+const REGENERATION_RELEASING_STATUSES = new Set<RegenerationCampaignStatus>([
+  "canary_running",
+  "bulk_running",
+]);
+
+/**
+ * Poll only while something can actually change without the operator.
+ *
+ * Generation, publication and the publisher's own bounded retries all move on
+ * their own, so a frozen report would read as stuck. A terminal campaign, a
+ * canary waiting at the human gate, and a target parked on `action_required`
+ * cannot change until somebody acts — refreshing those is pure request burn,
+ * and on `awaiting_canary_approval` it would poll for as long as the tab is
+ * open.
+ */
+export function regenerationPollDecision(
+  detail: RegenerationCampaignDetail | null | undefined,
+): RegenerationPollDecision {
+  if (!detail) {
+    return { shouldPoll: false, intervalMs: false, activity: [], reason: "No campaign is open." };
+  }
+  const stopped = (reason: string): RegenerationPollDecision => ({
+    shouldPoll: false,
+    intervalMs: false,
+    activity: [],
+    reason,
+  });
+
+  if (detail.is_terminal) {
+    return stopped(
+      `This campaign is ${regenerationCampaignStatusLabel(detail.status).toLowerCase()}; the report does not change on its own any more.`,
+    );
+  }
+
+  const targets = detail.targets;
+  const tally = (predicate: (t: RegenerationTargetReport) => boolean): number =>
+    targets.filter(predicate).length;
+
+  const activity: string[] = [];
+  const generating = tally((t) => t.status === "generating");
+  if (generating > 0) activity.push(`${lessonCountLabel(generating)} regenerating`);
+  const queued = tally((t) => t.status === "publication_pending");
+  if (queued > 0) activity.push(`${lessonCountLabel(queued)} queued to publish`);
+  const publishing = tally((t) => t.status === "publishing");
+  if (publishing > 0) activity.push(`${lessonCountLabel(publishing)} publishing now`);
+  const autoRetry = tally(
+    (t) => t.publication_state === "backing_off" || t.publication_state === "retry_due",
+  );
+  if (autoRetry > 0) {
+    activity.push(`${lessonCountLabel(autoRetry)} waiting on an automatic publish retry`);
+  }
+  if (REGENERATION_RELEASING_STATUSES.has(detail.status)) {
+    activity.push("the campaign is still releasing revision jobs");
+  }
+
+  if (activity.length > 0) {
+    return {
+      shouldPoll: true,
+      intervalMs: REGENERATION_POLL_MS,
+      activity,
+      reason: `Refreshing while ${activity.join(", ")}.`,
+    };
+  }
+
+  // Approval and the bulk release are two transactions, so an approval can be
+  // recorded with nothing released. Polling that forever would never fix it;
+  // re-running approve does, and it creates nothing twice.
+  const stranded = tally((t) => t.status === "planned" && t.revision_job_id === null);
+  if (detail.approved_at !== null && stranded > 0) {
+    return stopped(
+      `${lessonCountLabel(stranded)} still have no revision job even though this campaign is approved. Nothing will start on its own — run approve again; it is idempotent and creates nothing twice.`,
+    );
+  }
+
+  const needsYou = tally((t) => t.action_required);
+  if (needsYou > 0) {
+    return stopped(
+      `${lessonCountLabel(needsYou)} ${plural(needsYou, "needs", "need")} a decision from you. Nothing moves until you retry or abandon, so this report is not refreshing.`,
+    );
+  }
+
+  if (detail.status === "awaiting_canary_approval") {
+    return stopped(
+      "The canary is ready and waiting for your review. Nothing changes until you approve or " +
+        "reject it.",
+    );
+  }
+
+  if (detail.status === "draft") {
+    return stopped(
+      "Nothing has been regenerated yet. This campaign is frozen and free until you generate " +
+        "the canary.",
+    );
+  }
+
+  return stopped("Nothing is in flight for this campaign.");
+}
+
+/** The list ticks only while a campaign is actually working. */
+export function regenerationListPollMs(
+  campaigns: RegenerationCampaignSummary[] | undefined,
+): number | false {
+  const busy = (campaigns ?? []).some(
+    (c) => !c.is_terminal && REGENERATION_RELEASING_STATUSES.has(c.status),
+  );
+  return busy ? REGENERATION_LIST_POLL_MS : false;
+}
+
+/* ── the single campaign-level approval gate ──────────────────────────── */
+
+const REGENERATION_NO_BULK_STEP_DETAIL =
+  "The canary already covers every lesson in this campaign, so there is " +
+  "no separate bulk step — approving publishes the packet you just reviewed.";
+
+/** The version a target will publish as: the one already reserved, or the one
+ *  after its source. Never hardcoded — a V2 source publishes V3. */
+export function regenerationNextVersion(target: RegenerationTargetReport): number | null {
+  if (target.publication_version != null) return target.publication_version;
+  if (target.source_publication_version != null) return target.source_publication_version + 1;
+  return null;
+}
+
+/**
+ * Exactly one gate per campaign, over real API rows.
+ *
+ * A ONE-LESSON campaign is its own canary: no bulk step and no remainder,
+ * whatever `canary_size` says. A multi-lesson campaign whose canary covers
+ * every target takes the same no-bulk path — that second branch is why the
+ * predicate is not simply `singleTarget`, and why an EMPTY bulk gate can never
+ * render.
+ *
+ * This restates `regeneration-state.approvalGate` rather than calling it: that
+ * function takes `PlanTarget`, whose `language` cannot express `"en"`, and
+ * building one would mislabel an English lesson as Uzbek. The state test
+ * asserts the two produce identical gates for a campaign both shapes can carry.
+ */
+export function regenerationApprovalGate(detail: RegenerationCampaignDetail): ApprovalGate {
+  const targetCount = detail.targets.length;
+  const singleTarget = targetCount === 1;
+  const remainingCount = singleTarget ? 0 : Math.max(0, targetCount - detail.canary_size);
+  const showsBulkGenerationGate = !singleTarget && remainingCount > 0;
+
+  let approveLabel: string;
+  let approveDetail: string;
+  if (singleTarget) {
+    const version = regenerationNextVersion(detail.targets[0]);
+    approveLabel = version
+      ? `Approve canary and publish V${version}`
+      : "Approve canary and publish the next version";
+    approveDetail = REGENERATION_NO_BULK_STEP_DETAIL;
+  } else if (targetCount === 0) {
+    approveLabel = "Nothing to approve";
+    approveDetail =
+      "This campaign has no lessons, so there is nothing to publish and " +
+      "no separate bulk step.";
+  } else if (!showsBulkGenerationGate) {
+    approveLabel = `Approve canary and publish ${lessonCountLabel(targetCount)}`;
+    approveDetail = REGENERATION_NO_BULK_STEP_DETAIL;
+  } else {
+    approveLabel = `Approve canary and regenerate ${remainingCount} remaining ${plural(
+      remainingCount,
+      "lesson",
+      "lessons",
+    )}`;
+    approveDetail = `Approving publishes the reviewed canary and releases the remaining ${remainingCount} ${plural(remainingCount, "lesson", "lessons")}. This is the only approval gate in the campaign; there is no per-lesson publication approval.`;
+  }
+
+  return {
+    singleTarget,
+    remainingCount,
+    showsBulkGenerationGate,
+    canApprove: targetCount > 0,
+    approveLabel,
+    approveDetail,
+    rejectLabel: "Reject campaign",
+    rejectDetail:
+      "Rejecting discards the canary: no Notion page is created and " +
+      "no publication version is consumed.",
+  };
+}
+
+/* ── per-target actions ───────────────────────────────────────────────── */
+
+export type RegenerationActionKind = "retry-generation" | "retry-publication" | "abandon";
+
+export interface RegenerationTargetAction {
+  kind: RegenerationActionKind;
+  label: string;
+  /** The promise the button makes, in full. */
+  detail: string;
+  enabled: boolean;
+  disabledReason: string | null;
+  /** Abandon is audited: the API refuses a blank reason. */
+  requiresReason: boolean;
+}
+
+const REGENERATION_ACTION_COPY: Record<
+  RegenerationActionKind,
+  { label: string; detail: string; requiresReason: boolean }
+> = {
+  "retry-generation": {
+    label: "Retry regeneration",
+    detail:
+      "Re-runs the revision on the snapshot and phase plan this campaign froze. It does not " +
+      "start a new campaign, re-plan the phases, or change which version this lesson will " +
+      "publish as.",
+    requiresReason: false,
+  },
+  "retry-publication": {
+    label: "Retry publication",
+    detail:
+      "Re-queues the Notion write only. No Gemini call, no new revision job and no new version " +
+      "number: the same reserved version and the same page identity are used again.",
+    requiresReason: false,
+  },
+  abandon: {
+    label: "Abandon lesson",
+    detail:
+      "Gives up on this lesson and records your reason. No Notion page is deleted. If a version " +
+      "was already reserved it stays consumed and may remain unused, so the next successful " +
+      "regeneration of this lesson publishes at the following version.",
+    requiresReason: true,
+  },
+};
+
+/**
+ * What an operator may do to one target right now.
+ *
+ * Generation and publication failures are separate, retryable states with
+ * separate paths — a generated revision is never regenerated because Notion
+ * failed. Terminal targets offer nothing. While one of a target's mutations is
+ * in flight every button on that row is disabled: the API is idempotent, so
+ * this is about not lying to the operator rather than about safety.
+ */
+export function regenerationTargetActions(
+  target: RegenerationTargetReport,
+  opts: { pendingKind?: RegenerationActionKind | null; campaignTerminal?: boolean } = {},
+): RegenerationTargetAction[] {
+  if (target.is_terminal) return [];
+
+  const kinds: RegenerationActionKind[] = [];
+  if (target.status === "generation_failed") kinds.push("retry-generation");
+  if (target.status === "publication_failed") kinds.push("retry-publication");
+  kinds.push("abandon");
+
+  const pending = opts.pendingKind ?? null;
+  const disabledReason = pending
+    ? "This lesson already has an action in flight — waiting for the server to answer."
+    : opts.campaignTerminal
+      ? "This campaign is finished, so its lessons can no longer be changed."
+      : null;
+
+  return kinds.map((kind) => ({
+    kind,
+    ...REGENERATION_ACTION_COPY[kind],
+    enabled: disabledReason === null,
+    disabledReason,
+  }));
+}
+
+/** Reject / cancel / abandon store their reason as the audit record, so the
+ *  API refuses a blank one. Catch it before the round trip. */
+export function regenerationReasonError(reason: string): string | null {
+  return reason.trim()
+    ? null
+    : "Type a reason — it is stored as the audit record for this decision.";
+}
+
+/* ── phase plan ───────────────────────────────────────────────────────── */
+
+/**
+ * The server's plan, in the shape the Task 4 cascade rules read.
+ *
+ * `canonical_phases` starts with `extract` and is partitioned exactly by
+ * `regenerated_phases` + `copied_phases`, so the counts this produces are the
+ * server's counts — asserted against them in `regeneration-state.test.ts`.
+ */
+export function phaseSelectionFromPlan(plan: RegenerationPhasePlan): PhaseSelection {
+  return {
+    allPhases: plan.canonical_phases,
+    selected: plan.selected_phases,
+    autoIncluded: plan.auto_included_phases,
+    excluded: plan.excluded_affected_phases,
+    extractionEnabled: plan.refresh_extraction,
+  };
+}
+
+/** "Regenerates X of Y phases" and the honesty note under it, from the real
+ *  dependency closure the planner returned. */
+export function cascadeFromPlan(plan: RegenerationPhasePlan): CascadeSummary {
+  return cascadeDisclosure(phaseSelectionFromPlan(plan));
+}
+
+/* ── judge / solver signals ───────────────────────────────────────────── */
+
+export interface RegenerationJudgeCount {
+  status: string;
+  count: number;
+  signal: JudgeSignal;
+}
+
+/** Every judge status this build knows, as a value list — so an API string can
+ *  be matched against it without an unchecked cast. */
+const REGENERATION_KNOWN_JUDGE_STATUSES: readonly JudgeStatus[] = [
+  "pass",
+  "unavailable",
+  "refused",
+  "major_shipped",
+  "major_regen_failed",
+];
+
+/**
+ * `judge_status_counts` rendered as prominent, non-blocking warnings.
+ *
+ * Soft verdicts do not block publication and never have — they are surfaced
+ * loudly at the canary gate precisely because the machine will not stop for
+ * them. A verdict this build does not recognise is spelled out rather than
+ * dropped.
+ */
+/** A verdict this build has no mapping for is spelled out and treated as a
+ *  warning — never dropped, and never echoed as a raw token. */
+function unknownJudgeSignal(status: string): JudgeSignal {
+  return {
+    status: "unavailable",
+    severity: "warning",
+    blocksPublication: false,
+    label: humanise(status),
+    explanation:
+      "The judge reported a verdict this build does not recognise. Read this phase by hand " +
+      "before approving.",
+  };
+}
+
+export function regenerationJudgeCounts(
+  counts: Record<string, number> | undefined,
+): RegenerationJudgeCount[] {
+  return Object.entries(counts ?? {})
+    .filter(([, count]) => count > 0)
+    .map(([status, count]) => {
+      const known = REGENERATION_KNOWN_JUDGE_STATUSES.find((s) => s === status);
+      return {
+        status,
+        count,
+        signal: known ? judgeSignal(known) : unknownJudgeSignal(status),
+      };
+    })
+    .sort((a, b) => a.status.localeCompare(b.status));
+}
+
+/* ── errors ───────────────────────────────────────────────────────────── */
+
+export interface RegenerationErrorView {
+  title: string;
+  message: string;
+  /** One line per affected lesson / role / field, so an operator fixes the
+   *  whole batch once instead of discovering them one round trip at a time. */
+  details: string[];
+  hint: string | null;
+  code: string | null;
+  status: number | null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function text(row: Record<string, unknown>, key: string): string {
+  const value = row[key];
+  return typeof value === "string" ? value : "";
+}
+
+function rowsOf(record: Record<string, unknown>, key: string): Record<string, unknown>[] {
+  const value = record[key];
+  return Array.isArray(value) ? value.filter(isRecord) : [];
+}
+
+const REGENERATION_STALE_HINT =
+  "The campaign moved on while this screen was open — refresh to see where it is now.";
+
+/**
+ * Any thrown value, rendered for an operator.
+ *
+ * The router raises `HTTPException(status, {"error", "message", ...})`, so the
+ * structured payload — every blocked lesson, every retired role, every
+ * offending transport field — arrives on `ApiError.detail`. Showing only
+ * `message` throws away the list somebody has to act on. Two codes get their
+ * server text REPLACED rather than shown: the flag-off 404, whose real message
+ * is the word "Not Found", and the acknowledgement 422, whose message names a
+ * request field instead of the tick box on screen.
+ */
+export function regenerationErrorView(err: unknown): RegenerationErrorView {
+  const status = err instanceof ApiError ? err.status : null;
+  const fallback = err instanceof Error ? err.message : String(err);
+  const detail = err instanceof ApiError && isRecord(err.detail) ? err.detail : null;
+  const code = detail ? text(detail, "error") || null : null;
+  const message = detail ? text(detail, "message") || fallback : fallback;
+
+  if (status === 404 && !code) {
+    return {
+      title: "Regeneration is switched off on the server",
+      message:
+        "This build shows the regeneration screens, but the server is running with " +
+        "REGENERATION_ENABLED=false, so every regeneration route answers as if it does not " +
+        "exist. The backend flag is the real gate; turning it on is a deployment decision, not " +
+        "a UI one.",
+      details: [],
+      hint: null,
+      code: null,
+      status,
+    };
+  }
+
+  const base = { message, details: [] as string[], hint: null as string | null, code, status };
+
+  switch (code) {
+    case "publisher_disabled":
+      return {
+        ...base,
+        title: "Automatic publishing is switched off",
+        hint: "Nothing was changed by this request.",
+      };
+    case "preflight_blocked":
+      return {
+        ...base,
+        title: "These lessons have nowhere to publish",
+        details: rowsOf(detail ?? {}, "failures").map(
+          (row) =>
+            `${text(row, "lesson_title") || text(row, "toc_entry_id")} (${text(row, "output_language")}) — ` +
+            `${humanise(text(row, "reason"))}: ${text(row, "detail")}`,
+        ),
+        hint: "Fix the Notion mapping, then generate the canary again. No money was spent.",
+      };
+    case "retired_model":
+      return {
+        ...base,
+        title: "This campaign is pinned to a retired model",
+        details: rowsOf(detail ?? {}, "retired").map(
+          (row) =>
+            `${text(row, "role")} is pinned to ${text(row, "provider")}/${text(row, "model")}, which no longer answers`,
+        ),
+        hint: "A frozen campaign cannot be re-pointed; create a new one on a live model.",
+      };
+    case "active_lineage_conflict":
+      return {
+        ...base,
+        title: "Another campaign still holds these lessons",
+        details: rowsOf(detail ?? {}, "lineages").map(
+          (row) =>
+            `lesson ${text(row, "toc_entry_id")}, output language ${text(row, "output_language")}`,
+        ),
+        hint:
+          "A lesson can only be in one live regeneration at a time. Finish, retry or abandon " +
+          "the other campaign's target first.",
+      };
+    case "no_eligible_targets":
+      return {
+        ...base,
+        title: "None of these lessons can be regenerated",
+        details: rowsOf(detail ?? {}, "candidates").map((row) => {
+          const reasons = Array.isArray(row.reasons)
+            ? row.reasons
+                .filter((r): r is string => typeof r === "string")
+                .map(humanise)
+                .join("; ")
+            : "";
+          const why = [reasons, text(row, "detail")].filter(Boolean).join(" — ");
+          return `lesson ${text(row, "toc_entry_id")} (${text(row, "output_language")}): ${why}`;
+        }),
+        hint: "A source must be a complete, finished homework job in that language.",
+      };
+    case "non_api_transport":
+      return {
+        ...base,
+        title: "Regeneration runs over the api transport only",
+        details: rowsOf(detail ?? {}, "offenders").map(
+          (row) => `${text(row, "field")} resolves to ${text(row, "transport")}`,
+        ),
+        hint: "Pick api for the content transport and for every role that inherits it.",
+      };
+    case "exclusion_acknowledgement_required":
+      return {
+        ...base,
+        title: "Acknowledge the consistency warning first",
+        message:
+          "Some phases you dropped sit downstream of phases you are regenerating, so their " +
+          "current text would ship beside newly rebuilt upstream phases and the homework may " +
+          "read inconsistently. Tick the acknowledgement box and try again.",
+        hint: null,
+      };
+    case "illegal_campaign_state":
+    case "illegal_target_state":
+      return { ...base, title: "That is not possible from here", hint: REGENERATION_STALE_HINT };
+    case "unknown_phase":
+    case "unknown_subject":
+    case "invalid_phase_selection":
+    case "unknown_output_language":
+    case "unknown_campaign_status":
+      return { ...base, title: "That selection is not valid", hint: null };
+    case "unresolvable_contract":
+    case "invalid_campaign_draft":
+      return {
+        ...base,
+        title: "This campaign cannot be frozen as configured",
+        hint:
+          "Every role needs a concrete provider and model, and the content model is never " +
+          "guessed for you.",
+      };
+    default:
+      return {
+        ...base,
+        title: status === null ? "The request did not reach the server" : "The request failed",
+        hint: status === 409 ? REGENERATION_STALE_HINT : null,
+      };
+  }
+}

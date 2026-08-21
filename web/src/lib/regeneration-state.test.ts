@@ -14,6 +14,26 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import {
+  REGENERATION_APPROVE_NOTE,
+  REGENERATION_CANCEL_CONFIRMATION,
+  REGENERATION_LAUNCH_LABEL,
+  REGENERATION_LAUNCH_SPEND_NOTE,
+  REGENERATION_LIST_POLL_MS,
+  REGENERATION_NO_SPEND_NOTE,
+  REGENERATION_POLL_MS,
+  REGENERATION_REJECT_CONFIRMATION,
+  cascadeFromPlan,
+  phaseSelectionFromPlan,
+  regenerationApprovalGate,
+  regenerationBucketViews,
+  regenerationCampaignStatusLabel,
+  regenerationListPollMs,
+  regenerationPollDecision,
+  regenerationPublicationStateLabel,
+  regenerationReasonError,
+  regenerationTargetActions,
+} from "./api";
+import {
   IS_REGENERATION_ENABLED,
   REGENERATION_NAV_LABEL,
   REGENERATION_ROUTE_PATH,
@@ -47,6 +67,11 @@ import {
   reportActions,
 } from "./regeneration-state";
 import type { Campaign, PhaseSelection, PlanTarget, TargetOutcome } from "./regeneration-state";
+import type {
+  RegenerationPhasePlan as RegenerationApiPhasePlan,
+  RegenerationCampaignDetail,
+  RegenerationTargetReport,
+} from "./types";
 
 /* ────────────────────────────────────────────────────────────────────
  * Fixtures
@@ -700,34 +725,60 @@ for (const rel of SHELL_FILES) {
     !/\bGenerating\b/.test(src),
     `${rel} uses Fleet's "Generating" vocabulary; this flow says "Regenerating"`,
   );
-  // Fixtures only in this task — no API/type coupling until Task 10.
-  assert.ok(!/from "@\/lib\/api"/.test(src), `${rel} must not import api.ts in Task 4`);
-  assert.ok(!/from "@\/lib\/types"/.test(src), `${rel} must not import types.ts in Task 4`);
+}
+
+// Task 10 INVERTS the Task 4 fixture rule. The route and the four components
+// must now read the real Task 9 shapes; `regeneration-state.ts` is deliberately
+// left uncoupled because it is the pure decision layer and takes whatever data
+// its caller hands it.
+const WIRED_FILES = SHELL_FILES.filter((rel) => rel !== "./regeneration-state.ts");
+for (const rel of WIRED_FILES) {
+  const src = source(rel);
+  assert.ok(
+    /from "@\/lib\/api"/.test(src) || /from "@\/lib\/types"/.test(src),
+    `${rel} must consume the typed Task 9 API, not local fixtures`,
+  );
+  assert.ok(
+    !/\bFIXTURE_/.test(src),
+    `${rel} still declares Task 4 fixture data; server state is authoritative`,
+  );
+  assert.ok(!/TASK_10_HINT/.test(src), `${rel} still shows the Task 4 "wired up in Task 10" hint`);
 }
 
 // The components must render the pure decisions, not re-derive them inline.
 const canarySrc = source("../components/regeneration/canary-review.tsx");
-assert.ok(canarySrc.includes("approvalGate"), "canary-review must render approvalGate()");
 assert.ok(
-  /disabled=\{!gate\.canApprove\}/.test(canarySrc),
+  canarySrc.includes("regenerationApprovalGate"),
+  "canary-review must render regenerationApprovalGate()",
+);
+assert.ok(
+  /disabled=\{!gate\.canApprove/.test(canarySrc),
   "canary-review must not offer a clickable approve button for an empty campaign",
 );
 assert.ok(
   !canarySrc.includes("Approve canary and publish V"),
-  "canary-review must not hardcode the approval label — it comes from approvalGate()",
+  "canary-review must not hardcode the approval label — it comes from the approval gate",
+);
+assert.ok(
+  canarySrc.includes("REGENERATION_LAUNCH_LABEL"),
+  'canary-review must use the shared "Generate canary" label',
 );
 const wizardSrc = source("../components/regeneration/regeneration-wizard.tsx");
-assert.ok(wizardSrc.includes("cascadeDisclosure"), "wizard must render cascadeDisclosure()");
+assert.ok(wizardSrc.includes("cascadeFromPlan"), "wizard must render the server's phase plan");
 assert.ok(
   !/Regenerates \$\{|Regenerates \d/.test(wizardSrc),
   "wizard must not hand-roll the cascade headline",
+);
+assert.ok(
+  wizardSrc.includes("REGENERATION_NO_SPEND_NOTE"),
+  "the create/estimate steps must state that nothing is spent and nothing is published",
 );
 // campaign-list had no guard here, which is exactly where a hand-rolled
 // "{n} lessons" (rendering "1 lessons") slipped through review.
 const listSrc = source("../components/regeneration/campaign-list.tsx");
 assert.ok(
-  listSrc.includes("campaignStatusLabel"),
-  "campaign-list must render campaignStatusLabel()",
+  listSrc.includes("regenerationCampaignStatusLabel"),
+  "campaign-list must render regenerationCampaignStatusLabel()",
 );
 assert.ok(listSrc.includes("lessonCountLabel"), "campaign-list must render lessonCountLabel()");
 assert.ok(!/lessons/.test(listSrc), "campaign-list must not hand-roll a pluralised lesson count");
@@ -736,11 +787,813 @@ assert.ok(
   "campaign-list must format money through formatUsd(), not its own helper",
 );
 const reportSrc = source("../components/regeneration/campaign-report.tsx");
-assert.ok(reportSrc.includes("bucketReport"), "report must render bucketReport()");
-assert.ok(reportSrc.includes("outcomeReason"), "report must render outcomeReason()");
+assert.ok(
+  reportSrc.includes("regenerationBucketViews"),
+  "report must render every bucket through regenerationBucketViews()",
+);
+assert.ok(
+  reportSrc.includes("regenerationTargetActions"),
+  "report must render regenerationTargetActions()",
+);
+assert.ok(
+  reportSrc.includes("target.reason"),
+  "report must render the server's plain-language reason for every target",
+);
 assert.ok(
   reportSrc.includes("disabled"),
   "report retry/abandon buttons must carry the disabled attribute",
 );
+const routeSrc = source("../routes/regeneration.tsx");
+assert.ok(
+  routeSrc.includes("regenerationPollDecision"),
+  "the route must decide polling through regenerationPollDecision()",
+);
+assert.ok(
+  routeSrc.includes("invalidateQueries"),
+  "mutations must invalidate the campaign queries they change",
+);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 11. Task 9 fixtures — the exact response shapes the API returns
+ * ──────────────────────────────────────────────────────────────────── */
+
+const CAMPAIGN_ID = "6f1c1d4e-9a2b-4c3d-8e5f-0a1b2c3d4e5f";
+
+function apiTarget(over: Partial<RegenerationTargetReport> = {}): RegenerationTargetReport {
+  return {
+    id: "11112222-3333-4444-5555-666677778888",
+    campaign_id: CAMPAIGN_ID,
+    toc_entry_id: "99998888-7777-6666-5555-444433332222",
+    output_language: "uz",
+    is_canary: false,
+    status: "planned",
+    bucket: "in_flight",
+    publication_state: "not_started",
+    is_terminal: false,
+    action_required: false,
+    reason: "planned; no revision job has been created yet.",
+    source_job_id: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+    source_publication_version: 1,
+    source_note: null,
+    revision_job_id: null,
+    revision_job_status: null,
+    revision_job_scheduled_at: null,
+    content_path: null,
+    download_path: null,
+    publication_version: null,
+    notion_page_id: null,
+    notion_page_url: null,
+    publication_released_at: null,
+    publication_attempts: 0,
+    publication_next_attempt_at: null,
+    publication_last_error: null,
+    delivery_error: null,
+    terminal_at: null,
+    terminal_reason: null,
+    abandon_requested_at: null,
+    abandon_requested_reason: null,
+    lesson: {
+      book_id: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+      order_index: 1,
+      section_number: "1",
+      section_title: "1-mavzu. Hujayra tuzilishi",
+      chapter_title: "Hujayra",
+    },
+    phase_plan: null,
+    phase_plan_error: null,
+    judge_status_counts: {},
+    solver_status_counts: {},
+    copied_phase_count: 0,
+    regenerated_phase_count: 0,
+    created_at: "2026-08-20T09:00:00Z",
+    updated_at: "2026-08-20T09:00:00Z",
+    ...over,
+  };
+}
+
+function apiDetail(over: Partial<RegenerationCampaignDetail> = {}): RegenerationCampaignDetail {
+  const targets = over.targets ?? [apiTarget()];
+  const statusCounts: Record<string, number> = {};
+  for (const t of targets) statusCounts[t.status] = (statusCounts[t.status] ?? 0) + 1;
+  return {
+    id: CAMPAIGN_ID,
+    status: "draft",
+    is_terminal: false,
+    attention_required: false,
+    target_count: targets.length,
+    status_counts: statusCounts,
+    bucket_counts: {},
+    canary_size: 1,
+    refresh_extraction: false,
+    exclusion_acknowledged: false,
+    requested_phases: ["flashcards"],
+    excluded_phases: [],
+    app_git_revision: "7209a4e",
+    estimated_cost_low_usd: 1.2,
+    estimated_cost_high_usd: 3,
+    canary_launched_at: null,
+    approved_at: null,
+    rejected_at: null,
+    cancel_requested_at: null,
+    completed_at: null,
+    rejected_reason: null,
+    cancel_requested_reason: null,
+    created_at: "2026-08-20T09:00:00Z",
+    updated_at: "2026-08-20T09:00:00Z",
+    selection_spec: {},
+    launch_contract: {},
+    solver_enabled_observed: true,
+    buckets: {},
+    canary: [],
+    actual_cost: {
+      usd: 0,
+      call_count: 0,
+      paid_call_count: 0,
+      zero_cost_marker_count: 0,
+      failed_call_count: 0,
+      excluded_row_count: 0,
+      revision_job_count: 0,
+      prompt_tokens: 0,
+      output_tokens: 0,
+      cached_tokens: 0,
+      cache_creation_tokens: 0,
+      total_tokens: 0,
+    },
+    judge_status_counts: {},
+    solver_status_counts: {},
+    provenance: { copied_phase_count: 0, regenerated_phase_count: 0, phase_row_count: 0 },
+    release_schedule: {
+      job_count: 0,
+      wave_count: 0,
+      final_offset_seconds: 0,
+      first_scheduled_at: null,
+      last_scheduled_at: null,
+      source: "persisted homework_jobs.scheduled_at",
+    },
+    warnings: [],
+    rollup_error: null,
+    released_failures: [],
+    ...over,
+    targets,
+  };
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 12. Polling — only while something is actually moving
+ * ──────────────────────────────────────────────────────────────────── */
+
+// Nothing loaded: nothing to poll.
+assert.strictEqual(regenerationPollDecision(undefined).shouldPoll, false);
+assert.strictEqual(regenerationPollDecision(undefined).intervalMs, false);
+
+// Canary generation.
+{
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "canary_running",
+      targets: [apiTarget({ status: "generating", bucket: "in_flight", is_canary: true })],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, true);
+  assert.strictEqual(decision.intervalMs, REGENERATION_POLL_MS);
+  assert.ok(decision.activity.some((a) => /regenerating/i.test(a)));
+}
+
+// Bulk generation.
+assert.strictEqual(
+  regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [apiTarget({ status: "generating", bucket: "in_flight" })],
+    }),
+  ).shouldPoll,
+  true,
+);
+
+// Publication queued and publication in flight.
+for (const status of ["publication_pending", "publishing"] as const) {
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "approved",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [
+        apiTarget({
+          status,
+          bucket: status === "publishing" ? "in_flight" : "publication_pending",
+          publication_state: status === "publishing" ? "publishing" : "queued",
+          revision_job_id: "cafe0000-0000-4000-8000-000000000001",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, true, `${status} must keep polling`);
+}
+
+// Automatic backoff and a due automatic retry both keep polling: the publisher
+// moves these WITHOUT an operator, so a frozen report would read as stuck.
+for (const state of ["backing_off", "retry_due"] as const) {
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "attention_required",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [
+        apiTarget({
+          status: "publication_failed",
+          bucket: "publication_failed",
+          publication_state: state,
+          publication_attempts: 2,
+          publication_next_attempt_at: "2026-08-20T11:00:00Z",
+          revision_job_id: "cafe0000-0000-4000-8000-000000000001",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, true, `${state} must keep polling`);
+  assert.ok(decision.activity.some((a) => /retry/i.test(a)));
+}
+
+// Terminal campaign: stop.
+for (const status of [
+  "completed",
+  "completed_with_abandonments",
+  "rejected",
+  "cancelled",
+] as const) {
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status,
+      is_terminal: true,
+      targets: [
+        apiTarget({
+          status: "published",
+          bucket: "published",
+          is_terminal: true,
+          publication_state: "published",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, false, `${status} must stop polling`);
+  assert.strictEqual(decision.intervalMs, false);
+  assert.ok(decision.reason.length > 0);
+}
+
+// Action-required: a parked publication needs a human, so nothing moves.
+{
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "attention_required",
+      attention_required: true,
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [
+        apiTarget({
+          status: "publication_failed",
+          bucket: "publication_failed",
+          publication_state: "action_required",
+          action_required: true,
+          publication_attempts: 5,
+          revision_job_id: "cafe0000-0000-4000-8000-000000000001",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, false);
+  assert.match(decision.reason, /retry|abandon/i);
+}
+
+// Generation failed is likewise parked on a human.
+assert.strictEqual(
+  regenerationPollDecision(
+    apiDetail({
+      status: "attention_required",
+      attention_required: true,
+      targets: [
+        apiTarget({
+          status: "generation_failed",
+          bucket: "generation_failed",
+          action_required: true,
+        }),
+      ],
+    }),
+  ).shouldPoll,
+  false,
+);
+
+// The canary gate is a HUMAN gate — polling it burns requests forever.
+{
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "awaiting_canary_approval",
+      canary_launched_at: "2026-08-20T09:30:00Z",
+      targets: [
+        apiTarget({
+          status: "awaiting_canary_approval",
+          bucket: "in_flight",
+          is_canary: true,
+          revision_job_id: "cafe0000-0000-4000-8000-000000000001",
+        }),
+      ],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, false);
+  assert.match(decision.reason, /review|approve/i);
+}
+
+// A draft has never generated anything.
+assert.strictEqual(regenerationPollDecision(apiDetail({ status: "draft" })).shouldPoll, false);
+
+// Approved but nothing released: polling would spin forever, so stop and say
+// what recovers it (approve is idempotent).
+{
+  const decision = regenerationPollDecision(
+    apiDetail({
+      status: "approved",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [apiTarget({ status: "planned", bucket: "in_flight", revision_job_id: null })],
+    }),
+  );
+  assert.strictEqual(decision.shouldPoll, false);
+  assert.match(decision.reason, /approve/i);
+}
+
+// The list poll follows the same rule: quiet campaigns do not need a ticker.
+assert.strictEqual(regenerationListPollMs([]), false);
+assert.strictEqual(
+  regenerationListPollMs([apiDetail({ status: "canary_running" })]),
+  REGENERATION_LIST_POLL_MS,
+);
+assert.strictEqual(
+  regenerationListPollMs([apiDetail({ status: "completed", is_terminal: true })]),
+  false,
+);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 13. Report buckets — all six, always, in plain language
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const detail = apiDetail({
+    status: "attention_required",
+    targets: [
+      apiTarget({
+        id: "t-published",
+        status: "published",
+        bucket: "published",
+        is_terminal: true,
+        publication_state: "published",
+        publication_version: 2,
+        notion_page_id: "abc123",
+        notion_page_url: "https://www.notion.so/abc123",
+        reason: "published as Homework V2.",
+      }),
+      apiTarget({
+        id: "t-pending",
+        status: "publication_pending",
+        bucket: "publication_pending",
+        publication_state: "queued",
+        reason: "generated and queued for automatic publication.",
+      }),
+      apiTarget({
+        id: "t-failed",
+        status: "publication_failed",
+        bucket: "publication_failed",
+        publication_state: "action_required",
+        action_required: true,
+        publication_attempts: 5,
+        publication_last_error: "VersionPageCollision: Homework V2 exists without a marker",
+        delivery_error: "VersionPageCollision: Homework V2 exists without a marker",
+        reason:
+          "delivery failed after 5 attempt(s) and there is NO AUTOMATIC RETRY left — an " +
+          "operator must retry publication or abandon this target. Last error: " +
+          "VersionPageCollision: Homework V2 exists without a marker",
+      }),
+      apiTarget({
+        id: "t-genfail",
+        status: "generation_failed",
+        bucket: "generation_failed",
+        action_required: true,
+        reason:
+          "generation failed: solver mismatch_blocked on boss-arena. Retry generation or " +
+          "abandon this target — it holds the lesson's active lineage until then.",
+      }),
+      apiTarget({
+        id: "t-abandoned",
+        status: "abandoned",
+        bucket: "abandoned",
+        is_terminal: true,
+        publication_state: "abandoned",
+        publication_version: 3,
+        terminal_reason: "page collision could not be cleaned up",
+        delivery_error: "VersionPageCollision",
+        reason:
+          "abandoned: page collision could not be cleaned up. No Notion page was deleted and " +
+          "version V3 stays consumed. Last delivery error: VersionPageCollision",
+      }),
+      apiTarget({ id: "t-inflight", status: "generating", bucket: "in_flight" }),
+    ],
+  });
+
+  const views = regenerationBucketViews(detail);
+  assert.strictEqual(views.length, 6, "every bucket is rendered, including empty ones");
+  assert.deepStrictEqual(
+    views.map((v) => v.bucket),
+    [
+      "published",
+      "publication_pending",
+      "publication_failed",
+      "generation_failed",
+      "abandoned",
+      "in_flight",
+    ],
+  );
+  for (const view of views) {
+    assert.strictEqual(view.count, 1, `${view.bucket} should hold exactly one fixture target`);
+    assert.ok(!view.label.includes("_"), `bucket label leaks a code: ${view.label}`);
+    assert.ok(view.description.length > 0, `${view.bucket} has no plain-language description`);
+    assert.ok(
+      !/\bGenerating\b/.test(view.label) && !/\bGenerating\b/.test(view.description),
+      `${view.bucket} reuses Fleet's "Generating" vocabulary`,
+    );
+  }
+  // An empty bucket still renders, with a count of zero.
+  const empty = regenerationBucketViews(apiDetail({ targets: [] }));
+  assert.strictEqual(empty.length, 6);
+  assert.deepStrictEqual(
+    empty.map((v) => v.count),
+    [0, 0, 0, 0, 0, 0],
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 14. Publication state and campaign status vocabulary
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const STATES = [
+    "published",
+    "abandoned",
+    "publishing",
+    "queued",
+    "backing_off",
+    "retry_due",
+    "action_required",
+    "not_started",
+  ] as const;
+  const labels = new Set<string>();
+  for (const state of STATES) {
+    const label = regenerationPublicationStateLabel(state);
+    assert.ok(label.length > 0, `${state} has no label`);
+    assert.ok(!label.includes("_"), `publication state label leaks a code: ${label}`);
+    labels.add(label);
+  }
+  // The three publication_failed shapes are three DIFFERENT situations; giving
+  // them one label hides every row that needs a human.
+  assert.strictEqual(labels.size, STATES.length, "each publication state needs its own words");
+  assert.match(regenerationPublicationStateLabel("backing_off"), /automatic/i);
+  assert.match(regenerationPublicationStateLabel("retry_due"), /due|shortly|next/i);
+  assert.match(regenerationPublicationStateLabel("action_required"), /you|operator|no automatic/i);
+}
+
+{
+  const STATUSES = [
+    "draft",
+    "canary_running",
+    "awaiting_canary_approval",
+    "approved",
+    "bulk_running",
+    "attention_required",
+    "completed",
+    "completed_with_abandonments",
+    "rejected",
+    "cancelled",
+  ] as const;
+  for (const status of STATUSES) {
+    const label = regenerationCampaignStatusLabel(status);
+    assert.ok(label.length > 0, `${status} has no label`);
+    assert.ok(!label.includes("_"), `campaign status label leaks a code: ${status} → ${label}`);
+    assert.ok(
+      !/\bGenerating\b/.test(label),
+      `regeneration must never reuse Fleet's "Generating" label: ${status} → ${label}`,
+    );
+  }
+  assert.match(regenerationCampaignStatusLabel("completed_with_abandonments"), /abandon/i);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 15. One campaign-level gate, from real API data
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  // ONE target: one approval action, no bulk step, version read off the row.
+  const single = apiDetail({
+    status: "awaiting_canary_approval",
+    canary_size: 1,
+    targets: [
+      apiTarget({
+        is_canary: true,
+        status: "awaiting_canary_approval",
+        bucket: "in_flight",
+        source_publication_version: 1,
+      }),
+    ],
+  });
+  const gate = regenerationApprovalGate(single);
+  assert.strictEqual(gate.singleTarget, true);
+  assert.strictEqual(gate.showsBulkGenerationGate, false);
+  assert.strictEqual(gate.remainingCount, 0);
+  assert.strictEqual(gate.approveLabel, "Approve canary and publish V2");
+  assert.ok(gate.canApprove);
+
+  // Parity with the Task 4 gate for the same campaign expressed as fixtures:
+  // one rule, two shapes, so the two can never drift apart.
+  const equivalent: Campaign = {
+    id: single.id,
+    name: "single",
+    status: "awaiting_approval",
+    canarySize: 1,
+    createdAt: "2026-08-20T09:00:00Z",
+    estimate: { costLowUsd: 1.2, costHighUsd: 3, expectedModelCalls: 0 },
+    targets: [
+      {
+        lessonId: "t-1",
+        lessonTitle: "1-mavzu. Hujayra tuzilishi",
+        language: "uz",
+        sourceVersion: 1,
+        nextVersion: 2,
+      },
+    ],
+  };
+  assert.deepStrictEqual(gate, approvalGate(equivalent));
+}
+
+{
+  // A V2 source publishes V3 — the label is never hardcoded to V2.
+  const gate = regenerationApprovalGate(
+    apiDetail({
+      status: "awaiting_canary_approval",
+      canary_size: 1,
+      targets: [apiTarget({ is_canary: true, source_publication_version: 2 })],
+    }),
+  );
+  assert.strictEqual(gate.approveLabel, "Approve canary and publish V3");
+}
+
+{
+  // Multi-target with a remainder: the bulk step exists and is described.
+  const gate = regenerationApprovalGate(
+    apiDetail({
+      status: "awaiting_canary_approval",
+      canary_size: 1,
+      targets: [
+        apiTarget({ id: "a", is_canary: true }),
+        apiTarget({ id: "b" }),
+        apiTarget({ id: "c" }),
+      ],
+    }),
+  );
+  assert.strictEqual(gate.singleTarget, false);
+  assert.strictEqual(gate.showsBulkGenerationGate, true);
+  assert.strictEqual(gate.remainingCount, 2);
+  assert.match(gate.approveLabel, /2 remaining lessons/);
+}
+
+{
+  // The canary already covers every lesson: no empty bulk gate, ever.
+  const gate = regenerationApprovalGate(
+    apiDetail({
+      status: "awaiting_canary_approval",
+      canary_size: 3,
+      targets: [
+        apiTarget({ id: "a", is_canary: true }),
+        apiTarget({ id: "b", is_canary: true }),
+        apiTarget({ id: "c", is_canary: true }),
+      ],
+    }),
+  );
+  assert.strictEqual(gate.showsBulkGenerationGate, false);
+  assert.strictEqual(gate.remainingCount, 0);
+}
+
+// Approval copy: remaining lessons regenerate AND successful versions publish,
+// automatically, with no second gate.
+assert.match(REGENERATION_APPROVE_NOTE, /remaining/i);
+assert.match(REGENERATION_APPROVE_NOTE, /automatic/i);
+assert.match(REGENERATION_APPROVE_NOTE, /publish/i);
+assert.match(REGENERATION_APPROVE_NOTE, /only|no per-lesson/i);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 16. Per-target actions, pending state, and their promises
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const genFailed = apiTarget({ status: "generation_failed", bucket: "generation_failed" });
+  const kinds = regenerationTargetActions(genFailed).map((a) => a.kind);
+  assert.deepStrictEqual(kinds, ["retry-generation", "abandon"]);
+  assert.ok(regenerationTargetActions(genFailed).every((a) => a.enabled));
+}
+
+{
+  const pubFailed = apiTarget({
+    status: "publication_failed",
+    bucket: "publication_failed",
+    publication_state: "action_required",
+  });
+  const actions = regenerationTargetActions(pubFailed);
+  assert.deepStrictEqual(
+    actions.map((a) => a.kind),
+    ["retry-publication", "abandon"],
+  );
+  const retry = actions[0];
+  // The one promise an operator needs before clicking a retry on a $-per-call
+  // system: this path never re-runs the model.
+  assert.ok(
+    retry.detail.includes("No Gemini call"),
+    "publication retry must say, literally, that there is no Gemini call",
+  );
+  const abandon = actions[1];
+  assert.strictEqual(abandon.requiresReason, true);
+  assert.match(abandon.detail, /no Notion page is deleted/i);
+  assert.match(abandon.detail, /reserved/i);
+  assert.match(abandon.detail, /unused/i);
+}
+
+{
+  // A terminal target offers nothing.
+  const terminal = [
+    apiTarget({ status: "published", bucket: "published", is_terminal: true }),
+    apiTarget({ status: "abandoned", bucket: "abandoned", is_terminal: true }),
+  ];
+  for (const target of terminal) {
+    assert.deepStrictEqual(regenerationTargetActions(target), [], target.status);
+  }
+}
+
+{
+  // A running target can still be abandoned, but never retried.
+  const running = apiTarget({ status: "generating", bucket: "in_flight" });
+  assert.deepStrictEqual(
+    regenerationTargetActions(running).map((a) => a.kind),
+    ["abandon"],
+  );
+}
+
+{
+  // Duplicate submits are disabled while a mutation is in flight — the button
+  // is the guard, backend idempotency is the safety net.
+  const pubFailed = apiTarget({
+    status: "publication_failed",
+    bucket: "publication_failed",
+    publication_state: "action_required",
+  });
+  const pending = regenerationTargetActions(pubFailed, { pendingKind: "retry-publication" });
+  assert.ok(
+    pending.every((a) => !a.enabled),
+    "no action on a target may be clickable while one of its mutations is pending",
+  );
+  assert.ok(pending.every((a) => (a.disabledReason ?? "").length > 0));
+}
+
+{
+  // Nothing is actionable on a finished campaign.
+  const pubFailed = apiTarget({
+    status: "publication_failed",
+    bucket: "publication_failed",
+    publication_state: "action_required",
+  });
+  const done = regenerationTargetActions(pubFailed, { campaignTerminal: true });
+  assert.ok(done.every((a) => !a.enabled));
+}
+
+// A blank abandon reason is refused before it reaches the API.
+assert.ok(regenerationReasonError("") !== null);
+assert.ok(regenerationReasonError("   ") !== null);
+assert.strictEqual(regenerationReasonError("page collision, cleaning up by hand"), null);
+
+// Reject and cancel both have to say what they do NOT do.
+for (const [name, copy] of [
+  ["reject", REGENERATION_REJECT_CONFIRMATION],
+  ["cancel", REGENERATION_CANCEL_CONFIRMATION],
+] as const) {
+  assert.match(
+    copy,
+    /no existing Notion version is deleted/i,
+    `${name} must say it deletes nothing`,
+  );
+}
+assert.match(REGENERATION_REJECT_CONFIRMATION, /no publication version is consumed/i);
+assert.match(REGENERATION_CANCEL_CONFIRMATION, /already published|stay published/i);
+
+// Create/phase-plan/estimate are visibly free.
+assert.match(REGENERATION_NO_SPEND_NOTE, /no model call/i);
+assert.match(REGENERATION_NO_SPEND_NOTE, /no Notion page/i);
+// And the launch is visibly not free.
+assert.strictEqual(REGENERATION_LAUNCH_LABEL, "Generate canary");
+assert.match(REGENERATION_LAUNCH_SPEND_NOTE, /spend|cost/i);
+assert.match(REGENERATION_LAUNCH_SPEND_NOTE, /publish/i);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 17. The cascade headline is the SERVER's plan, rendered
+ * ──────────────────────────────────────────────────────────────────── */
+
+/** `canonical_phases` starts with `extract` and partitions the whole snapshot. */
+const CANONICAL = ["extract", ...CONTENT_PHASES];
+
+function apiPlan(over: Partial<RegenerationApiPhasePlan> = {}): RegenerationApiPhasePlan {
+  return {
+    subject: "biology",
+    canonical_phases: CANONICAL,
+    selected_phases: [],
+    auto_included_phases: [],
+    regenerated_phases: [],
+    copied_phases: CANONICAL,
+    excluded_affected_phases: [],
+    broken_dependency_edges: [],
+    refresh_extraction: false,
+    regenerated_phase_count: 0,
+    copied_phase_count: CANONICAL.length,
+    acknowledgement_required: false,
+    acknowledgement_message: null,
+    ...over,
+  };
+}
+
+{
+  // flashcards → 10 content phases; extract and case-based-preview are copied.
+  const regenerated = CASCADE_FROM_FLASHCARDS;
+  const plan = apiPlan({
+    selected_phases: ["flashcards"],
+    auto_included_phases: regenerated.filter((p) => p !== "flashcards"),
+    regenerated_phases: regenerated,
+    copied_phases: CANONICAL.filter((p) => !regenerated.includes(p)),
+    regenerated_phase_count: regenerated.length,
+    copied_phase_count: CANONICAL.length - regenerated.length,
+  });
+  const cascade = cascadeFromPlan(plan);
+  assert.strictEqual(cascade.headline, "Regenerates 10 of 12 phases");
+  // The client re-derivation must agree with the server's own counts, or the
+  // headline is describing a plan the backend did not make.
+  assert.strictEqual(cascade.regeneratedCount, plan.regenerated_phase_count);
+  assert.strictEqual(cascade.copiedCount, plan.copied_phase_count);
+  assert.strictEqual(cascade.scope, "near_full");
+}
+
+{
+  // reflection regenerates only itself.
+  const plan = apiPlan({
+    selected_phases: ["reflection"],
+    regenerated_phases: ["reflection"],
+    copied_phases: CANONICAL.filter((p) => p !== "reflection"),
+    regenerated_phase_count: 1,
+    copied_phase_count: CANONICAL.length - 1,
+  });
+  const cascade = cascadeFromPlan(plan);
+  assert.strictEqual(cascade.headline, "Regenerates 1 of 12 phases");
+  assert.strictEqual(cascade.regeneratedCount, plan.regenerated_phase_count);
+  assert.strictEqual(cascade.scope, "narrow");
+}
+
+{
+  // Extraction on: the extract row itself is regenerated and every content
+  // phase comes with it, so the count must include `extract`.
+  const plan = apiPlan({
+    selected_phases: [],
+    auto_included_phases: CONTENT_PHASES,
+    regenerated_phases: CANONICAL,
+    copied_phases: [],
+    refresh_extraction: true,
+    regenerated_phase_count: CANONICAL.length,
+    copied_phase_count: 0,
+  });
+  const cascade = cascadeFromPlan(plan);
+  assert.strictEqual(cascade.regeneratedCount, plan.regenerated_phase_count);
+  assert.strictEqual(cascade.copiedCount, 0);
+  assert.strictEqual(cascade.headline, "Regenerates 12 of 12 phases");
+}
+
+{
+  // An exclusion shrinks the regenerated set on BOTH sides of the wire.
+  const regenerated = CASCADE_FROM_FLASHCARDS.filter((p) => p !== "reflection");
+  const plan = apiPlan({
+    selected_phases: ["flashcards"],
+    auto_included_phases: CASCADE_FROM_FLASHCARDS.filter((p) => p !== "flashcards"),
+    excluded_affected_phases: ["reflection"],
+    regenerated_phases: regenerated,
+    copied_phases: CANONICAL.filter((p) => !regenerated.includes(p)),
+    regenerated_phase_count: regenerated.length,
+    copied_phase_count: CANONICAL.length - regenerated.length,
+    broken_dependency_edges: [{ upstream: "boss-arena", downstream: "reflection" }],
+    acknowledgement_required: true,
+    acknowledgement_message:
+      "excluding these phases leaves them authored against an older upstream output",
+  });
+  const cascade = cascadeFromPlan(plan);
+  assert.strictEqual(cascade.regeneratedCount, plan.regenerated_phase_count);
+  assert.strictEqual(cascade.copiedCount, plan.copied_phase_count);
+  // The warning names the excluded phase in operator words.
+  const warning = exclusionWarning(phaseSelectionFromPlan(plan));
+  assert.ok(warning !== null);
+  assert.match(warning.message, /Reflection/);
+}
 
 console.log("OK");

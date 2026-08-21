@@ -783,3 +783,492 @@ export interface CoverageResponse {
   output_language: OutputLanguage;
   entries: CoverageEntry[];
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+ * Versioned homework regeneration — exact mirror of app/schemas/regeneration.py
+ *
+ * These are the Task 9 wire shapes and nothing else: every field name, every
+ * nullable, every enum member matches the Pydantic model, so a rename on the
+ * server shows up here as a type error rather than as `undefined` on a screen.
+ * Timestamps are ISO-8601 strings (FastAPI serializes `datetime` that way);
+ * UUIDs are strings.
+ *
+ * Everything the operator DECIDES from these shapes — polling, buckets, action
+ * availability, error prose — lives in `api.ts`, not here.
+ * ══════════════════════════════════════════════════════════════════════ */
+
+/** `regeneration.OUTPUT_LANGUAGES`. Wider than Fleet's `OutputLanguage`
+ *  aliasing on purpose: a regeneration lineage is scoped by
+ *  `(toc_entry_id, output_language)` and the API validates against this set. */
+export type RegenerationOutputLanguage = "uz" | "ru" | "en";
+
+export const REGENERATION_OUTPUT_LANGUAGES: RegenerationOutputLanguage[] = ["uz", "ru", "en"];
+
+/** `regeneration_states.CAMPAIGN_STATUSES`. */
+export type RegenerationCampaignStatus =
+  | "draft"
+  | "canary_running"
+  | "awaiting_canary_approval"
+  | "approved"
+  | "bulk_running"
+  | "attention_required"
+  | "completed"
+  | "completed_with_abandonments"
+  | "rejected"
+  | "cancelled";
+
+/** `regeneration_states.TARGET_STATUSES`. */
+export type RegenerationTargetStatus =
+  | "planned"
+  | "generating"
+  | "awaiting_canary_approval"
+  | "publication_pending"
+  | "publishing"
+  | "published"
+  | "generation_failed"
+  | "publication_failed"
+  | "abandoned";
+
+/** `regeneration.BUCKETS` — the five design buckets plus `in_flight`, which
+ *  exists so a report never silently drops a row that is still moving. */
+export type RegenerationBucket =
+  | "published"
+  | "publication_pending"
+  | "publication_failed"
+  | "generation_failed"
+  | "abandoned"
+  | "in_flight";
+
+/** `regeneration.publication_state`. The three `publication_failed` shapes are
+ *  three different situations and split on `publication_next_attempt_at`. */
+export type RegenerationPublicationState =
+  | "published"
+  | "abandoned"
+  | "publishing"
+  | "queued"
+  | "backing_off"
+  | "retry_due"
+  | "action_required"
+  | "not_started";
+
+/* ── requests ─────────────────────────────────────────────────────────── */
+
+/** `regeneration_contract.LaunchContract` — the DRAFT shape. A null role
+ *  provider/model and `inherit` are legal operator inputs; the server resolves
+ *  them once, at campaign creation. The content `model` is the exception: the
+ *  server refuses a draft without one, so the UI must always send it. */
+export interface RegenerationLaunchContract {
+  provider: string;
+  model: string | null;
+  transport: Transport;
+  extract_transport: RoleTransport;
+  extract_provider: string | null;
+  extract_model: string | null;
+  judge_transport: RoleTransport;
+  judge_provider: string | null;
+  judge_model: string | null;
+  solver_transport: RoleTransport;
+  solver_provider: string | null;
+  solver_model: string | null;
+  session_limit_strategy: SessionLimitStrategy;
+}
+
+/** `regeneration.CampaignSelectionIn`. An empty list means "do not filter on
+ *  this axis" — it is not "select nothing". */
+export interface RegenerationSelection {
+  book_ids: string[];
+  toc_entry_ids: string[];
+  output_languages: RegenerationOutputLanguage[];
+}
+
+/** `regeneration._PhaseSelectionIn`, shared by phase-plan/estimate/create. */
+export interface RegenerationPhaseSelection {
+  selected_phases: string[];
+  excluded_affected_phases: string[];
+  refresh_extraction: boolean;
+  exclusion_acknowledged: boolean;
+}
+
+/** `regeneration.PhasePlanRequest`. */
+export interface RegenerationPhasePlanRequest extends RegenerationPhaseSelection {
+  subject: string;
+}
+
+/** `regeneration.EstimateRequest`. `extra="forbid"`: the create-only fields
+ *  below must NOT appear in this body. */
+export interface RegenerationEstimateRequest extends RegenerationPhaseSelection {
+  selection: RegenerationSelection;
+  contract: RegenerationLaunchContract;
+  canary_size: number;
+}
+
+/** `regeneration.CreateCampaignRequest` — the estimate body plus the numbers
+ *  the operator was SHOWN, echoed back so the campaign records what was
+ *  approved rather than a figure recomputed at insert time. */
+export interface RegenerationCampaignDraft extends RegenerationEstimateRequest {
+  estimated_cost_low_usd: number | null;
+  estimated_cost_high_usd: number | null;
+  app_git_revision: string | null;
+  actor: string;
+  notes: Record<string, unknown>;
+}
+
+/** `regeneration.CampaignApproveRequest`. */
+export interface RegenerationActorRequest {
+  actor: string;
+}
+
+/** `regeneration._ReasonRequest` — reject / cancel / abandon. The server
+ *  refuses a blank reason: it is stored as the audit record. */
+export interface RegenerationReasonRequest extends RegenerationActorRequest {
+  reason: string;
+}
+
+/* ── phase plan ───────────────────────────────────────────────────────── */
+
+export interface RegenerationDependencyEdge {
+  upstream: string;
+  downstream: string;
+}
+
+/** `regeneration.PhasePlanOut`. `canonical_phases` starts with `extract` and
+ *  is partitioned exactly by `regenerated_phases` + `copied_phases`. */
+export interface RegenerationPhasePlan {
+  subject: string;
+  canonical_phases: string[];
+  selected_phases: string[];
+  auto_included_phases: string[];
+  regenerated_phases: string[];
+  copied_phases: string[];
+  excluded_affected_phases: string[];
+  broken_dependency_edges: RegenerationDependencyEdge[];
+  refresh_extraction: boolean;
+  regenerated_phase_count: number;
+  copied_phase_count: number;
+  acknowledgement_required: boolean;
+  acknowledgement_message: string | null;
+}
+
+/** `regeneration.TargetPhasePlanOut` — the frozen per-target plan. */
+export interface RegenerationTargetPhasePlan {
+  selected_phases: string[];
+  auto_included_phases: string[];
+  regenerated_phases: string[];
+  copied_phases: string[];
+  excluded_affected_phases: string[];
+  broken_dependency_edges: RegenerationDependencyEdge[];
+  refresh_extraction: boolean;
+}
+
+/* ── discovery ────────────────────────────────────────────────────────── */
+
+/** `regeneration.EligibleSourceOut`. */
+export interface RegenerationEligibleSource {
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  source_job_id: string;
+  book_id: string;
+  subject: string;
+  grade: string | null;
+  source_publication_version: number;
+  next_expected_version: number;
+  source_is_revision: boolean;
+  section_number: string | null;
+  section_title: string;
+  chapter_title: string;
+  order_index: number;
+  has_notion_lesson_page: boolean;
+}
+
+/** `regeneration.IneligibleLineageOut`. */
+export interface RegenerationIneligibleLineage {
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  reasons: string[];
+  detail: string;
+}
+
+/** `regeneration.EligibleSourcesOut`. */
+export interface RegenerationEligibleSources {
+  sources: RegenerationEligibleSource[];
+  ineligible: RegenerationIneligibleLineage[];
+  eligible_count: number;
+  ineligible_count: number;
+}
+
+/** `regeneration.PreflightFailureOut` — one lesson with nowhere to publish. */
+export interface RegenerationPreflightFailure {
+  toc_entry_id: string;
+  source_job_id: string | null;
+  output_language: RegenerationOutputLanguage;
+  subject: string;
+  grade: string | null;
+  lesson_title: string;
+  reason: string;
+  detail: string;
+}
+
+/** `regeneration.PreflightOut`. */
+export interface RegenerationPreflight {
+  ok: boolean;
+  failure_count: number;
+  failures: RegenerationPreflightFailure[];
+}
+
+/* ── estimate ─────────────────────────────────────────────────────────── */
+
+/** `regeneration.EstimateLineOut`. `is_unpriced` (no RATE) and
+ *  `is_static_envelope` (no VOLUME evidence) are INDEPENDENT markers. */
+export interface RegenerationEstimateLine {
+  budget: string;
+  kind: string;
+  phase: string;
+  provider: string;
+  model: string | null;
+  calls_low: number;
+  calls_high: number;
+  unit_cost_usd: number;
+  cost_low_usd: number;
+  cost_high_usd: number;
+  basis: string;
+  observations: number;
+  is_unpriced: boolean;
+  is_observed: boolean;
+  is_static_envelope: boolean;
+}
+
+/** `regeneration.RegenerationEstimateOut`. */
+export interface RegenerationEstimateTotals {
+  low_usd: number;
+  high_usd: number;
+  is_estimate: boolean;
+  has_unpriced_lines: boolean;
+  unpriced_line_count: number;
+  is_complete: boolean;
+  incomplete_reason: string | null;
+  target_count: number;
+  regenerated_phase_count: number;
+  copied_phase_count: number;
+  regenerated_extract_count: number;
+  copied_extract_count: number;
+  window_start: string;
+  window_end: string;
+  notes: string[];
+  zero_volume_history_notes: string[];
+  line_items: RegenerationEstimateLine[];
+}
+
+/** `regeneration.EstimateOut` — the whole read-only preview. */
+export interface RegenerationEstimateResponse {
+  target_count: number;
+  canary_size: number;
+  acknowledgement_required: boolean;
+  sources: RegenerationEligibleSource[];
+  ineligible: RegenerationIneligibleLineage[];
+  phase_plans: RegenerationPhasePlan[];
+  estimate: RegenerationEstimateTotals | null;
+  preflight: RegenerationPreflight;
+}
+
+/* ── cost, provenance, lesson ─────────────────────────────────────────── */
+
+/** `regeneration.ActualCostOut` — revision-job usage only. */
+export interface RegenerationActualCost {
+  usd: number;
+  call_count: number;
+  paid_call_count: number;
+  zero_cost_marker_count: number;
+  failed_call_count: number;
+  excluded_row_count: number;
+  revision_job_count: number;
+  prompt_tokens: number;
+  output_tokens: number;
+  cached_tokens: number;
+  cache_creation_tokens: number;
+  total_tokens: number;
+}
+
+/** `regeneration.ProvenanceOut` — counted from the real phase rows. */
+export interface RegenerationProvenance {
+  copied_phase_count: number;
+  regenerated_phase_count: number;
+  phase_row_count: number;
+}
+
+/** `regeneration.LessonOut`. */
+export interface RegenerationLesson {
+  book_id: string | null;
+  order_index: number | null;
+  section_number: string | null;
+  section_title: string | null;
+  chapter_title: string | null;
+}
+
+/* ── targets ──────────────────────────────────────────────────────────── */
+
+/** `regeneration.TargetReportOut`.
+ *
+ *  `reason` is always a full operator sentence — the API never asks the UI to
+ *  interpret a status code. `action_required` is narrower than the campaign's
+ *  `attention_required`: a publication the publisher will retry by itself
+ *  needs no human. */
+export interface RegenerationTargetReport {
+  id: string;
+  campaign_id: string;
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  is_canary: boolean;
+  status: RegenerationTargetStatus;
+  bucket: RegenerationBucket;
+  publication_state: RegenerationPublicationState;
+  is_terminal: boolean;
+  action_required: boolean;
+  reason: string;
+
+  source_job_id: string | null;
+  source_publication_version: number | null;
+  source_note: string | null;
+
+  revision_job_id: string | null;
+  revision_job_status: JobStatus | null;
+  revision_job_scheduled_at: string | null;
+  /** `/api/v1/jobs/{id}` — the existing job-detail route. */
+  content_path: string | null;
+  /** `/api/v1/jobs/{id}/download` — the existing download route. */
+  download_path: string | null;
+
+  publication_version: number | null;
+  notion_page_id: string | null;
+  notion_page_url: string | null;
+  publication_released_at: string | null;
+  publication_attempts: number;
+  publication_next_attempt_at: string | null;
+  publication_last_error: string | null;
+  /** The same value as `publication_last_error`, under the name a reader of an
+   *  ABANDONED row looks for: what broke, beside why we stopped. */
+  delivery_error: string | null;
+
+  terminal_at: string | null;
+  terminal_reason: string | null;
+  abandon_requested_at: string | null;
+  abandon_requested_reason: string | null;
+
+  lesson: RegenerationLesson;
+  phase_plan: RegenerationTargetPhasePlan | null;
+  /** Set when this build cannot read the stored plan; the rest of the report
+   *  still renders, because every other target still needs a decision. */
+  phase_plan_error: string | null;
+  judge_status_counts: Record<string, number>;
+  solver_status_counts: Record<string, number>;
+  copied_phase_count: number;
+  regenerated_phase_count: number;
+
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** `regeneration.CanaryOut` — where to read one canary before approving. */
+export interface RegenerationCanary {
+  target_id: string;
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  status: RegenerationTargetStatus;
+  revision_job_id: string | null;
+  revision_job_status: JobStatus | null;
+  content_path: string | null;
+  download_path: string | null;
+  copied_phase_count: number;
+  regenerated_phase_count: number;
+  judge_status_counts: Record<string, number>;
+  solver_status_counts: Record<string, number>;
+}
+
+/** `regeneration.ReleaseScheduleOut` — the ramp as it was PERSISTED. */
+export interface RegenerationReleaseSchedule {
+  job_count: number;
+  wave_count: number;
+  final_offset_seconds: number;
+  first_scheduled_at: string | null;
+  last_scheduled_at: string | null;
+  source: string;
+}
+
+/** `regeneration.WaveFailureOut` — one target a release could not give a job.
+ *  `current_status` is read back from the row, not taken from the message. */
+export interface RegenerationWaveFailure {
+  target_id: string;
+  source_job_id: string | null;
+  reason: string;
+  current_status: RegenerationTargetStatus | null;
+}
+
+/* ── campaigns ────────────────────────────────────────────────────────── */
+
+/** `regeneration.CampaignSummaryOut` — the list-row shape. */
+export interface RegenerationCampaignSummary {
+  id: string;
+  status: RegenerationCampaignStatus;
+  is_terminal: boolean;
+  attention_required: boolean;
+  target_count: number;
+  status_counts: Record<string, number>;
+  bucket_counts: Record<string, number>;
+  canary_size: number;
+  refresh_extraction: boolean;
+  exclusion_acknowledged: boolean;
+  requested_phases: string[];
+  excluded_phases: string[];
+  app_git_revision: string | null;
+  estimated_cost_low_usd: number | null;
+  estimated_cost_high_usd: number | null;
+  canary_launched_at: string | null;
+  approved_at: string | null;
+  rejected_at: string | null;
+  cancel_requested_at: string | null;
+  completed_at: string | null;
+  rejected_reason: string | null;
+  cancel_requested_reason: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+/** `regeneration.CampaignListOut`. */
+export interface RegenerationCampaignList {
+  campaigns: RegenerationCampaignSummary[];
+  count: number;
+  limit: number;
+  offset: number;
+}
+
+/** `regeneration.CampaignDetailOut` — the full report. */
+export interface RegenerationCampaignDetail extends RegenerationCampaignSummary {
+  selection_spec: Record<string, unknown>;
+  launch_contract: Record<string, unknown>;
+  /** The GLOBAL `settings.solver_enabled`, observed and reported — it is not a
+   *  frozen per-campaign option, because no such job column exists. */
+  solver_enabled_observed: boolean | null;
+  buckets: Record<string, string[]>;
+  targets: RegenerationTargetReport[];
+  canary: RegenerationCanary[];
+  actual_cost: RegenerationActualCost;
+  judge_status_counts: Record<string, number>;
+  solver_status_counts: Record<string, number>;
+  provenance: RegenerationProvenance;
+  release_schedule: RegenerationReleaseSchedule;
+  warnings: string[];
+  rollup_error: string | null;
+  released_failures: RegenerationWaveFailure[];
+}
+
+/** `regeneration.TargetActionOut` — the response to a per-target mutation.
+ *  The `previous_*` fields are captured BEFORE `retry_publication` clears the
+ *  error, so they are the only surviving record of what prompted the retry. */
+export interface RegenerationTargetActionResult {
+  target: RegenerationTargetReport;
+  campaign_id: string;
+  campaign_status: RegenerationCampaignStatus;
+  released_failures: RegenerationWaveFailure[];
+  previous_publication_error: string | null;
+  previous_publication_attempts: number | null;
+  previous_publication_next_attempt_at: string | null;
+}

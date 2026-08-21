@@ -1,324 +1,277 @@
 import { CampaignList } from "@/components/regeneration/campaign-list";
 import { CampaignReport } from "@/components/regeneration/campaign-report";
-import { type CanaryPacket, CanaryReview } from "@/components/regeneration/canary-review";
-import { RegenerationWizard } from "@/components/regeneration/regeneration-wizard";
+import { CanaryReview } from "@/components/regeneration/canary-review";
+import {
+  type RegenerationDraftState,
+  RegenerationWizard,
+  defaultRegenerationDraft,
+} from "@/components/regeneration/regeneration-wizard";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import {
-  type Campaign,
-  type PlanTarget,
-  TASK_10_HINT,
-  type TargetOutcome,
-  type WizardState,
-  defaultWizardState,
-} from "@/lib/regeneration-state";
+  REGENERATION_NO_SPEND_NOTE,
+  type RegenerationActionKind,
+  api,
+  regenerationErrorView,
+  regenerationListPollMs,
+  regenerationPollDecision,
+} from "@/lib/api";
+import type {
+  RegenerationCampaignDetail,
+  RegenerationCampaignDraft,
+  RegenerationPhasePlanRequest,
+  RegenerationTargetReport,
+} from "@/lib/types";
 import { CARD } from "@/lib/ui";
 import { cn } from "@/lib/utils";
 /**
- * Regeneration area (Task 4 shell) — a dedicated workspace, deliberately NOT
- * the Fleet batch launcher, reached only when `VITE_REGENERATION_ENABLED=1`.
+ * Regeneration area — a dedicated workspace, deliberately NOT the Fleet batch
+ * launcher, reached only when the bundle was built with
+ * `VITE_REGENERATION_ENABLED=1`. That flag is cosmetic: the backend's
+ * `REGENERATION_ENABLED` is the real gate and answers 404 for every route
+ * below when it is off, which is exactly what `regenerationErrorView` renders.
  *
- * EVERYTHING on this page is fixture data declared below. There is no query
- * client, no API import and no backend call: creating or estimating a campaign
- * here spends nothing and publishes nothing. Task 10 replaces these constants
- * with typed API responses; because they all live in this one file, that swap
- * touches one module and leaves the components untouched.
+ * Server state is authoritative here. This page holds one piece of local
+ * state — the DRAFT the operator is composing — and reads everything else from
+ * TanStack Query. Mutations never patch a campaign optimistically: each one
+ * returns the refreshed report, which is written straight into the cache.
  *
- * The phase closures below are the PLANNER's expansion of `PHASE_DEPS`, carried
- * as data. The UI never recomputes the dependency graph in TypeScript.
+ * Polling follows work, not screens: `regenerationPollDecision` refreshes a
+ * campaign only while generation, publication or the publisher's own bounded
+ * retries can move it, and stops dead on a terminal campaign, on the canary's
+ * human gate, and on a target parked waiting for an operator.
  */
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
-/* ── Fixtures (Task 10 replaces this whole block) ────────────────────── */
+const CAMPAIGNS_KEY = ["regeneration", "campaigns"] as const;
+const campaignKey = (id: string) => ["regeneration", "campaign", id] as const;
 
-/** The 11 content phases a job produces, in flow order. */
-const CONTENT_PHASES = [
-  "case-based-preview",
-  "flashcards",
-  "memory-check",
-  "practice-rlc",
-  "practice-error-detection",
-  "practice-memory-match",
-  "practice-tictactoe",
-  "practice-jigsaw",
-  "practice-sentence",
-  "boss-arena",
-  "reflection",
-];
+/** The phase-plan probe. `/phase-plan` refuses an empty selection outright, so
+ *  discovering "which phases does this subject even have" asks for the extract
+ *  refresh and reads ONLY `canonical_phases` off the answer. Still a pure
+ *  preview: no row, no job, no spend. */
+function catalogRequest(subject: string): RegenerationPhasePlanRequest {
+  return {
+    subject,
+    selected_phases: [],
+    excluded_affected_phases: [],
+    refresh_extraction: true,
+    exclusion_acknowledged: true,
+  };
+}
 
-/** Planner-supplied downstream closure per phase, inclusive of the phase. */
-const PHASE_CLOSURES: Record<string, string[]> = {
-  "case-based-preview": [
-    "case-based-preview",
-    "practice-rlc",
-    "practice-error-detection",
-    "practice-tictactoe",
-    "practice-jigsaw",
-    "practice-sentence",
-    "boss-arena",
-    "reflection",
-  ],
-  flashcards: [
-    "flashcards",
-    "memory-check",
-    "practice-rlc",
-    "practice-error-detection",
-    "practice-memory-match",
-    "practice-tictactoe",
-    "practice-jigsaw",
-    "practice-sentence",
-    "boss-arena",
-    "reflection",
-  ],
-  "memory-check": [
-    "memory-check",
-    "practice-error-detection",
-    "practice-memory-match",
-    "boss-arena",
-    "reflection",
-  ],
-  "practice-rlc": ["practice-rlc"],
-  "practice-error-detection": ["practice-error-detection"],
-  "practice-memory-match": ["practice-memory-match"],
-  "practice-tictactoe": ["practice-tictactoe"],
-  "practice-jigsaw": ["practice-jigsaw"],
-  "practice-sentence": ["practice-sentence"],
-  "boss-arena": ["boss-arena", "reflection"],
-  reflection: ["reflection"],
-};
+function planRequest(subject: string, draft: RegenerationDraftState): RegenerationPhasePlanRequest {
+  return {
+    subject,
+    selected_phases: draft.selectedPhases,
+    excluded_affected_phases: draft.excludedPhases,
+    refresh_extraction: draft.refreshExtraction,
+    exclusion_acknowledged: draft.acknowledged,
+  };
+}
 
-const FIXTURE_LESSONS: PlanTarget[] = [
-  {
-    lessonId: "l-1",
-    lessonTitle: "1-mavzu. Hujayra tuzilishi",
-    language: "uz",
-    sourceVersion: 1,
-    nextVersion: 2,
-  },
-  {
-    lessonId: "l-2",
-    lessonTitle: "2-mavzu. Fotosintez",
-    language: "uz",
-    sourceVersion: 1,
-    nextVersion: 2,
-  },
-  {
-    lessonId: "l-3",
-    lessonTitle: "3-mavzu. Nafas olish",
-    language: "uz",
-    sourceVersion: 2,
-    nextVersion: 3,
-  },
-  {
-    lessonId: "l-4",
-    lessonTitle: "Тема 1. Строение клетки",
-    language: "ru",
-    sourceVersion: 1,
-    nextVersion: 2,
-  },
-  {
-    lessonId: "l-5",
-    lessonTitle: "Тема 2. Фотосинтез",
-    language: "ru",
-    sourceVersion: 2,
-    nextVersion: 3,
-  },
-];
-
-const FIXTURE_CAMPAIGNS: Campaign[] = [
-  {
-    id: "c-uz-flashcards",
-    name: "Biology 8 · UZ · flashcard prompt refresh",
-    status: "awaiting_approval",
-    targets: FIXTURE_LESSONS.filter((l) => l.language === "uz"),
-    canarySize: 1,
-    createdAt: "2026-08-20T09:00:00Z",
-    estimate: { costLowUsd: 1.2, costHighUsd: 3.0, expectedModelCalls: 60 },
-  },
-  {
-    id: "c-ru-single",
-    name: "Biology 8 · RU · single-lesson fix",
-    status: "awaiting_approval",
-    targets: [FIXTURE_LESSONS[4]],
-    canarySize: 1,
-    createdAt: "2026-08-19T14:30:00Z",
-    estimate: { costLowUsd: 0.2, costHighUsd: 0.5, expectedModelCalls: 10 },
-  },
-  {
-    id: "c-uz-reflection",
-    name: "Biology 8 · UZ · reflection rewrite",
-    status: "completed",
-    targets: FIXTURE_LESSONS.filter((l) => l.language === "uz"),
-    canarySize: 2,
-    createdAt: "2026-08-14T08:15:00Z",
-    estimate: { costLowUsd: 0.24, costHighUsd: 0.6, expectedModelCalls: 12 },
-  },
-];
-
-const FIXTURE_CANARY: Record<string, CanaryPacket> = {
-  "c-uz-flashcards": {
-    lessonTitle: "1-mavzu. Hujayra tuzilishi",
-    language: "uz",
-    sourceVersion: 1,
-    nextVersion: 2,
-    latencySeconds: 214,
-    estimatedCostUsd: 0.35,
-    actualCostUsd: 0.42,
-    phases: [
-      {
-        provenance: { phase: "case-based-preview", origin: "copied", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Hujayra — tirik organizmning eng kichik tuzilmaviy birligi…",
-      },
-      {
-        provenance: { phase: "flashcards", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "24 ta kartochka: sitoplazma, yadro, mitoxondriya, ribosoma…",
-      },
-      {
-        provenance: { phase: "memory-check", origin: "regenerated", sourceVersion: 1 },
-        judge: "major_shipped",
-        warnings: ["lint:coverage_thin"],
-        excerpt: "10 ta savol, har biri kartochkalardagi atamaga bog'langan…",
-      },
-      {
-        provenance: { phase: "practice-rlc", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Real hayotdan uchta vaziyat: shifokor, dehqon, oshpaz…",
-      },
-      {
-        provenance: {
-          phase: "practice-error-detection",
-          origin: "regenerated",
-          sourceVersion: 1,
-        },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Beshta xatoli jumla — har birida bitta atama noto'g'ri ishlatilgan…",
-      },
-      {
-        provenance: { phase: "practice-memory-match", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "12 juft karta: organoid ↔ vazifasi…",
-      },
-      {
-        provenance: { phase: "practice-tictactoe", origin: "regenerated", sourceVersion: 1 },
-        judge: "major_regen_failed",
-        warnings: ["judge: two cells repeat the same question"],
-        excerpt: "3×3 katak, har katakda bitta savol…",
-      },
-      {
-        provenance: { phase: "practice-jigsaw", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Hujayra bo'linishi bosqichlarini to'g'ri tartibda joylashtiring…",
-      },
-      {
-        provenance: { phase: "practice-sentence", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Berilgan so'zlardan to'liq jumla tuzing…",
-      },
-      {
-        provenance: { phase: "boss-arena", origin: "regenerated", sourceVersion: 1 },
-        judge: "unavailable",
-        warnings: ["judge transport error"],
-        excerpt: "Boss jangi: 5 bosqich, har birida HP va vaqt chegarasi…",
-      },
-      {
-        provenance: { phase: "reflection", origin: "regenerated", sourceVersion: 1 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Bugun nimani o'rgandingiz? Uchta jumlada yozing…",
-      },
-    ],
-  },
-  "c-ru-single": {
-    lessonTitle: "Тема 2. Фотосинтез",
-    language: "ru",
-    sourceVersion: 2,
-    nextVersion: 3,
-    latencySeconds: 96,
-    estimatedCostUsd: 0.18,
-    actualCostUsd: 0.18,
-    phases: [
-      {
-        provenance: { phase: "boss-arena", origin: "copied", sourceVersion: 2 },
-        judge: "pass",
-        warnings: [],
-        excerpt: "Битва с боссом: пять этапов по теме фотосинтеза…",
-      },
-      {
-        provenance: { phase: "reflection", origin: "regenerated", sourceVersion: 2 },
-        judge: "refused",
-        warnings: ["judge declined: safety filter"],
-        excerpt: "Что нового вы узнали о световой фазе? Ответьте тремя предложениями…",
-      },
-    ],
-  },
-};
-
-const FIXTURE_OUTCOMES: Record<string, TargetOutcome[]> = {
-  "c-uz-reflection": [
-    {
-      lessonId: "l-1",
-      lessonTitle: "1-mavzu. Hujayra tuzilishi",
-      language: "uz",
-      status: "published",
-      publishedVersion: 2,
-      reasonCode: null,
+function campaignDraft(
+  draft: RegenerationDraftState,
+  estimateLow: number | null,
+  estimateHigh: number | null,
+): RegenerationCampaignDraft {
+  return {
+    selection: {
+      book_ids: [],
+      toc_entry_ids: draft.selectedTocEntryIds,
+      output_languages: [draft.language],
     },
-    {
-      lessonId: "l-2",
-      lessonTitle: "2-mavzu. Fotosintez",
-      language: "uz",
-      status: "publication_pending",
-      publishedVersion: null,
-      reasonCode: "publication_queued",
+    contract: {
+      provider: draft.provider,
+      model: draft.model,
+      // Regeneration is api-only server-side; sending anything else is a
+      // guaranteed `non_api_transport` refusal, so it is pinned here.
+      transport: "api",
+      extract_transport: "inherit",
+      extract_provider: null,
+      extract_model: null,
+      judge_transport: "inherit",
+      judge_provider: null,
+      judge_model: null,
+      solver_transport: "inherit",
+      solver_provider: null,
+      solver_model: null,
+      session_limit_strategy: "inherit",
     },
-    {
-      lessonId: "l-3",
-      lessonTitle: "3-mavzu. Nafas olish",
-      language: "uz",
-      status: "publication_failed",
-      publishedVersion: null,
-      reasonCode: "notion_parent_missing",
-    },
-    {
-      lessonId: "l-4",
-      lessonTitle: "Тема 1. Строение клетки",
-      language: "ru",
-      status: "generation_failed",
-      publishedVersion: null,
-      reasonCode: "provider_quota_exhausted",
-    },
-    {
-      lessonId: "l-5",
-      lessonTitle: "Тема 2. Фотосинтез",
-      language: "ru",
-      status: "abandoned",
-      publishedVersion: null,
-      reasonCode: "operator_abandoned",
-    },
-  ],
-};
-
-/* ── Page ────────────────────────────────────────────────────────────── */
+    selected_phases: draft.selectedPhases,
+    excluded_affected_phases: draft.excludedPhases,
+    refresh_extraction: draft.refreshExtraction,
+    exclusion_acknowledged: draft.acknowledged,
+    canary_size: draft.canarySize,
+    // Echoed back so the frozen campaign records the figure that was SHOWN,
+    // not one recomputed at insert time.
+    estimated_cost_low_usd: estimateLow,
+    estimated_cost_high_usd: estimateHigh,
+    app_git_revision: null,
+    actor: "",
+    notes: {},
+  };
+}
 
 export function RegenerationPage() {
-  const [wizard, setWizard] = useState<WizardState>(defaultWizardState);
-  const [selectedId, setSelectedId] = useState<string>(FIXTURE_CAMPAIGNS[0].id);
+  const qc = useQueryClient();
+  const [draft, setDraft] = useState<RegenerationDraftState>(defaultRegenerationDraft);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingByTarget, setPendingByTarget] = useState<
+    Record<string, RegenerationActionKind | null>
+  >({});
 
-  const selected = FIXTURE_CAMPAIGNS.find((c) => c.id === selectedId) ?? null;
-  const packet = selected ? (FIXTURE_CANARY[selected.id] ?? null) : null;
-  const outcomes = selected ? (FIXTURE_OUTCOMES[selected.id] ?? []) : [];
+  const eligible = useQuery({
+    queryKey: ["regeneration", "eligible"],
+    queryFn: () => api.listRegenerationEligible(),
+  });
 
-  const inert = () => toast(TASK_10_HINT);
+  const campaigns = useQuery({
+    queryKey: CAMPAIGNS_KEY,
+    queryFn: () => api.listRegenerationCampaigns(),
+    refetchInterval: (query) => regenerationListPollMs(query.state.data?.campaigns),
+  });
+
+  const detail = useQuery({
+    queryKey: campaignKey(selectedId ?? ""),
+    queryFn: () => api.getRegenerationCampaign(selectedId ?? ""),
+    enabled: selectedId !== null,
+    refetchInterval: (query) => regenerationPollDecision(query.state.data).intervalMs,
+  });
+
+  const manifest = useQuery({ queryKey: ["agent-models"], queryFn: api.getAgentModels });
+
+  const sources = eligible.data?.sources ?? [];
+  /** The plan is per SUBJECT. A campaign may legitimately span subjects; the
+   *  wizard previews the first one and the estimate returns a plan per subject. */
+  const subject = useMemo(() => {
+    const chosen = sources.find(
+      (s) =>
+        s.output_language === draft.language && draft.selectedTocEntryIds.includes(s.toc_entry_id),
+    );
+    return chosen?.subject ?? sources.find((s) => s.output_language === draft.language)?.subject;
+  }, [sources, draft.language, draft.selectedTocEntryIds]);
+
+  const catalog = useQuery({
+    queryKey: ["regeneration", "phase-catalog", subject],
+    queryFn: () => api.previewRegenerationPhasePlan(catalogRequest(subject ?? "")),
+    enabled: Boolean(subject),
+  });
+
+  const hasPhaseSelection = draft.selectedPhases.length > 0 || draft.refreshExtraction;
+  const plan = useQuery({
+    queryKey: ["regeneration", "phase-plan", subject, planRequest(subject ?? "", draft)],
+    queryFn: () => api.previewRegenerationPhasePlan(planRequest(subject ?? "", draft)),
+    enabled: Boolean(subject) && hasPhaseSelection,
+  });
+
+  const canEstimate =
+    draft.selectedTocEntryIds.length > 0 && hasPhaseSelection && draft.model !== null;
+  const estimateBody = campaignDraft(draft, null, null);
+  const estimate = useQuery({
+    queryKey: ["regeneration", "estimate", estimateBody],
+    queryFn: () => api.estimateRegeneration(estimateBody),
+    enabled: canEstimate,
+  });
+
+  /** Write the refreshed report the mutation returned straight into the cache,
+   *  then invalidate so the next read still comes from the server. The API is
+   *  the authority for campaign state; nothing here guesses it. */
+  const adopt = (fresh: RegenerationCampaignDetail) => {
+    qc.setQueryData(campaignKey(fresh.id), fresh);
+    qc.invalidateQueries({ queryKey: CAMPAIGNS_KEY });
+    qc.invalidateQueries({ queryKey: campaignKey(fresh.id) });
+  };
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      api.createRegenerationCampaign(
+        campaignDraft(
+          draft,
+          estimate.data?.estimate?.low_usd ?? null,
+          estimate.data?.estimate?.high_usd ?? null,
+        ),
+      ),
+    onSuccess: (fresh) => {
+      adopt(fresh);
+      setSelectedId(fresh.id);
+      toast.success("Campaign frozen. Nothing has been spent or published yet.");
+    },
+  });
+
+  const canaryMut = useMutation({
+    mutationFn: (campaignId: string) => api.launchRegenerationCanary(campaignId),
+    onSuccess: (fresh) => {
+      adopt(fresh);
+      toast.success("Canary started. It will wait here for your review.");
+    },
+  });
+
+  const approveMut = useMutation({
+    mutationFn: (campaignId: string) => api.approveRegenerationCampaign(campaignId, { actor: "" }),
+    onSuccess: (fresh) => {
+      adopt(fresh);
+      toast.success("Approved. Remaining lessons release and successful versions publish.");
+    },
+  });
+
+  const rejectMut = useMutation({
+    mutationFn: (vars: { campaignId: string; reason: string }) =>
+      api.rejectRegenerationCampaign(vars.campaignId, { actor: "", reason: vars.reason }),
+    onSuccess: (fresh) => {
+      adopt(fresh);
+      toast.success("Rejected. No Notion page was created and no version was consumed.");
+    },
+  });
+
+  const cancelMut = useMutation({
+    mutationFn: (vars: { campaignId: string; reason: string }) =>
+      api.cancelRegenerationCampaign(vars.campaignId, { actor: "", reason: vars.reason }),
+    onSuccess: (fresh) => {
+      adopt(fresh);
+      toast.success("Cancelled. Pages that already published stay published.");
+    },
+  });
+
+  const targetMut = useMutation({
+    mutationFn: (vars: {
+      kind: RegenerationActionKind;
+      target: RegenerationTargetReport;
+      reason: string;
+    }) => {
+      if (vars.kind === "retry-generation") {
+        return api.retryRegenerationGeneration(vars.target.id);
+      }
+      if (vars.kind === "retry-publication") {
+        return api.retryRegenerationPublication(vars.target.id);
+      }
+      return api.abandonRegenerationTarget(vars.target.id, {
+        actor: "",
+        reason: vars.reason,
+      });
+    },
+    onMutate: (vars) => {
+      setPendingByTarget((prev) => ({ ...prev, [vars.target.id]: vars.kind }));
+    },
+    onSuccess: (result) => {
+      qc.invalidateQueries({ queryKey: campaignKey(result.campaign_id) });
+      qc.invalidateQueries({ queryKey: CAMPAIGNS_KEY });
+      toast.success(result.target.reason);
+    },
+    onSettled: (_result, _error, vars) => {
+      setPendingByTarget((prev) => ({ ...prev, [vars.target.id]: null }));
+    },
+  });
+
+  const selected = detail.data ?? null;
+  const poll = regenerationPollDecision(selected);
+
+  const view = (error: unknown) => (error ? regenerationErrorView(error) : null);
+  const campaignActionError = view(
+    canaryMut.error ?? approveMut.error ?? rejectMut.error ?? detail.error,
+  );
 
   return (
     <div className="relative">
@@ -334,49 +287,77 @@ export function RegenerationPage() {
               Regeneration
             </h1>
             <p className="mt-2 max-w-[62ch] text-sm leading-6 text-white/55">
-              Rebuild phases of homework that is already published, review a canary packet, and
-              release a new version. This workspace is separate from the Fleet launcher on purpose —
-              nothing here starts a first-run batch.
+              Rebuild phases of homework that is already published, review a canary, and release a
+              new version beside the original. This workspace is separate from the Fleet launcher on
+              purpose — nothing here starts a first-run batch, and nothing here replaces a page that
+              already exists.
             </p>
           </div>
         </header>
 
         <div className={cn(CARD, "text-xs leading-5 text-white/45")}>
-          Shell preview: every campaign, lesson and packet below is fixture data. Buttons that would
-          change state are inert — {TASK_10_HINT}
+          {REGENERATION_NO_SPEND_NOTE}
         </div>
 
         <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
           <div className="space-y-4">
             <h2 className="text-sm font-semibold text-white/70">New campaign</h2>
             <RegenerationWizard
-              lessons={FIXTURE_LESSONS}
-              allPhases={CONTENT_PHASES}
-              phaseClosures={PHASE_CLOSURES}
-              state={wizard}
-              onChange={setWizard}
-              onLaunch={inert}
+              sources={sources}
+              ineligible={eligible.data?.ineligible ?? []}
+              sourcesLoading={eligible.isLoading}
+              phaseCatalog={catalog.data?.canonical_phases ?? []}
+              plan={plan.data ?? null}
+              planError={view(plan.error ?? catalog.error ?? eligible.error)}
+              estimate={estimate.data ?? null}
+              estimateLoading={estimate.isFetching}
+              estimateError={view(estimate.error)}
+              manifest={manifest.data}
+              state={draft}
+              onChange={setDraft}
+              onCreate={() => createMut.mutate()}
+              creating={createMut.isPending}
+              createError={view(createMut.error)}
             />
           </div>
 
           <div className="space-y-4">
             <CampaignList
-              campaigns={FIXTURE_CAMPAIGNS}
+              campaigns={campaigns.data?.campaigns ?? []}
               selectedId={selectedId}
               onSelect={setSelectedId}
+              isLoading={campaigns.isLoading}
             />
-            {selected && packet && (
-              <CanaryReview
-                campaign={selected}
-                packet={packet}
-                onApprove={inert}
-                onReject={inert}
-              />
+
+            {selected && (
+              <>
+                <p className="px-1 text-[0.68rem] leading-5 text-white/35">{poll.reason}</p>
+                <CanaryReview
+                  detail={selected}
+                  onLaunchCanary={() => canaryMut.mutate(selected.id)}
+                  onApprove={() => approveMut.mutate(selected.id)}
+                  onReject={(reason) => rejectMut.mutate({ campaignId: selected.id, reason })}
+                  launching={canaryMut.isPending}
+                  approving={approveMut.isPending}
+                  rejecting={rejectMut.isPending}
+                  actionError={campaignActionError}
+                />
+                <CampaignReport
+                  detail={selected}
+                  pendingByTarget={pendingByTarget}
+                  onAction={(kind, target, reason) => targetMut.mutate({ kind, target, reason })}
+                  onCancelCampaign={(reason) =>
+                    cancelMut.mutate({ campaignId: selected.id, reason })
+                  }
+                  cancelling={cancelMut.isPending}
+                  actionError={view(targetMut.error ?? cancelMut.error)}
+                />
+              </>
             )}
-            {selected && outcomes.length > 0 && <CampaignReport outcomes={outcomes} />}
-            {selected && !packet && outcomes.length === 0 && (
+
+            {!selected && (
               <p className={cn(CARD, "text-xs text-white/40")}>
-                This campaign has no canary packet and no outcomes yet.
+                Pick a campaign to read its canary and its report, or freeze a new one on the left.
               </p>
             )}
           </div>

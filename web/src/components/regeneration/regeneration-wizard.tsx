@@ -1,40 +1,75 @@
 import {
-  ESTIMATE_SAFETY_NOTE,
-  type PhaseSelection,
-  type PlanTarget,
-  type RegenerationLanguage,
-  type WizardState,
-  cascadeDisclosure,
-  estimateSummary,
+  REGENERATION_CREATE_LABEL,
+  REGENERATION_NO_SPEND_NOTE,
+  type RegenerationErrorView,
+  cascadeFromPlan,
+  phaseSelectionFromPlan,
+} from "@/lib/api";
+import {
   exclusionWarning,
-  extractionNotice,
-  includedPhases,
+  formatUsd,
   launchGate,
   lessonCountLabel,
 } from "@/lib/regeneration-state";
+import type {
+  ProviderModelManifest,
+  RegenerationEligibleSource,
+  RegenerationEstimateResponse,
+  RegenerationIneligibleLineage,
+  RegenerationOutputLanguage,
+  RegenerationPhasePlan,
+} from "@/lib/types";
 import { CARD, FRAME_OFF, FRAME_ON, PRESSABLE, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName } from "@/lib/utils";
 /**
- * Campaign wizard (Task 4 shell). Fixture-driven: lessons, phase list and the
- * planner's downstream closures all arrive as props, and nothing here talks to
- * the API — creating or estimating a campaign spends nothing and publishes
- * nothing. Every operator-facing rule (cascade text, exclusion warning, launch
- * gate, estimate arithmetic) comes from `@/lib/regeneration-state` so the test
- * suite can see it.
+ * Campaign wizard, over the real Task 9 API.
+ *
+ * Nothing on this screen spends money or writes to Notion: `/phase-plan` and
+ * `/estimate` are read-only previews and `POST /campaigns` only freezes a row.
+ * The canary launch — the first paid step — lives on the campaign panel, not
+ * here, so the create button can never be mistaken for it.
+ *
+ * The dependency closure is the SERVER's. This component never walks
+ * `PHASE_DEPS` in TypeScript: it renders `canonical_phases`,
+ * `auto_included_phases`, `regenerated_phases` and `broken_dependency_edges`
+ * exactly as the planner returned them, and the cascade headline is derived
+ * from that same payload by `cascadeFromPlan`.
  */
-import { CircleDollarSign, Layers, ListChecks, Rocket, TriangleAlert } from "lucide-react";
+import { CircleAlert, CircleDollarSign, Layers, ListChecks, TriangleAlert } from "lucide-react";
 
-/** Indicative per-call band; Task 10 replaces it with the planner's number. */
-const COST_PER_CALL_LOW_USD = 0.02;
-const COST_PER_CALL_HIGH_USD = 0.05;
-
-const LANGUAGES: { id: RegenerationLanguage; label: string }[] = [
+const LANGUAGES: { id: RegenerationOutputLanguage; label: string }[] = [
   { id: "uz", label: "Uzbek" },
   { id: "ru", label: "Russian" },
+  { id: "en", label: "English" },
 ];
 
-function unique(values: string[]): string[] {
-  return [...new Set(values)];
+export interface RegenerationDraftState {
+  language: RegenerationOutputLanguage;
+  selectedTocEntryIds: string[];
+  selectedPhases: string[];
+  excludedPhases: string[];
+  refreshExtraction: boolean;
+  acknowledged: boolean;
+  canarySize: number;
+  provider: string;
+  /** Never defaulted for the operator: the server refuses a campaign with no
+   *  content model precisely so nobody freezes a whole campaign onto whatever
+   *  happens to be first in the manifest. */
+  model: string | null;
+}
+
+export function defaultRegenerationDraft(): RegenerationDraftState {
+  return {
+    language: "uz",
+    selectedTocEntryIds: [],
+    selectedPhases: [],
+    excludedPhases: [],
+    refreshExtraction: false,
+    acknowledged: false,
+    canarySize: 1,
+    provider: "gemini",
+    model: null,
+  };
 }
 
 function Step({
@@ -100,101 +135,192 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function Problem({ view }: { view: RegenerationErrorView }) {
+  return (
+    <div className="space-y-1 rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
+      <div className="flex items-start gap-2 font-semibold">
+        <CircleAlert className="mt-0.5 size-4 shrink-0" />
+        <span>{view.title}</span>
+      </div>
+      <p className="max-w-[75ch]">{view.message}</p>
+      {view.details.length > 0 && (
+        <ul className="space-y-0.5 pl-5 [list-style:disc]">
+          {view.details.map((line) => (
+            <li key={line}>{line}</li>
+          ))}
+        </ul>
+      )}
+      {view.hint && <p className="max-w-[75ch] text-rose-100/70">{view.hint}</p>}
+    </div>
+  );
+}
+
 export function RegenerationWizard({
-  lessons,
-  allPhases,
-  phaseClosures,
+  sources,
+  ineligible,
+  sourcesLoading,
+  phaseCatalog,
+  plan,
+  planError,
+  estimate,
+  estimateLoading,
+  estimateError,
+  manifest,
   state,
   onChange,
-  onLaunch,
+  onCreate,
+  creating,
+  createError,
 }: {
-  lessons: PlanTarget[];
-  allPhases: string[];
-  /** Planner-supplied downstream closure per phase (inclusive of the phase). */
-  phaseClosures: Record<string, string[]>;
-  state: WizardState;
-  onChange: (next: WizardState) => void;
-  onLaunch: () => void;
+  sources: RegenerationEligibleSource[];
+  ineligible: RegenerationIneligibleLineage[];
+  sourcesLoading: boolean;
+  /** `canonical_phases` for the primary subject, so the operator has something
+   *  to tick before any phase is selected. `/phase-plan` refuses an empty
+   *  selection outright, so this arrives from its own probe query. */
+  phaseCatalog: string[];
+  /** `POST /phase-plan` for the primary subject in the selection. */
+  plan: RegenerationPhasePlan | null;
+  planError: RegenerationErrorView | null;
+  /** `POST /estimate` — the authority for cost, preflight and per-subject plans. */
+  estimate: RegenerationEstimateResponse | null;
+  estimateLoading: boolean;
+  estimateError: RegenerationErrorView | null;
+  manifest: ProviderModelManifest | undefined;
+  state: RegenerationDraftState;
+  onChange: (next: RegenerationDraftState) => void;
+  onCreate: () => void;
+  creating: boolean;
+  createError: RegenerationErrorView | null;
 }) {
-  const patch = (over: Partial<WizardState>) => onChange({ ...state, ...over });
-
-  const visibleLessons = lessons.filter((l) => l.language === state.language);
-  const targets = visibleLessons.filter((l) => state.selectedLessonIds.includes(l.lessonId));
-
-  const selection: PhaseSelection = {
-    allPhases,
-    selected: state.selectedPhases,
-    autoIncluded: unique(state.selectedPhases.flatMap((p) => phaseClosures[p] ?? [p])),
-    excluded: state.excludedPhases,
-    extractionEnabled: state.extractionEnabled,
-  };
-
-  const cascade = cascadeDisclosure(selection);
-  const included = includedPhases(selection);
-  const addedByGraph = included.filter((p) => !state.selectedPhases.includes(p));
-  const warning = exclusionWarning(selection);
-  const notice = extractionNotice(selection);
-  // targetCount is part of the gate: step 1 is lesson selection.
-  const gate = launchGate(selection, state.acknowledgedInconsistency, targets.length);
-  const canarySize = Math.max(1, Math.min(state.canarySize, Math.max(1, targets.length)));
-  const estimate = estimateSummary({
-    targets,
-    phases: selection,
-    canarySize,
-    costPerCallLowUsd: COST_PER_CALL_LOW_USD,
-    costPerCallHighUsd: COST_PER_CALL_HIGH_USD,
-  });
-
+  const patch = (over: Partial<RegenerationDraftState>) => onChange({ ...state, ...over });
   const toggle = (list: string[], value: string): string[] =>
     list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
+
+  const visible = sources.filter((s) => s.output_language === state.language);
+  const chosen = visible.filter((s) => state.selectedTocEntryIds.includes(s.toc_entry_id));
+  const targetCount = chosen.length;
+
+  const selection = plan ? phaseSelectionFromPlan(plan) : null;
+  const cascade = plan ? cascadeFromPlan(plan) : null;
+  const warning = selection ? exclusionWarning(selection) : null;
+  const localGate = selection
+    ? launchGate(selection, state.acknowledged, targetCount)
+    : { canLaunch: false, requiresAcknowledgement: false, blockedReason: null };
+
+  // The server decides whether an exclusion really breaks an edge — it depends
+  // on the subject's flow — so its answer wins over the local warning.
+  const needsAcknowledgement =
+    estimate?.acknowledgement_required ?? plan?.acknowledgement_required ?? false;
+
+  const totals = estimate?.estimate ?? null;
+  const preflight = estimate?.preflight ?? null;
+  // A static-envelope line is missing VOLUME evidence, which is a different
+  // (and independently reported) gap from a line missing a RATE.
+  const staticLines = (totals?.line_items ?? []).filter((l) => l.is_static_envelope).length;
+
+  const apiProviders = Object.keys(manifest?.providers ?? {})
+    .filter((p) => manifest?.api_supported?.[p])
+    .sort();
+  const models = manifest?.providers?.[state.provider] ?? [];
+
+  const blockedReason: string | null =
+    targetCount === 0
+      ? "Select at least one lesson to regenerate."
+      : !plan
+        ? "Pick at least one phase, or turn on the extract refresh."
+        : !localGate.canLaunch
+          ? localGate.blockedReason
+          : needsAcknowledgement && !state.acknowledged
+            ? "Acknowledge the consistency warning before creating this campaign."
+            : !state.model
+              ? "Pick the model this campaign will be frozen to."
+              : null;
+
+  const canarySize = Math.max(1, Math.min(state.canarySize, Math.max(1, targetCount)));
 
   return (
     <div className="space-y-4">
       <Step
         index={1}
-        title="Pick completed lessons and a language"
-        hint="Only lessons with a published version can be regenerated. A campaign covers one language."
+        title="Pick completed lessons and an output language"
+        hint="Only a finished homework job with a complete snapshot can be a source. Uzbek, Russian and English are independent lineages with their own version sequences."
       >
         <div className="flex flex-wrap gap-1">
           {LANGUAGES.map((l) => (
             <Chip
               key={l.id}
               active={state.language === l.id}
-              onClick={() => patch({ language: l.id, selectedLessonIds: [] })}
+              onClick={() => patch({ language: l.id, selectedTocEntryIds: [] })}
             >
               {l.label}
             </Chip>
           ))}
         </div>
+        {sourcesLoading && <p className="text-xs text-white/40">Loading eligible lessons…</p>}
+        {!sourcesLoading && visible.length === 0 && (
+          <p className="text-xs text-white/40">
+            No lesson in this language has a complete published homework job to regenerate from.
+          </p>
+        )}
         <ul className="space-y-1">
-          {visibleLessons.map((lesson) => (
-            <li key={lesson.lessonId}>
+          {visible.map((source) => (
+            <li key={`${source.toc_entry_id}:${source.output_language}`}>
               <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2 text-sm text-white/75 transition-colors hover:bg-white/[0.05]">
                 <input
                   type="checkbox"
                   className="size-4 accent-[#7c5cff]"
-                  checked={state.selectedLessonIds.includes(lesson.lessonId)}
+                  checked={state.selectedTocEntryIds.includes(source.toc_entry_id)}
                   onChange={() =>
-                    patch({ selectedLessonIds: toggle(state.selectedLessonIds, lesson.lessonId) })
+                    patch({
+                      selectedTocEntryIds: toggle(state.selectedTocEntryIds, source.toc_entry_id),
+                    })
                   }
                 />
-                <span className="min-w-0 flex-1 truncate">{lesson.lessonTitle}</span>
+                <span className="min-w-0 flex-1 truncate">
+                  {source.section_number ? `${source.section_number}. ` : ""}
+                  {source.section_title}
+                </span>
+                {!source.has_notion_lesson_page && (
+                  <span
+                    className="font-mono text-[0.6rem] text-amber-200/80"
+                    title="No Lesson Topic page is known yet; the canary preflight will try to resolve one."
+                  >
+                    no page yet
+                  </span>
+                )}
                 <span className="font-mono text-[0.65rem] text-white/40">
-                  V{lesson.sourceVersion} → V{lesson.nextVersion}
+                  V{source.source_publication_version} → V{source.next_expected_version}
                 </span>
               </label>
             </li>
           ))}
         </ul>
+        {ineligible.length > 0 && (
+          <details className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+            <summary className="cursor-pointer text-xs text-white/50">
+              {ineligible.length} selected {ineligible.length === 1 ? "lineage" : "lineages"} cannot
+              be regenerated
+            </summary>
+            <ul className="mt-1 space-y-0.5 text-xs leading-5 text-white/45">
+              {ineligible.map((row) => (
+                <li key={`${row.toc_entry_id}:${row.output_language}`}>
+                  {row.toc_entry_id} ({row.output_language}) — {row.reasons.join("; ")}
+                  {row.detail ? ` — ${row.detail}` : ""}
+                </li>
+              ))}
+            </ul>
+          </details>
+        )}
       </Step>
 
       <Step
         index={2}
         title="Pick the phases to rebuild"
-        hint="Ticking a phase also rebuilds everything downstream of it — step 3 shows the real expansion."
+        hint="Ticking a phase also rebuilds everything downstream of it. Step 3 shows the real expansion the planner returned."
       >
         <div className="flex flex-wrap gap-1">
-          {allPhases.map((phase) => (
+          {phaseCatalog.map((phase) => (
             <Chip
               key={phase}
               active={state.selectedPhases.includes(phase)}
@@ -202,50 +328,65 @@ export function RegenerationWizard({
                 patch({
                   selectedPhases: toggle(state.selectedPhases, phase),
                   excludedPhases: [],
-                  acknowledgedInconsistency: false,
+                  acknowledged: false,
                 })
               }
             >
               {formatPhaseName(phase)}
             </Chip>
           ))}
+          {phaseCatalog.length === 0 && (
+            <span className="text-xs text-white/40">
+              Pick a lesson first — the phase list comes from that subject's flow.
+            </span>
+          )}
         </div>
+        {planError && <Problem view={planError} />}
       </Step>
 
       <Step index={3} title="Review what the dependency graph pulls in">
-        <div className="flex items-center gap-2 text-sm font-semibold text-white">
-          <Layers className="size-4 text-white/50" />
-          {cascade.headline}
-        </div>
-        <p
-          className={cn(
-            "max-w-[75ch] text-xs leading-5",
-            cascade.scope === "near_full" ? "text-amber-200/85" : "text-white/50",
-          )}
-        >
-          {cascade.detail}
-        </p>
-        <div className="flex flex-wrap gap-1">
-          {included.map((phase) => (
-            <span
-              key={phase}
+        {cascade ? (
+          <>
+            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+              <Layers className="size-4 text-white/50" />
+              {cascade.headline}
+            </div>
+            <p
               className={cn(
-                "rounded-lg border px-2 py-1 text-[0.7rem]",
-                state.excludedPhases.includes(phase)
-                  ? "border-white/[0.08] text-white/30 line-through"
-                  : state.selectedPhases.includes(phase)
-                    ? "border-white/20 bg-white/[0.1] text-white"
-                    : "border-white/[0.1] bg-white/[0.03] text-white/60",
+                "max-w-[75ch] text-xs leading-5",
+                cascade.scope === "near_full" ? "text-amber-200/85" : "text-white/50",
               )}
             >
-              {formatPhaseName(phase)}
-              {state.selectedPhases.includes(phase) ? "" : " · added"}
-            </span>
-          ))}
-          {included.length === 0 && (
-            <span className="text-xs text-white/40">Nothing selected yet.</span>
-          )}
-        </div>
+              {cascade.detail}
+            </p>
+            <div className="flex flex-wrap gap-1">
+              {plan?.canonical_phases.map((phase) => {
+                const rebuilt = plan.regenerated_phases.includes(phase);
+                const dropped = plan.excluded_affected_phases.includes(phase);
+                const added = plan.auto_included_phases.includes(phase);
+                return (
+                  <span
+                    key={phase}
+                    className={cn(
+                      "rounded-lg border px-2 py-1 text-[0.7rem]",
+                      dropped
+                        ? "border-white/[0.08] text-white/30 line-through"
+                        : rebuilt
+                          ? "border-white/20 bg-white/[0.1] text-white"
+                          : "border-white/[0.1] bg-white/[0.03] text-white/45",
+                    )}
+                  >
+                    {formatPhaseName(phase)}
+                    {added && !dropped ? " · added" : ""}
+                    {!rebuilt && !dropped ? " · copied" : ""}
+                  </span>
+                );
+              })}
+            </div>
+          </>
+        ) : (
+          <p className="text-xs text-white/40">Nothing selected yet.</p>
+        )}
       </Step>
 
       <Step
@@ -254,14 +395,14 @@ export function RegenerationWizard({
         hint="Dropping a downstream phase leaves its current text beside rebuilt upstream phases."
       >
         <div className="flex flex-wrap gap-1">
-          {addedByGraph.map((phase) => (
+          {(plan?.auto_included_phases ?? []).map((phase) => (
             <Chip
               key={phase}
               active={state.excludedPhases.includes(phase)}
               onClick={() =>
                 patch({
                   excludedPhases: toggle(state.excludedPhases, phase),
-                  acknowledgedInconsistency: false,
+                  acknowledged: false,
                 })
               }
             >
@@ -269,28 +410,39 @@ export function RegenerationWizard({
               {formatPhaseName(phase)}
             </Chip>
           ))}
-          {addedByGraph.length === 0 && (
+          {(plan?.auto_included_phases ?? []).length === 0 && (
             <span className="text-xs text-white/40">
-              No auto-included phases to drop for this selection.
+              No auto-included phase to drop for this selection.
             </span>
           )}
         </div>
-        {warning && (
+        {(plan?.broken_dependency_edges.length ?? 0) > 0 && (
+          <ul className="space-y-0.5 font-mono text-[0.66rem] text-amber-100/70">
+            {plan?.broken_dependency_edges.map((edge) => (
+              <li key={`${edge.upstream}->${edge.downstream}`}>
+                {formatPhaseName(edge.downstream)} still reads the old{" "}
+                {formatPhaseName(edge.upstream)}
+              </li>
+            ))}
+          </ul>
+        )}
+        {(warning || needsAcknowledgement) && (
           <div className="space-y-2 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3">
             <div className="flex items-start gap-2 text-xs leading-5 text-amber-100/90">
               <TriangleAlert className="mt-0.5 size-4 shrink-0" />
-              <span className="max-w-[72ch]">{warning.message}</span>
+              <span className="max-w-[72ch]">
+                {warning?.message ?? plan?.acknowledgement_message}
+              </span>
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-xs text-amber-100/90">
               <input
                 type="checkbox"
                 className="size-4 accent-[#f5b544]"
-                checked={state.acknowledgedInconsistency}
-                onChange={() =>
-                  patch({ acknowledgedInconsistency: !state.acknowledgedInconsistency })
-                }
+                checked={state.acknowledged}
+                onChange={() => patch({ acknowledged: !state.acknowledged })}
               />
-              {warning.acknowledgementLabel}
+              {warning?.acknowledgementLabel ??
+                "I understand the published homework may be internally inconsistent."}
             </label>
           </div>
         )}
@@ -299,82 +451,179 @@ export function RegenerationWizard({
       <Step
         index={5}
         title="Re-run the source extract"
-        hint="Off by default. Turning it on puts every content phase downstream of the new extract."
+        hint="Off by default. Turning it on puts every content phase downstream of a brand-new extract, so the estimate below jumps to a near-full rebuild."
       >
         <label className="flex cursor-pointer items-center gap-3 text-sm text-white/75">
           <input
             type="checkbox"
             className="size-4 accent-[#7c5cff]"
-            checked={state.extractionEnabled}
+            checked={state.refreshExtraction}
             onChange={() =>
               patch({
-                extractionEnabled: !state.extractionEnabled,
+                refreshExtraction: !state.refreshExtraction,
                 excludedPhases: [],
-                acknowledgedInconsistency: false,
+                acknowledged: false,
               })
             }
           />
           Re-extract the lesson from the textbook PDF
         </label>
-        {notice && (
-          <p className="max-w-[75ch] rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-100/90">
-            {notice}
-          </p>
-        )}
       </Step>
 
-      <Step index={6} title="Review the estimate">
+      <Step
+        index={6}
+        title="Choose the model this campaign is frozen to"
+        hint="Resolved once, when the campaign is created, and copied onto every revision. Regeneration runs over the api transport only."
+      >
+        <div className="flex flex-wrap gap-1">
+          {apiProviders.map((provider) => (
+            <Chip
+              key={provider}
+              active={state.provider === provider}
+              onClick={() => patch({ provider, model: null })}
+            >
+              {provider}
+            </Chip>
+          ))}
+        </div>
+        <div className="flex flex-wrap gap-1">
+          {models.map((model) => (
+            <Chip key={model} active={state.model === model} onClick={() => patch({ model })}>
+              {model}
+            </Chip>
+          ))}
+          {models.length === 0 && (
+            <span className="text-xs text-white/40">No model is offered for this provider.</span>
+          )}
+        </div>
+      </Step>
+
+      <Step index={7} title="Review the estimate">
+        {estimateLoading && <p className="text-xs text-white/40">Pricing this draft…</p>}
+        {estimateError && <Problem view={estimateError} />}
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          <Stat label="Lessons" value={String(estimate.targetCount)} />
-          <Stat label="Rebuilt phases" value={String(estimate.regeneratedPhaseCount)} />
-          <Stat label="Copied phases" value={String(estimate.copiedPhaseCount)} />
-          <Stat label="Added by graph" value={String(estimate.autoIncludedPhaseCount)} />
-          <Stat label="Excluded" value={String(estimate.excludedPhaseCount)} />
-          <Stat label="Model calls" value={String(estimate.expectedModelCalls)} />
+          <Stat label="Lesson count" value={String(estimate?.target_count ?? targetCount)} />
+          <Stat label="Rebuilt phases" value={String(totals?.regenerated_phase_count ?? 0)} />
+          <Stat label="Copied phases" value={String(totals?.copied_phase_count ?? 0)} />
+          <Stat label="Added by graph" value={String(plan?.auto_included_phases.length ?? 0)} />
+          <Stat label="Excluded" value={String(plan?.excluded_affected_phases.length ?? 0)} />
+          <Stat label="New extracts" value={String(totals?.regenerated_extract_count ?? 0)} />
         </div>
         <div className="flex flex-wrap items-center gap-4 text-sm text-white/70">
           <span className="inline-flex items-center gap-2">
             <CircleDollarSign className="size-4 text-white/45" />
-            {estimate.costRangeText}
+            {totals
+              ? `${formatUsd(totals.low_usd)} – ${formatUsd(totals.high_usd)}`
+              : "no estimate yet"}
           </span>
           <span className="inline-flex items-center gap-2">
             <ListChecks className="size-4 text-white/45" />
-            {estimate.nextVersionText}
+            {chosen.length > 0
+              ? chosen
+                  .map((s) => `V${s.source_publication_version} → V${s.next_expected_version}`)
+                  .filter((v, i, all) => all.indexOf(v) === i)
+                  .join(", ")
+              : "no lesson selected"}
           </span>
         </div>
+
+        {totals && !totals.is_complete && totals.incomplete_reason && (
+          <p className="max-w-[75ch] rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
+            {totals.unpriced_line_count} priced line
+            {totals.unpriced_line_count === 1 ? " has" : "s have"} no rate —{" "}
+            {totals.incomplete_reason}
+          </p>
+        )}
+        {staticLines > 0 && (
+          <p className="max-w-[75ch] text-xs leading-5 text-amber-100/75">
+            {staticLines} of {totals?.line_items.length ?? 0} priced lines fall back to the static
+            token envelope because there is no recent history for that phase and model, so their
+            volume is a conservative assumption rather than a measurement.
+          </p>
+        )}
+        {(totals?.zero_volume_history_notes.length ?? 0) > 0 && (
+          <ul className="space-y-0.5 text-xs leading-5 text-amber-100/75">
+            {totals?.zero_volume_history_notes.map((note) => (
+              <li key={note}>{note}</li>
+            ))}
+          </ul>
+        )}
+        {(totals?.notes.length ?? 0) > 0 && (
+          <details className="rounded-xl border border-white/[0.07] bg-white/[0.02] px-3 py-2">
+            <summary className="cursor-pointer text-xs text-white/50">
+              How this estimate was built
+            </summary>
+            <ul className="mt-1 space-y-0.5 text-xs leading-5 text-white/45">
+              {totals?.notes.map((note) => (
+                <li key={note}>{note}</li>
+              ))}
+            </ul>
+          </details>
+        )}
+        {preflight && !preflight.ok && (
+          <div className="space-y-1 rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-100/90">
+            <div className="flex items-start gap-2 font-semibold">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+              <span>
+                {preflight.failure_count} lesson
+                {preflight.failure_count === 1 ? "" : "s"} have nowhere to publish
+              </span>
+            </div>
+            <ul className="space-y-0.5">
+              {preflight.failures.map((f) => (
+                <li key={`${f.toc_entry_id}:${f.output_language}`}>
+                  {f.lesson_title} ({f.output_language}) — {f.detail}
+                </li>
+              ))}
+            </ul>
+            <p>
+              You can still freeze this campaign, but the canary is refused until the Notion
+              destination exists.
+            </p>
+          </div>
+        )}
+
         <label className="flex items-center gap-3 text-xs text-white/55">
           Canary size
           <input
             type="number"
             min={1}
-            max={Math.max(1, targets.length)}
+            max={Math.max(1, targetCount)}
             value={canarySize}
             onChange={(e) => patch({ canarySize: Number(e.target.value) || 1 })}
             className="w-20 rounded-lg border border-white/[0.1] bg-white/[0.05] px-2 py-1 text-sm text-white"
           />
           <span>
-            {estimate.targetCount === 0
+            {targetCount === 0
               ? "Pick lessons above to size the canary."
-              : `${canarySize} of ${lessonCountLabel(estimate.targetCount)} run first and wait for your review.`}
+              : `${canarySize} of ${lessonCountLabel(targetCount)} run first and wait for your review.`}
           </span>
         </label>
-        <p className="max-w-[75ch] text-xs leading-5 text-white/45">{ESTIMATE_SAFETY_NOTE}</p>
+        <p className="max-w-[75ch] text-xs leading-5 text-white/45">{REGENERATION_NO_SPEND_NOTE}</p>
       </Step>
+
+      {createError && <Problem view={createError} />}
 
       <div className={cn(CARD, "flex flex-wrap items-center justify-between gap-3")}>
         <p
           className={cn(
             "max-w-[60ch] text-xs leading-5",
-            gate.canLaunch ? "text-emerald-200/80" : "text-amber-200/85",
+            blockedReason ? "text-amber-200/85" : "text-emerald-200/80",
           )}
         >
-          {gate.blockedReason ??
-            `Ready: ${lessonCountLabel(estimate.targetCount)}, ` +
-              `${estimate.regeneratedPhaseCount} rebuilt phases, ${estimate.costRangeText}.`}
+          {blockedReason ??
+            `Ready to freeze: ${lessonCountLabel(targetCount)}, ` +
+              `${totals?.regenerated_phase_count ?? 0} rebuilt phases, ` +
+              `${totals ? `${formatUsd(totals.low_usd)} – ${formatUsd(totals.high_usd)}` : "unpriced"}.`}
         </p>
-        <button type="button" className={PRIMARY_BTN} disabled={!gate.canLaunch} onClick={onLaunch}>
-          <Rocket className="size-4" />
-          Launch canary
+        <button
+          type="button"
+          className={PRIMARY_BTN}
+          disabled={blockedReason !== null || creating}
+          onClick={onCreate}
+        >
+          <ListChecks className="size-4" />
+          {creating ? "Freezing…" : REGENERATION_CREATE_LABEL}
         </button>
       </div>
     </div>
