@@ -130,8 +130,13 @@ async def latest_published_target(
     published row) and kept anyway, so the ORDER BY can never sort on NULLs if
     that check is ever relaxed.
 
-    ``for_update=True`` takes the row lock a read-then-write version allocation
-    needs; see :func:`lock_lineage` for the case where there is no row yet.
+    ``for_update=True`` takes a row lock on the row it returns. NO caller
+    passes it today — discovery reads this without a lock — and version
+    allocation no longer depends on it: a publication version is serialised by
+    the advisory lock inside
+    :func:`regeneration_targets.reserve_publication_version`, with the partial
+    unique index ``uq_regeneration_targets_publication_version`` as the final
+    fence.
     """
     stmt = (
         select(RegenerationTarget)
