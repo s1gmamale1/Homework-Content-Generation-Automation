@@ -34,6 +34,7 @@ _MODEL_TIER: dict[str, int] = {
     "codex-auto-review": 2,
     "gpt-5.4": 2,
     "gemini-3-flash-preview": 2,
+    "gemini-3.7-flash": 2,
     "gemini-3.6-flash": 2,
     "gemini-3.5-flash": 2,
     "gemini-2.5-pro": 2,  # retired from MODEL_MANIFEST — kept for historical attribution

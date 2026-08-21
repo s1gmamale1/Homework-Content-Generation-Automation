@@ -51,7 +51,7 @@ def test_retired_gemini_models_set_is_exact():
 
 def test_gemini_3x_flash_trio_is_api_only():
     assert GEMINI_API_ONLY_MODELS == frozenset(
-        {"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
+        {"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
     )
     for m in GEMINI_API_ONLY_MODELS:
         assert is_valid("gemini", m) is True, m

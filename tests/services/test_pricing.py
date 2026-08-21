@@ -162,9 +162,16 @@ def test_claude_cache_creation_tokens_adds_premium():
 
 def test_gemini_3_6_flash_pricing():
     # Gemini's prompt_tokens INCLUDES cached — 2M prompt incl. 1M cached, so
-    # uncached input = 1M. input $1.50 + output $7.50 + cache_read $0.15.
+    # uncached input = 1M. Promo pricing verified 2026-08-21 (through 2026-12-31):
+    # input $0.75 + output $3.75 + cache_read $0.075. Doubles 2027-01-01.
     usage = {"prompt_tokens": 2_000_000, "output_tokens": 1_000_000, "cached_tokens": 1_000_000}
-    assert pricing.cost_usd("gemini", "gemini-3.6-flash", usage) == pytest.approx(1.50 + 7.50 + 0.15)
+    assert pricing.cost_usd("gemini", "gemini-3.6-flash", usage) == pytest.approx(0.75 + 3.75 + 0.075)
+
+
+def test_gemini_3_7_flash_pricing():
+    # Same verified promo rates as 3.6-flash (identical on the pricing page).
+    usage = {"prompt_tokens": 2_000_000, "output_tokens": 1_000_000, "cached_tokens": 1_000_000}
+    assert pricing.cost_usd("gemini", "gemini-3.7-flash", usage) == pytest.approx(0.75 + 3.75 + 0.075)
 
 
 def test_gemini_3_5_flash_pricing():

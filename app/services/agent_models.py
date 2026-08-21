@@ -37,6 +37,7 @@ MODEL_MANIFEST: dict[str, list[str]] = {
         "gemini-3.1-pro-preview",
         "gemini-3-flash-preview",
         "gemini-3.1-flash-lite-preview",
+        "gemini-3.7-flash",
         "gemini-3.6-flash",
         "gemini-3.5-flash",
         "gemini-3.5-flash-lite",
@@ -89,7 +90,7 @@ API_ONLY_PROVIDERS: frozenset[str] = frozenset({"clodex"})
 # (a whole provider), this is a per-MODEL cli rejection within a provider that
 # otherwise supports cli (gemini).
 GEMINI_API_ONLY_MODELS: frozenset[str] = frozenset(
-    {"gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
+    {"gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.5-flash", "gemini-3.5-flash-lite"}
 )
 
 # gemini-2.5 (pro/flash/flash-lite) — retired 2026-08-03 (404s on the plain

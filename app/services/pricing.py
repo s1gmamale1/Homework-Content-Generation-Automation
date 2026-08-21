@@ -52,7 +52,10 @@ PRICE_MAP: dict[tuple[str, str], dict[str, float]] = {
 
     # ─── Gemini 3.x flash (api-only, 2026-08-03 rollout — replaces retired 2.5) ──
     # Google Standard Developer API list price, ai.google.dev/gemini-api/docs/pricing, 2026-08-03
-    ("gemini", "gemini-3.6-flash"): {"input": 1.50, "output": 7.50, "cache_read": 0.15},
+    # ai.google.dev/gemini-api/docs/pricing verified 2026-08-21: promo $0.75/$3.75/$0.075
+    # through 2026-12-31, doubling to $1.50/$7.50/$0.15 on 2027-01-01 — update then.
+    ("gemini", "gemini-3.7-flash"): {"input": 0.75, "output": 3.75, "cache_read": 0.075},
+    ("gemini", "gemini-3.6-flash"): {"input": 0.75, "output": 3.75, "cache_read": 0.075},
     ("gemini", "gemini-3.5-flash"): {"input": 1.50, "output": 9.00, "cache_read": 0.15},
     ("gemini", "gemini-3.5-flash-lite"): {"input": 0.30, "output": 2.50, "cache_read": 0.03},
 

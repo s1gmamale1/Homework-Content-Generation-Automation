@@ -2879,3 +2879,19 @@ best row wins (online beats offline, then freshest heartbeat) so Drain/Undrain s
 target the live worker's pc_id. Also fixes duplicate/grey dead cards in the grid.
 tsc + build clean, dist synced, live-verified: same registry snapshot renders
 35/35 machines vs 36/83 raw rows. API untouched.
+
+## 0182 — gemini-3.7-flash added to the catalog; gemini pricing corrected to verified promo (2026-08-21)
+
+Operator asked for the newly-released gemini-3.7-flash as a fleet option. Verified the
+shared key can call it (live generateContent OK), fetched OFFICIAL pricing
+(ai.google.dev, 2026-08-21): $0.75/M in, $3.75/M out, $0.075 cache-read **promo through
+2026-12-31, doubling 2027-01-01** — and discovered 3.6-flash carries the same promo, so
+PRICE_MAP was overstating gemini flash costs 2×; corrected 3.6 to the verified rates
+(historical cost views recompute accordingly — real cost/homework ≈ $0.56, not $1.12).
+Changes: MODEL_MANIFEST + GEMINI_API_ONLY_MODELS (+3.7-flash; cli can't run 3.x-flash),
+PRICE_MAP (+3.7, corrected 3.6, dated comment for the 2027 flip), model_tiers (+3.7 tier 2),
+guard tests updated (+ new 3.7 pricing test) — 35/35 pass. Deployed: files synced to the
+serving worktree, head kickstarted (idle window), /agent/models verified offering it.
+**Acceptance smoke (real generation):** one fresh lesson (ona-tili g9, never-generated
+book) on 3.7-flash content role: done in 3m01s — fastest lesson recorded — 12/12 parts,
+11/11 judge-ok, solver clean ×4, attribution and pricing correct in agent_usages.
