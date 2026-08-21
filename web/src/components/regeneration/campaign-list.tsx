@@ -45,11 +45,16 @@ export function CampaignList({
   onSelect,
   isLoading = false,
   error = null,
+  onRetry,
 }: {
   campaigns: RegenerationCampaignSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   isLoading?: boolean;
+  /** Re-runs the campaigns query. A read that failed is worth another try
+   *  without reloading the app — and the rows already in the cache stay on
+   *  screen while it runs. */
+  onRetry?: () => void;
   /** The raw `campaigns` query error. This list is the only regeneration query
    *  that runs unconditionally, so it is where a server-side `REGENERATION_
    *  ENABLED=false` becomes visible — no book has to be picked first. */
@@ -73,7 +78,7 @@ export function CampaignList({
         </span>
       </header>
 
-      {view.error && <RegenerationProblem view={view.error} />}
+      {view.error && <RegenerationProblem view={view.error} onRetry={onRetry} />}
       {view.message && <p className="text-xs text-white/40">{view.message}</p>}
 
       <ul className="space-y-1">

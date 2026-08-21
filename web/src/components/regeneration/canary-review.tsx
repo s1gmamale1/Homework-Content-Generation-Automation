@@ -10,6 +10,7 @@ import {
   regenerationCampaignStatusLabel,
   regenerationJudgeCounts,
   regenerationReasonError,
+  regenerationSolverStatusLabel,
   regenerationStrandedRelease,
 } from "@/lib/api";
 import { costComparison, formatUsd } from "@/lib/regeneration-state";
@@ -31,11 +32,14 @@ import { cn } from "@/lib/utils";
  * real thing, phase by phase, instead of a second half-faithful viewer.
  *
  * One more campaign-level action lives here, and it is NOT a gate: a campaign
- * that was approved but whose release never landed can never move again, and
- * the repair is to re-run the same idempotent approve call. It is labelled as
- * a retry of the RELEASE, renders in states well past `awaiting_canary_approval`,
- * and deliberately offers no second decision — there is nothing new to review,
- * so nothing to decline.
+ * whose release never landed can never move again, and the repair is to re-run
+ * the same idempotent call that stalled. WHICH call depends on the phase —
+ * `approve` after approval, the canary launch before it — because
+ * `launch_canary` refuses an approved campaign outright, so one hardcoded
+ * mutation would 409 half the failures it claims to fix. The button is
+ * labelled as a retry of the step that stalled, renders in states well past
+ * `awaiting_canary_approval`, and deliberately offers no second decision:
+ * there is nothing new to review, so nothing to decline.
  */
 import {
   CircleCheck,
@@ -85,10 +89,15 @@ export function CanaryReview({
 
   const canLaunchCanary = detail.status === "draft";
   const atGate = detail.status === "awaiting_canary_approval";
-  // Non-null only for an approved, non-terminal campaign with lessons that
-  // never got a revision job. Never overlaps `atGate`: the status derivation
-  // cannot return `awaiting_canary_approval` once `approved_at` is stamped.
+  // Non-null only for a launched, non-terminal campaign with lessons that never
+  // got a revision job. Never overlaps `atGate`: after approval the derivation
+  // cannot return `awaiting_canary_approval`, and before it a canary stuck at
+  // `generating` holds the campaign at `canary_running`
+  // (`regeneration_states.roll_up_campaign`).
   const stranded = regenerationStrandedRelease(detail);
+  // The recovery re-runs whichever step stalled, so its pending state is that
+  // mutation's, not always approve's.
+  const strandedPending = stranded?.action === "approve" ? approving : launching;
 
   return (
     <div className="space-y-4">
@@ -143,8 +152,11 @@ export function CanaryReview({
             {detail.provenance.regenerated_phase_count} rebuilt
           </span>
           {solver.length > 0 && (
-            <span className="font-mono text-[0.66rem] text-white/40">
-              solver: {solver.map(([status, n]) => `${status} ×${n}`).join(", ")}
+            <span className="text-[0.66rem] text-white/40">
+              solver:{" "}
+              {solver
+                .map(([status, n]) => `${regenerationSolverStatusLabel(status)} ×${n}`)
+                .join(", ")}
             </span>
           )}
         </div>
@@ -240,8 +252,8 @@ export function CanaryReview({
                       </span>
                     ))}
                     {canarySolver.map(([status, n]) => (
-                      <span key={status} className="font-mono text-white/40">
-                        solver {status} ×{n}
+                      <span key={status} className="text-white/40">
+                        solver {regenerationSolverStatusLabel(status)} ×{n}
                       </span>
                     ))}
                   </div>
@@ -364,9 +376,14 @@ export function CanaryReview({
               <li key={row.targetId}>{row.text}</li>
             ))}
           </ul>
-          <button type="button" className={PRIMARY_BTN} disabled={busy} onClick={onApprove}>
+          <button
+            type="button"
+            className={PRIMARY_BTN}
+            disabled={busy}
+            onClick={stranded.action === "approve" ? onApprove : onLaunchCanary}
+          >
             <RefreshCw className="size-4" />
-            {approving ? stranded.pendingLabel : stranded.actionLabel}
+            {strandedPending ? stranded.pendingLabel : stranded.actionLabel}
           </button>
         </section>
       )}

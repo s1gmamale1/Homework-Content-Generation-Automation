@@ -1,6 +1,7 @@
 import {
   REGENERATION_CREATE_LABEL,
   REGENERATION_NO_SPEND_NOTE,
+  REGENERATION_READ_RETRY_LABEL,
   type RegenerationErrorView,
   type RegenerationScopeChange,
   type RegenerationScopeState,
@@ -9,10 +10,13 @@ import {
   phaseSelectionFromPlan,
   regenerationBookFacets,
   regenerationBookOptions,
+  regenerationIneligibleLine,
   regenerationKeyedLines,
   regenerationLanguageLabel,
   regenerationNarrowScope,
+  regenerationPlanStepView,
   regenerationSourceRow,
+  regenerationSourcesView,
   regenerationToggleLesson,
 } from "@/lib/api";
 import {
@@ -30,7 +34,7 @@ import type {
   RegenerationOutputLanguage,
   RegenerationPhasePlan,
 } from "@/lib/types";
-import { CARD, FRAME_OFF, FRAME_ON, PRESSABLE, PRIMARY_BTN } from "@/lib/ui";
+import { CARD, FRAME_OFF, FRAME_ON, GHOST_BTN, PRESSABLE, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName } from "@/lib/utils";
 /**
  * Campaign wizard, over the real Task 9 API.
@@ -46,7 +50,14 @@ import { cn, formatPhaseName } from "@/lib/utils";
  * exactly as the planner returned them, and the cascade headline is derived
  * from that same payload by `cascadeFromPlan`.
  */
-import { CircleAlert, CircleDollarSign, Layers, ListChecks, TriangleAlert } from "lucide-react";
+import {
+  CircleAlert,
+  CircleDollarSign,
+  Layers,
+  ListChecks,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-react";
 
 const LANGUAGES: RegenerationOutputLanguage[] = ["uz", "ru", "en"];
 
@@ -152,7 +163,18 @@ function Stat({ label, value }: { label: string; value: string }) {
  * title, silently lost a row. `regenerationKeyedLines` is the tested fix, and
  * having one component is what makes it one fix.
  */
-export function RegenerationProblem({ view }: { view: RegenerationErrorView }) {
+export function RegenerationProblem({
+  view,
+  onRetry,
+  retryLabel = REGENERATION_READ_RETRY_LABEL,
+}: {
+  view: RegenerationErrorView;
+  /** Only for a READ that can simply be run again. A mutation refusal is an
+   *  answer, not a glitch — offering to repeat it would invite an operator to
+   *  hammer a 409, so the campaign/target actions deliberately pass nothing. */
+  onRetry?: () => void;
+  retryLabel?: string;
+}) {
   const details = regenerationKeyedLines(view.details);
   return (
     <div className="space-y-1 rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
@@ -169,6 +191,12 @@ export function RegenerationProblem({ view }: { view: RegenerationErrorView }) {
         </ul>
       )}
       {view.hint && <p className="max-w-[75ch] text-rose-100/70">{view.hint}</p>}
+      {onRetry && (
+        <button type="button" onClick={onRetry} className={cn(GHOST_BTN, "mt-1 px-2 py-1 text-xs")}>
+          <RotateCcw className="size-3.5" />
+          {retryLabel}
+        </button>
+      )}
     </div>
   );
 }
@@ -180,9 +208,11 @@ export function RegenerationWizard({
   sources,
   ineligible,
   sourcesLoading,
+  sourcesError,
   pickBookReason,
   phaseCatalog,
   plan,
+  planLoading,
   planError,
   estimate,
   estimateLoading,
@@ -204,6 +234,11 @@ export function RegenerationWizard({
   sources: RegenerationEligibleSource[];
   ineligible: RegenerationIneligibleLineage[];
   sourcesLoading: boolean;
+  /** The eligible read FAILED. It belongs to this step — the one where lessons
+   *  are picked — and never to the phase step: routed there, a 500 on the
+   *  lesson read appeared under "Pick the phases to rebuild" while this step
+   *  claimed the book had no regenerable lessons. */
+  sourcesError: RegenerationErrorView | null;
   /** Non-null while the eligible query is deliberately switched off. */
   pickBookReason: string | null;
   /** `canonical_phases` for the primary subject, so the operator has something
@@ -212,6 +247,7 @@ export function RegenerationWizard({
   phaseCatalog: string[];
   /** `POST /phase-plan` for the primary subject in the selection. */
   plan: RegenerationPhasePlan | null;
+  planLoading: boolean;
   planError: RegenerationErrorView | null;
   /** `POST /estimate` — the authority for cost, preflight and per-subject plans. */
   estimate: RegenerationEstimateResponse | null;
@@ -251,8 +287,27 @@ export function RegenerationWizard({
   const chosen = visible.filter((s) => state.selectedTocEntryIds.includes(s.toc_entry_id));
   const targetCount = chosen.length;
 
+  // Which of blocked / loading / failed / empty / list step 2 is in is a
+  // decision, not a render detail: a failed read used to fall through to "no
+  // lesson in this book has a complete published homework job".
+  const sourcesView = regenerationSourcesView({
+    sources: visible,
+    isLoading: sourcesLoading,
+    error: sourcesError,
+    blockedReason: pickBookReason,
+  });
+
   const selection = plan ? phaseSelectionFromPlan(plan) : null;
   const cascade = plan ? cascadeFromPlan(plan) : null;
+  // "Nothing is selected", "the planner has not answered yet" and "the plan
+  // read failed" are three different things; only the first is about the
+  // operator's own choice.
+  const planStep = regenerationPlanStepView({
+    plan,
+    hasSelection: state.selectedPhases.length > 0 || state.refreshExtraction,
+    isLoading: planLoading,
+    error: planError,
+  });
   const warning = selection ? exclusionWarning(selection) : null;
   const localGate = selection
     ? launchGate(selection, state.acknowledged, targetCount)
@@ -390,18 +445,12 @@ export function RegenerationWizard({
             </Chip>
           ))}
         </div>
-        {pickBookReason && (
-          <p className="max-w-[75ch] text-xs leading-5 text-white/45">{pickBookReason}</p>
-        )}
-        {sourcesLoading && <p className="text-xs text-white/40">Loading eligible lessons…</p>}
-        {!pickBookReason && !sourcesLoading && visible.length === 0 && (
-          <p className="text-xs text-white/40">
-            No lesson in this book has a complete published homework job in this language to
-            regenerate from.
-          </p>
+        {sourcesView.error && <RegenerationProblem view={sourcesView.error} />}
+        {sourcesView.message && (
+          <p className="max-w-[75ch] text-xs leading-5 text-white/45">{sourcesView.message}</p>
         )}
         <ul className="space-y-1">
-          {visible.map((source) => {
+          {sourcesView.sources.map((source) => {
             const row = regenerationSourceRow(source, bookById.get(source.book_id));
             return (
               <li key={row.key}>
@@ -440,9 +489,7 @@ export function RegenerationWizard({
             <ul className="mt-1 space-y-0.5 text-xs leading-5 text-white/45">
               {ineligible.map((row) => (
                 <li key={`${row.toc_entry_id}:${row.output_language}`}>
-                  {row.toc_entry_id} ({regenerationLanguageLabel(row.output_language)}) —{" "}
-                  {row.reasons.join("; ")}
-                  {row.detail ? ` — ${row.detail}` : ""}
+                  {regenerationIneligibleLine(row)}
                 </li>
               ))}
             </ul>
@@ -481,7 +528,7 @@ export function RegenerationWizard({
       </Step>
 
       <Step index={4} title="Review what the dependency graph pulls in">
-        {cascade ? (
+        {cascade && planStep.mode === "ready" ? (
           <>
             <div className="flex items-center gap-2 text-sm font-semibold text-white">
               <Layers className="size-4 text-white/50" />
@@ -521,7 +568,7 @@ export function RegenerationWizard({
             </div>
           </>
         ) : (
-          <p className="text-xs text-white/40">Nothing selected yet.</p>
+          planStep.message && <p className="text-xs text-white/40">{planStep.message}</p>
         )}
       </Step>
 

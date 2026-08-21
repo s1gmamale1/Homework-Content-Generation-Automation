@@ -128,13 +128,21 @@ function campaignDraft(
       // Regeneration is api-only server-side; sending anything else is a
       // guaranteed `non_api_transport` refusal, so it is pinned here.
       transport: "api",
-      extract_transport: "inherit",
+      // The ROLES are pinned to api literally, not left to `inherit`.
+      // `resolve_role_transport_default` resolves `inherit` against the mutable
+      // `launch_defaults.<role>_transport` row — NOT against the contract's own
+      // api transport — so a fleet default of `cli` there makes
+      // `require_api_transport` refuse every campaign this screen can compose,
+      // with no lever anywhere in this UI to fix it. `api` is the only value
+      // regeneration accepts, so saying it outright costs nothing and cannot
+      // be broken from outside.
+      extract_transport: "api",
       extract_provider: null,
       extract_model: null,
-      judge_transport: "inherit",
+      judge_transport: "api",
       judge_provider: null,
       judge_model: null,
-      solver_transport: "inherit",
+      solver_transport: "api",
       solver_provider: null,
       solver_model: null,
       session_limit_strategy: "inherit",
@@ -456,10 +464,15 @@ export function RegenerationPage() {
               sources={sources}
               ineligible={eligible.data?.ineligible ?? []}
               sourcesLoading={eligibleQuery.enabled && eligible.isLoading}
+              // The lesson read reports at the step where lessons are picked.
+              // Folded into `planError` it surfaced under "Pick the phases to
+              // rebuild", two steps below the list it had just emptied.
+              sourcesError={view(eligible.error)}
               pickBookReason={eligibleQuery.blockedReason}
               phaseCatalog={catalog.data?.canonical_phases ?? []}
               plan={plan.data ?? null}
-              planError={view(plan.error ?? catalog.error ?? eligible.error)}
+              planLoading={plan.isFetching || catalog.isFetching}
+              planError={view(plan.error ?? catalog.error)}
               estimate={estimate.data ?? null}
               estimateLoading={estimate.isFetching}
               estimateError={view(estimate.error)}
@@ -480,9 +493,15 @@ export function RegenerationPage() {
               onSelect={setSelectedId}
               isLoading={campaigns.isLoading}
               error={campaigns.error}
+              onRetry={() => campaigns.refetch()}
             />
 
-            {detailView.error && <RegenerationProblem view={detailView.error} />}
+            {/* A failed READ is offered again — including the failed refresh
+                that renders BESIDE a report the cache still holds. Mutation
+                refusals deliberately get no retry: a 409 is an answer. */}
+            {detailView.error && (
+              <RegenerationProblem view={detailView.error} onRetry={() => detail.refetch()} />
+            )}
             {detailView.message && (
               <p className={cn(CARD, "text-xs text-white/40")}>{detailView.message}</p>
             )}

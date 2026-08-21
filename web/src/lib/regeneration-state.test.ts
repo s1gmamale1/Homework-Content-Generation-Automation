@@ -25,8 +25,14 @@ import {
   REGENERATION_LIST_LOADING,
   REGENERATION_LIST_POLL_MS,
   REGENERATION_NO_SPEND_NOTE,
+  REGENERATION_PICK_BOOK_HINT,
+  REGENERATION_PLAN_LOADING,
+  REGENERATION_PLAN_NONE,
   REGENERATION_POLL_MS,
+  REGENERATION_READ_RETRY_LABEL,
   REGENERATION_REJECT_CONFIRMATION,
+  REGENERATION_SOURCES_EMPTY,
+  REGENERATION_SOURCES_LOADING,
   cascadeFromPlan,
   clampCanarySize,
   mergeReleasedFailures,
@@ -40,16 +46,20 @@ import {
   regenerationDetailView,
   regenerationEligibleQuery,
   regenerationErrorView,
+  regenerationIneligibleLine,
   regenerationKeyedLines,
   regenerationListPollMs,
   regenerationMutationView,
   regenerationNarrowScope,
+  regenerationPlanStepView,
   regenerationPollDecision,
   regenerationPublicationStateLabel,
   regenerationReasonError,
   regenerationReleasedFailureLines,
   regenerationRetryAudit,
+  regenerationSolverStatusLabel,
   regenerationSourceRow,
+  regenerationSourcesView,
   regenerationStrandedRelease,
   regenerationTargetActions,
   regenerationToggleLesson,
@@ -841,6 +851,27 @@ assert.ok(
  * ──────────────────────────────────────────────────────────────────── */
 
 const CAMPAIGN_ID = "6f1c1d4e-9a2b-4c3d-8e5f-0a1b2c3d4e5f";
+/** A real revision job. Its presence is what separates a lesson that is
+ *  genuinely regenerating from one the server left behind (§26). */
+const RUNNING_JOB_ID = "cafe0000-0000-4000-8000-00000000beef";
+
+/** One row of `GET /eligible` — a finished homework job that may be a source. */
+const ELIGIBLE_SOURCE: RegenerationEligibleSource = {
+  toc_entry_id: "99998888-7777-6666-5555-444433332222",
+  output_language: "uz",
+  source_job_id: "job-1",
+  book_id: "aaaabbbb-cccc-dddd-eeee-ffff00001111",
+  subject: "biology",
+  grade: "8",
+  source_publication_version: 1,
+  next_expected_version: 2,
+  source_is_revision: false,
+  section_number: "1",
+  section_title: "Kirish",
+  chapter_title: "Hujayra",
+  order_index: 1,
+  has_notion_lesson_page: true,
+};
 
 function apiTarget(over: Partial<RegenerationTargetReport> = {}): RegenerationTargetReport {
   return {
@@ -974,7 +1005,15 @@ assert.strictEqual(regenerationPollDecision(undefined).intervalMs, false);
   const decision = regenerationPollDecision(
     apiDetail({
       status: "canary_running",
-      targets: [apiTarget({ status: "generating", bucket: "in_flight", is_canary: true })],
+      canary_launched_at: "2026-08-20T09:30:00Z",
+      targets: [
+        apiTarget({
+          status: "generating",
+          bucket: "in_flight",
+          is_canary: true,
+          revision_job_id: RUNNING_JOB_ID,
+        }),
+      ],
     }),
   );
   assert.strictEqual(decision.shouldPoll, true);
@@ -988,7 +1027,9 @@ assert.strictEqual(
     apiDetail({
       status: "bulk_running",
       approved_at: "2026-08-20T10:00:00Z",
-      targets: [apiTarget({ status: "generating", bucket: "in_flight" })],
+      targets: [
+        apiTarget({ status: "generating", bucket: "in_flight", revision_job_id: RUNNING_JOB_ID }),
+      ],
     }),
   ).shouldPoll,
   true,
@@ -1453,8 +1494,13 @@ assert.match(REGENERATION_APPROVE_NOTE, /only|no per-lesson/i);
 }
 
 {
-  // A running target can still be abandoned, but never retried.
-  const running = apiTarget({ status: "generating", bucket: "in_flight" });
+  // A running target can still be abandoned, but never retried. Running means
+  // it HAS a revision job — the jobless shape is a different state (§26).
+  const running = apiTarget({
+    status: "generating",
+    bucket: "in_flight",
+    revision_job_id: RUNNING_JOB_ID,
+  });
   assert.deepStrictEqual(
     regenerationTargetActions(running).map((a) => a.kind),
     ["abandon"],
@@ -1669,7 +1715,10 @@ const STRANDED_TARGET = apiTarget({
     apiDetail({
       status: "bulk_running",
       approved_at: "2026-08-20T10:00:00Z",
-      targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: "generating" })],
+      targets: [
+        STRANDED_TARGET,
+        apiTarget({ id: "moving", status: "generating", revision_job_id: RUNNING_JOB_ID }),
+      ],
     }),
   );
   assert.strictEqual(decision.shouldPoll, true);
@@ -2463,7 +2512,10 @@ function apiBook(over: Partial<Book> = {}): Book {
     apiDetail({
       status: "bulk_running",
       approved_at: "2026-08-20T10:00:00Z",
-      targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: "generating" })],
+      targets: [
+        STRANDED_TARGET,
+        apiTarget({ id: "moving", status: "generating", revision_job_id: RUNNING_JOB_ID }),
+      ],
     }),
   );
   assert.strictEqual(mixed.shouldPoll, true, "real in-flight work must keep the report refreshing");
@@ -2729,6 +2781,682 @@ for (const rel of [
 assert.ok(
   /actor: ""/.test(routeSrc) && /app_git_revision: null/.test(routeSrc),
   "the blank actor and null revision are deliberate; they must stay visible in one place",
+);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 26. EVERY jobless target is recoverable (re-review I-1)
+ *
+ * The release is not one transaction. `approve_canary` stamps `approved_at`,
+ * commits, moves the targets to `generating` in a SECOND transaction, commits
+ * again, and only then creates the revision jobs — each in its own session
+ * (`regeneration_campaign._prepare_wave` / `_create_wave`). `launch_canary`
+ * has the same seam for the canary targets. Dying anywhere in that sequence
+ * leaves a target with no `revision_job_id` at `planned` OR at `generating`,
+ * and NOTHING on the server repairs it: the reconciler walks revision jobs,
+ * and this target has none.
+ *
+ * The first fix only knew about `planned`, so the `generating` half of the
+ * same crash was invisible: it was counted as a lesson that is regenerating,
+ * the report polled it forever, and no control offered to start it.
+ *
+ * Both halves are recoverable, and WHICH recovery depends on the phase, which
+ * is why the launch stamps are part of the predicate:
+ *   • approved  (`approved_at`)                      → re-run approve
+ *   • canary    (`canary_launched_at`, not approved) → re-run the canary launch
+ * `launch_canary` REFUSES an approved campaign ("the bulk wave is released by
+ * approve_canary, not by a relaunch"), so offering the wrong one would be a
+ * guaranteed 409. Both accept a jobless `generating` target:
+ * `_CREATABLE_TARGET_STATUSES = ("planned", "generating")`.
+ * ──────────────────────────────────────────────────────────────────── */
+
+const APPROVED_AT = "2026-08-20T10:00:00Z";
+const CANARY_LAUNCHED_AT = "2026-08-20T09:30:00Z";
+
+/** Approved, and one lesson was moved to `generating` with no job behind it. */
+const JOBLESS_GENERATING = apiTarget({
+  id: "jobless-generating",
+  status: "generating",
+  bucket: "in_flight",
+  revision_job_id: null,
+});
+
+{
+  // BULK, planned — the shape the first fix already knew.
+  const planned = regenerationStrandedRelease(
+    apiDetail({ status: "bulk_running", approved_at: APPROVED_AT, targets: [STRANDED_TARGET] }),
+  );
+  assert.ok(planned !== null);
+  assert.strictEqual(planned.phase, "bulk");
+  assert.strictEqual(planned.action, "approve");
+
+  // BULK, generating — the same crash, one commit later. This used to read as
+  // a lesson that was busy regenerating.
+  const generating = regenerationStrandedRelease(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [JOBLESS_GENERATING],
+    }),
+  );
+  assert.ok(generating !== null, "a jobless `generating` target is stranded too");
+  assert.strictEqual(generating.phase, "bulk");
+  assert.strictEqual(generating.action, "approve");
+  assert.strictEqual(generating.count, 1);
+  assert.deepStrictEqual(generating.targetIds, ["jobless-generating"]);
+  assert.ok(generating.lines.some((l) => l.includes("1-mavzu. Hujayra tuzilishi")));
+  assert.ok(!generating.lines.some((l) => l.includes("jobless-generating")));
+  assert.match(generating.actionLabel, /releas/i);
+  assert.ok(!/approve/i.test(generating.actionLabel));
+
+  // Both halves of one broken release are recovered by ONE action.
+  const both = regenerationStrandedRelease(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [STRANDED_TARGET, JOBLESS_GENERATING],
+    }),
+  );
+  assert.strictEqual(both?.count, 2);
+  assert.strictEqual(both?.action, "approve");
+}
+
+{
+  // CANARY phase: launched, never approved. `launch_canary` is the repair and
+  // approve would be refused, so the action must be the canary launch and the
+  // copy must not read as an approval or a rejection.
+  const canary = regenerationStrandedRelease(
+    apiDetail({
+      status: "canary_running",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      approved_at: null,
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true }],
+    }),
+  );
+  assert.ok(canary !== null, "a canary that never got its revision job is stranded");
+  assert.strictEqual(canary.phase, "canary");
+  assert.strictEqual(canary.action, "launch-canary");
+  assert.strictEqual(canary.count, 1);
+  assert.match(canary.actionLabel, /retry/i);
+  assert.match(canary.actionLabel, /canary/i);
+  assert.ok(
+    !/approve|reject/i.test(canary.actionLabel),
+    `the canary recovery must not borrow the gate's vocabulary: ${canary.actionLabel}`,
+  );
+  assert.ok(
+    !/reject/i.test(canary.detail),
+    "there is nothing to decline: no canary was ever generated",
+  );
+  assert.match(canary.detail, /idempotent|nothing twice/i);
+  assert.match(canary.pollNote, /canary/i);
+  assert.match(canary.pollReason, /canary/i);
+  assert.ok(!/approved but never/i.test(canary.headline), canary.headline);
+}
+
+{
+  // The canary phase's OTHER lessons are jobless BY DESIGN — they wait at the
+  // approval gate. Calling them stranded would fire this warning on every
+  // healthy multi-lesson campaign.
+  const healthy = regenerationStrandedRelease(
+    apiDetail({
+      status: "canary_running",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      approved_at: null,
+      targets: [
+        apiTarget({
+          id: "canary",
+          is_canary: true,
+          status: "generating",
+          revision_job_id: RUNNING_JOB_ID,
+        }),
+        apiTarget({ id: "waiting-1", status: "planned", revision_job_id: null }),
+        apiTarget({ id: "waiting-2", status: "planned", revision_job_id: null }),
+      ],
+    }),
+  );
+  assert.strictEqual(
+    healthy,
+    null,
+    "before approval the bulk lessons have no job because nobody has approved them yet",
+  );
+}
+
+{
+  // A lesson that HAS its job is not stranded, in either phase.
+  for (const detail of [
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [{ ...JOBLESS_GENERATING, revision_job_id: RUNNING_JOB_ID }],
+    }),
+    apiDetail({
+      status: "canary_running",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true, revision_job_id: RUNNING_JOB_ID }],
+    }),
+  ]) {
+    assert.strictEqual(regenerationStrandedRelease(detail), null);
+  }
+
+  // An UNTOUCHED draft is not a broken release: nothing has been launched, so
+  // no lesson was ever promised a job. Warning here would fire on every new
+  // campaign before its first click.
+  assert.strictEqual(
+    regenerationStrandedRelease(
+      apiDetail({
+        status: "draft",
+        canary_launched_at: null,
+        approved_at: null,
+        // The canary rows are the ones the pre-approval scan looks at, so the
+        // fixture has to carry them: without a canary here the scoping alone
+        // would answer null and the launch-context guard would never be
+        // exercised (it was deletable with this suite still green).
+        targets: [
+          { ...STRANDED_TARGET, is_canary: true },
+          { ...JOBLESS_GENERATING, is_canary: true },
+        ],
+      }),
+    ),
+    null,
+    "a campaign that was never launched has nothing to re-release",
+  );
+
+  // Terminal, rejected, cancelling and abandon-intent all still refuse to
+  // offer a campaign action — re-releasing would fight the decision that was
+  // already taken, and the wave skips an abandoning target anyway.
+  const terminalShapes = [
+    apiDetail({
+      status: "cancelled",
+      is_terminal: true,
+      approved_at: APPROVED_AT,
+      targets: [JOBLESS_GENERATING],
+    }),
+    apiDetail({
+      status: "rejected",
+      is_terminal: true,
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      rejected_at: "2026-08-20T09:45:00Z",
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true }],
+    }),
+    apiDetail({
+      status: "attention_required",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      rejected_at: "2026-08-20T09:45:00Z",
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true }],
+    }),
+    apiDetail({
+      status: "attention_required",
+      approved_at: APPROVED_AT,
+      cancel_requested_at: "2026-08-20T10:30:00Z",
+      targets: [JOBLESS_GENERATING],
+    }),
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [{ ...JOBLESS_GENERATING, abandon_requested_at: "2026-08-20T10:30:00Z" }],
+    }),
+    apiDetail({
+      status: "canary_running",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true, is_terminal: true, status: "abandoned" }],
+    }),
+  ];
+  for (const detail of terminalShapes) {
+    assert.strictEqual(
+      regenerationStrandedRelease(detail),
+      null,
+      `${detail.status} must offer no campaign-level recovery`,
+    );
+  }
+}
+
+/* ── the poll must not count a jobless `generating` as self-moving ──── */
+{
+  // ALONE: the only non-terminal lesson can never start, so refreshing is
+  // request burn. This polled forever before, behind "1 lesson regenerating".
+  const alone = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [JOBLESS_GENERATING],
+    }),
+  );
+  assert.strictEqual(alone.shouldPoll, false, "nothing will start a jobless lesson");
+  assert.strictEqual(alone.intervalMs, false);
+  assert.deepStrictEqual(alone.activity, [], "a lesson with no job is not activity");
+  assert.ok(alone.strandedNote !== null);
+  assert.ok(
+    !/still releasing revision jobs/.test(alone.reason),
+    "a campaign whose release never landed is not 'still releasing'",
+  );
+
+  // The canary half of the same rule.
+  const canaryAlone = regenerationPollDecision(
+    apiDetail({
+      status: "canary_running",
+      canary_launched_at: CANARY_LAUNCHED_AT,
+      targets: [{ ...JOBLESS_GENERATING, is_canary: true }],
+    }),
+  );
+  assert.strictEqual(canaryAlone.shouldPoll, false);
+  assert.match(canaryAlone.reason, /canary/i);
+
+  // MIXED: a real job beside a jobless one. The real one still moves on its
+  // own, so the report keeps refreshing — and still names the stranded lesson.
+  const mixed = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [
+        JOBLESS_GENERATING,
+        apiTarget({ id: "real", status: "generating", revision_job_id: RUNNING_JOB_ID }),
+      ],
+    }),
+  );
+  assert.strictEqual(mixed.shouldPoll, true, "the lesson that really is running must be followed");
+  assert.strictEqual(mixed.intervalMs, REGENERATION_POLL_MS);
+  assert.ok(mixed.activity.some((a) => /1 lesson regenerating/.test(a)));
+  assert.ok(
+    !mixed.activity.some((a) => /2 lessons regenerating/.test(a)),
+    "the jobless lesson must not be counted as one that is regenerating",
+  );
+  assert.ok(mixed.strandedNote !== null, "and the stranded lesson is still reported");
+
+  // Publication elsewhere keeps the report alive for the same reason.
+  assert.strictEqual(
+    regenerationPollDecision(
+      apiDetail({
+        status: "bulk_running",
+        approved_at: APPROVED_AT,
+        targets: [
+          JOBLESS_GENERATING,
+          apiTarget({
+            id: "pub",
+            status: "publishing",
+            publication_state: "publishing",
+            revision_job_id: RUNNING_JOB_ID,
+          }),
+        ],
+      }),
+    ).shouldPoll,
+    true,
+  );
+}
+
+/* ── the lesson's OWN row offers the retry the backend accepts ──────── */
+{
+  // `retry_generation` accepts `generating` and, with no job, finishes the
+  // creation (`_create_wave([target_id], contract)`). So the row action is
+  // real, not a hopeful button.
+  const actions = regenerationTargetActions(JOBLESS_GENERATING);
+  assert.deepStrictEqual(
+    actions.map((a) => a.kind),
+    ["retry-generation", "abandon"],
+    "a lesson that was never given a job must be startable from its own row",
+  );
+  const retry = actions[0];
+  assert.ok(retry.enabled);
+  assert.strictEqual(retry.requiresReason, false);
+  assert.ok(
+    /never|no revision job/i.test(retry.detail),
+    `the copy must say what actually happened: ${retry.detail}`,
+  );
+
+  // A lesson that IS running keeps offering nothing but abandon: retrying a
+  // job already in flight is a no-op, and the button would be a lie.
+  assert.deepStrictEqual(
+    regenerationTargetActions({ ...JOBLESS_GENERATING, revision_job_id: RUNNING_JOB_ID }).map(
+      (a) => a.kind,
+    ),
+    ["abandon"],
+  );
+  // A terminal or abandoning row is unchanged.
+  assert.deepStrictEqual(
+    regenerationTargetActions({ ...JOBLESS_GENERATING, is_terminal: true }),
+    [],
+  );
+  // And the pending / terminal-campaign guards still cover the new action.
+  assert.ok(
+    regenerationTargetActions(JOBLESS_GENERATING, { campaignTerminal: true }).every(
+      (a) => !a.enabled,
+    ),
+  );
+  assert.ok(
+    regenerationTargetActions(JOBLESS_GENERATING, { pendingKind: "retry-generation" }).every(
+      (a) => !a.enabled,
+    ),
+  );
+}
+
+/* ── the campaign LIST keeps its cheap, deliberately imprecise poll ─── */
+// The summary carries no `revision_job_id` — `status_counts` is all there
+// is — so the list cannot tell a jobless `generating` from a running one and
+// deliberately does not try. It keeps ticking; opening the campaign is what
+// shows the truth, because the DETAIL poll can see the jobs. Erring this way
+// costs one wasted 10s tick; erring the other way would freeze the list for
+// every campaign that really is generating.
+assert.strictEqual(
+  regenerationListPollMs([
+    apiDetail({
+      status: "bulk_running",
+      approved_at: APPROVED_AT,
+      targets: [JOBLESS_GENERATING],
+    }),
+  ]),
+  REGENERATION_LIST_POLL_MS,
+  "the list poll is intentionally cheap; the detail screen owns the truth",
+);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 27. The eligible-lessons read reports its failure at its OWN step (I-2)
+ *
+ * `/eligible` failing is a fact about step 2, where the lessons are picked.
+ * It was routed into step 3's `planError`, so a 500 on the lesson read
+ * appeared under "Pick the phases to rebuild" while step 2 calmly stated that
+ * this book has no regenerable lessons — a claim about data that never
+ * arrived.
+ * ──────────────────────────────────────────────────────────────────── */
+
+{
+  const source1 = ELIGIBLE_SOURCE;
+  const boom = regenerationErrorView(
+    new ApiError(500, "eligible blew up", { error: "server_error", message: "eligible blew up" }),
+  );
+
+  // No book picked: the query is deliberately off. That is not a failure and
+  // not an empty answer.
+  const blocked = regenerationSourcesView({
+    sources: [],
+    isLoading: false,
+    error: null,
+    blockedReason: REGENERATION_PICK_BOOK_HINT,
+  });
+  assert.strictEqual(blocked.mode, "blocked");
+  assert.strictEqual(blocked.message, REGENERATION_PICK_BOOK_HINT);
+  assert.strictEqual(blocked.error, null);
+
+  const loading = regenerationSourcesView({
+    sources: [],
+    isLoading: true,
+    error: null,
+    blockedReason: null,
+  });
+  assert.strictEqual(loading.mode, "loading");
+  assert.strictEqual(loading.message, REGENERATION_SOURCES_LOADING);
+  assert.strictEqual(loading.error, null);
+
+  // Genuinely empty: the server answered, with nothing in it.
+  const empty = regenerationSourcesView({
+    sources: [],
+    isLoading: false,
+    error: null,
+    blockedReason: null,
+  });
+  assert.strictEqual(empty.mode, "empty");
+  assert.strictEqual(empty.message, REGENERATION_SOURCES_EMPTY);
+
+  // THE FINDING: a failed read is not an empty book.
+  const failed = regenerationSourcesView({
+    sources: [],
+    isLoading: false,
+    error: boom,
+    blockedReason: null,
+  });
+  assert.strictEqual(failed.mode, "error");
+  assert.strictEqual(
+    failed.message,
+    null,
+    "a failed lesson read must not claim the book has no regenerable lessons",
+  );
+  assert.strictEqual(failed.error, boom);
+  assert.notStrictEqual(failed.message, REGENERATION_SOURCES_EMPTY);
+
+  // A failed refresh over rows the cache still holds keeps the rows.
+  const stale = regenerationSourcesView({
+    sources: [source1],
+    isLoading: false,
+    error: boom,
+    blockedReason: null,
+  });
+  assert.strictEqual(stale.mode, "error");
+  assert.strictEqual(stale.sources.length, 1, "a failed refresh must not hide known lessons");
+  assert.strictEqual(stale.message, null);
+
+  // A background refresh over existing rows is neither empty nor loading prose.
+  const list = regenerationSourcesView({
+    sources: [source1],
+    isLoading: true,
+    error: null,
+    blockedReason: null,
+  });
+  assert.strictEqual(list.mode, "list");
+  assert.strictEqual(list.message, null);
+  assert.strictEqual(list.error, null);
+  assert.deepStrictEqual(
+    regenerationSourcesView({
+      sources: undefined,
+      isLoading: false,
+      error: null,
+      blockedReason: null,
+    }).sources,
+    [],
+  );
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 28. The cheap minors, as behaviour
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* ── phase-selection prose separates "nothing picked" from "not here yet" ── */
+{
+  const plan: RegenerationApiPhasePlan = {
+    subject: "biology",
+    canonical_phases: ["extract", "flashcards"],
+    selected_phases: ["flashcards"],
+    auto_included_phases: [],
+    regenerated_phases: ["flashcards"],
+    copied_phases: ["extract"],
+    excluded_affected_phases: [],
+    broken_dependency_edges: [],
+    refresh_extraction: false,
+    regenerated_phase_count: 1,
+    copied_phase_count: 1,
+    acknowledgement_required: false,
+    acknowledgement_message: null,
+  };
+  const boom = regenerationErrorView(new ApiError(500, "plan blew up"));
+
+  const ready = regenerationPlanStepView({
+    plan,
+    hasSelection: true,
+    isLoading: false,
+    error: null,
+  });
+  assert.strictEqual(ready.mode, "ready");
+  assert.strictEqual(ready.message, null);
+
+  const none = regenerationPlanStepView({
+    plan: null,
+    hasSelection: false,
+    isLoading: false,
+    error: null,
+  });
+  assert.strictEqual(none.mode, "none");
+  assert.strictEqual(none.message, REGENERATION_PLAN_NONE);
+
+  const loading = regenerationPlanStepView({
+    plan: null,
+    hasSelection: true,
+    isLoading: true,
+    error: null,
+  });
+  assert.strictEqual(loading.mode, "loading");
+  assert.strictEqual(loading.message, REGENERATION_PLAN_LOADING);
+  assert.notStrictEqual(
+    loading.message,
+    REGENERATION_PLAN_NONE,
+    "a plan that is still being computed must not read as an empty selection",
+  );
+
+  const failed = regenerationPlanStepView({
+    plan: null,
+    hasSelection: true,
+    isLoading: false,
+    error: boom,
+  });
+  assert.strictEqual(failed.mode, "error");
+  assert.strictEqual(failed.message, null, "a failed plan must not read as an empty selection");
+
+  // A selection whose plan has not arrived and is not (yet) marked fetching is
+  // still work in progress, never "nothing selected".
+  assert.strictEqual(
+    regenerationPlanStepView({ plan: null, hasSelection: true, isLoading: false, error: null })
+      .mode,
+    "loading",
+  );
+}
+
+/* ── an ineligible lineage says what the id IS ─────────────────────── */
+{
+  const line = regenerationIneligibleLine({
+    toc_entry_id: "99998888-7777-6666-5555-444433332222",
+    output_language: "ru",
+    reasons: ["no_completed_source", "incomplete_snapshot"],
+    detail: "the source job has no flashcards phase",
+  });
+  assert.ok(line.startsWith("Lesson id "), `a bare UUID must be introduced as one: ${line}`);
+  assert.ok(line.includes("99998888-7777-6666-5555-444433332222"));
+  assert.ok(line.includes("Russian"), "the language is a word, not a code");
+  assert.ok(!line.includes("_"), `no internal token may reach the screen: ${line}`);
+  assert.ok(line.includes("the source job has no flashcards phase"));
+  // A lineage with no detail still reads as a sentence.
+  const terse = regenerationIneligibleLine({
+    toc_entry_id: "abc",
+    output_language: "uz",
+    reasons: ["active_lineage_conflict"],
+    detail: "",
+  });
+  assert.ok(terse.startsWith("Lesson id abc"));
+  assert.ok(!terse.endsWith("— "), terse);
+}
+
+/* ── solver verdicts are prose, like every other status on screen ──── */
+assert.strictEqual(regenerationSolverStatusLabel("mismatch_regen"), "Mismatch regen");
+assert.strictEqual(regenerationSolverStatusLabel("solver-unavailable"), "Solver unavailable");
+for (const raw of ["match", "mismatch_shipped", "solver_disabled"]) {
+  const label = regenerationSolverStatusLabel(raw);
+  assert.ok(!label.includes("_"), `${raw} reached the screen as a token: ${label}`);
+  assert.ok(label.length > 0);
+}
+// An unknown verdict is spelled out rather than dropped.
+assert.ok(regenerationSolverStatusLabel("brand_new_verdict").length > 0);
+
+/* ── a failed read offers a way to run it again ────────────────────── */
+assert.ok(REGENERATION_READ_RETRY_LABEL.length > 0);
+assert.ok(
+  !/refresh the page|reload/i.test(REGENERATION_READ_RETRY_LABEL),
+  "the retry must re-run the read, not ask for a browser reload",
+);
+
+/* ────────────────────────────────────────────────────────────────────
+ * 29. Structural guards for the Task-10 correction
+ * ──────────────────────────────────────────────────────────────────── */
+
+// I-1 — the recovery renders for BOTH phases and calls the endpoint each one
+// actually accepts. `launch_canary` refuses an approved campaign, so a single
+// hardcoded `onApprove` would 409 the whole canary half. The assertions are
+// scoped to the recovery block and spelled out in full: `stranded.action`
+// alone is a substring of `stranded.actionLabel`, which every build already
+// has, so it could never fail.
+{
+  const at = canarySrc.indexOf("stranded && (");
+  assert.ok(at > 0, "the recovery section must still be gated on the stranded predicate");
+  const block = canarySrc.slice(at);
+  assert.ok(
+    /stranded\.action === "approve"/.test(block),
+    "the recovery must dispatch on the phase-specific action, not on one mutation",
+  );
+  assert.ok(
+    block.includes("onLaunchCanary"),
+    "the canary-phase recovery must re-run the canary launch",
+  );
+  assert.ok(block.includes("onApprove"), "the approved-phase recovery must re-run approve");
+  assert.ok(
+    !/eject/i.test(block),
+    "the recovery section must not offer Reject: this is not the canary gate",
+  );
+}
+assert.ok(
+  reportSrc.includes("regenerationTargetActions"),
+  "the row-level retry stays the tested helper's decision",
+);
+
+// I-2 — the eligible failure belongs to step 2, and only to step 2.
+assert.ok(
+  /sourcesError=\{/.test(routeSrc),
+  "the route must hand the wizard the eligible-read error under its own name",
+);
+assert.ok(
+  !/planError=\{[^}]*eligible\.error/.test(routeSrc),
+  "a failed lesson read must not be reported as a failed phase plan",
+);
+assert.ok(
+  /regenerationSourcesView\(\{/.test(wizardSrc),
+  "step 2 must decide blocked/loading/error/empty through the tested view",
+);
+assert.ok(
+  !wizardSrc.includes("No lesson in this book"),
+  "the empty-book sentence belongs to the tested view, not to JSX",
+);
+
+// minor 3 — a mutable fleet default must not be able to make a campaign
+// impossible. `inherit` resolves against `launch_defaults.<role>_transport`
+// (`resolve_role_transport_default`), and a `cli` there refuses every
+// regeneration campaign with `non_api_transport` and no UI lever to fix it.
+for (const role of ["extract", "judge", "solver"]) {
+  assert.ok(
+    new RegExp(`${role}_transport: "api"`).test(routeSrc),
+    `${role}_transport must be pinned to api, not left to a mutable default`,
+  );
+  assert.ok(
+    !new RegExp(`${role}_transport: "inherit"`).test(routeSrc),
+    `${role}_transport: "inherit" re-reads launch_defaults at creation time`,
+  );
+}
+assert.ok(/transport: "api"/.test(routeSrc), "the content transport stays api");
+
+// minor 2 — no raw solver token on any surface.
+for (const src of [canarySrc, reportSrc]) {
+  assert.ok(
+    /regenerationSolverStatusLabel\(/.test(src),
+    "solver verdicts must render through the tested label helper",
+  );
+}
+
+// minors 4 and 5 — both strings live in the tested layer.
+assert.ok(/regenerationPlanStepView\(\{/.test(wizardSrc));
+assert.ok(/regenerationIneligibleLine\(/.test(wizardSrc));
+assert.ok(
+  !wizardSrc.includes("Nothing selected yet"),
+  "the step-4 prose belongs to the tested view, not to JSX",
+);
+
+// minor 6 — a failed read is recoverable without reloading the app, and the
+// retry rides the ONE shared error block rather than a fourth local copy.
+assert.ok(
+  /\{onRetry && \(/.test(wizardSrc),
+  "RegenerationProblem must RENDER the retry, not merely accept the prop",
+);
+assert.ok(
+  /onRetry=\{onRetry\}/.test(listSrc),
+  "a failed campaign-list read must offer to run itself again",
+);
+assert.ok(
+  /onRetry=\{[^}]*campaigns\.refetch/.test(routeSrc),
+  "the campaign-list retry must re-run the campaigns query",
+);
+assert.ok(
+  /onRetry=\{[^}]*detail\.refetch/.test(routeSrc),
+  "the campaign-detail retry must re-run the detail query",
 );
 
 console.log("OK");

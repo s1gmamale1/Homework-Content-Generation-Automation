@@ -1,6 +1,5 @@
 import { clearToken, getToken } from "./auth";
 import { cascadeDisclosure, judgeSignal, lessonCountLabel } from "./regeneration-state";
-import { subjectLabel } from "./subjects";
 import type {
   ApprovalGate,
   CascadeSummary,
@@ -8,6 +7,7 @@ import type {
   JudgeStatus,
   PhaseSelection,
 } from "./regeneration-state";
+import { subjectLabel } from "./subjects";
 import type {
   AgentStats,
   AvailableLanguages,
@@ -40,6 +40,7 @@ import type {
   RegenerationEligibleSources,
   RegenerationEstimateRequest,
   RegenerationEstimateResponse,
+  RegenerationIneligibleLineage,
   RegenerationOutputLanguage,
   RegenerationPhasePlan,
   RegenerationPhasePlanRequest,
@@ -1110,8 +1111,19 @@ export function regenerationBucketViews(
 /** The recovery action's label. Deliberately NOT an approval word: the
  *  approval already happened and there is nothing new to review. */
 export const REGENERATION_RELEASE_RETRY_LABEL = "Retry the release";
+export const REGENERATION_CANARY_RETRY_LABEL = "Retry canary generation";
+
+/** WHICH release stalled. The two are recovered by different endpoints, and
+ *  each refuses the other's phase, so this is not decoration. */
+export type RegenerationStrandedPhase = "canary" | "bulk";
+
+/** The mutation that repairs it: `POST /campaigns/{id}/canary` before
+ *  approval, `POST /campaigns/{id}/approve` after. */
+export type RegenerationStrandedAction = "launch-canary" | "approve";
 
 export interface RegenerationStrandedRelease {
+  phase: RegenerationStrandedPhase;
+  action: RegenerationStrandedAction;
   count: number;
   targetIds: string[];
   /** One line per stranded lesson, named — never a bare UUID when the report
@@ -1133,40 +1145,86 @@ export interface RegenerationStrandedRelease {
   pollReason: string;
 }
 
+/** A target the server promised a revision job and never gave one.
+ *
+ *  BOTH statuses count. `_prepare_wave` moves a target `planned -> generating`
+ *  and COMMITS, and `_create_wave` creates the job afterwards in a separate
+ *  session per target — so the crash window spans both sides of that commit,
+ *  and a `generating` row with no `revision_job_id` is just the same failure
+ *  one transaction later. Reading only `planned` left that half invisible, and
+ *  worse: it was counted as a lesson busy regenerating, so the report polled it
+ *  forever and no control offered to start it.
+ *
+ *  `retry_generation` accepts exactly these two statuses
+ *  (`_CREATABLE_TARGET_STATUSES`), which is what makes the row-level recovery
+ *  in `regenerationTargetActions` real rather than hopeful. */
+function isJoblessTarget(t: RegenerationTargetReport): boolean {
+  return (
+    (t.status === "planned" || t.status === "generating") &&
+    t.revision_job_id === null &&
+    !t.is_terminal &&
+    t.abandon_requested_at === null
+  );
+}
+
 /**
- * A campaign that was approved but still has lessons with no revision job.
+ * A campaign that was launched but still has lessons with no revision job.
  *
- * `approve_canary` stamps `approved_at` in one transaction and creates the
- * wave in another, and `_prepare_wave` moves a target OUT of `planned` before
- * its job exists. So `planned` + no `revision_job_id` on an approved campaign
- * means the release transaction never committed for that target. Nothing on
- * the server repairs it: the reconciler walks revision JOBS, and this target
- * has none. Re-running approve is the documented, idempotent repair.
+ * Neither release is one transaction. `approve_canary` stamps `approved_at`
+ * and commits, moves the targets to `generating` and commits again, and only
+ * then creates the revision jobs — one session each. `launch_canary` has the
+ * same seam for the canary targets. Dying anywhere in that sequence leaves a
+ * target at `planned` OR `generating` with no job, and nothing on the server
+ * repairs it: the reconciler walks revision JOBS, and this target has none.
  *
- * `null` — i.e. no recovery offered — when the campaign is finished, was never
- * approved, or is being rejected/cancelled (re-releasing would fight that),
- * and for a target the operator has already asked to abandon, because the wave
- * skips those and re-running would promise a fix that cannot happen.
+ * WHICH repair depends on the phase, and they are not interchangeable:
+ * `launch_canary` REFUSES an approved campaign ("the bulk wave is released by
+ * approve_canary, not by a relaunch"), so offering the canary retry after
+ * approval would be a guaranteed 409, and offering approve before the canary
+ * has run would jump the one human gate. The phase is therefore read off the
+ * launch stamps, not guessed from the status.
+ *
+ * Before approval only the CANARY targets were promised a job — the rest are
+ * `planned` with no job BY DESIGN, waiting at the gate — so the pre-approval
+ * scan is restricted to `is_canary`. Without that restriction this would fire
+ * on every healthy multi-lesson campaign.
+ *
+ * `null` — i.e. no recovery offered — for an UNTOUCHED campaign (neither
+ * stamp: nothing was ever promised), a finished one, one being
+ * rejected/cancelled (re-releasing would fight that), and for a target the
+ * operator has already asked to abandon, because the wave skips those and
+ * re-running would promise a fix that cannot happen.
+ *
+ * ACCEPTED IMPRECISION: `_create_wave` creates the jobs one at a time, so for
+ * the moments between the commit and the last job a healthy release genuinely
+ * looks like this. The note is still literally true at that instant, the
+ * recovery is idempotent, and any lesson that already has its job keeps the
+ * report polling. Erring this way costs a transient warning; erring the other
+ * way is the permanent freeze this predicate exists to end.
  */
 export function regenerationStrandedRelease(
   detail: RegenerationCampaignDetail | null | undefined,
 ): RegenerationStrandedRelease | null {
   if (!detail || detail.is_terminal) return null;
-  if (detail.approved_at === null) return null;
   if (detail.rejected_at !== null || detail.cancel_requested_at !== null) return null;
 
+  const approved = detail.approved_at !== null;
+  // No launch has been attempted at all: an untouched draft owes no lesson a
+  // job, and calling it stranded would warn on every campaign before its
+  // first click.
+  if (!approved && detail.canary_launched_at === null) return null;
+  const phase: RegenerationStrandedPhase = approved ? "bulk" : "canary";
+
   const stranded = detail.targets.filter(
-    (t) =>
-      t.status === "planned" &&
-      t.revision_job_id === null &&
-      !t.is_terminal &&
-      t.abandon_requested_at === null,
+    (t) => isJoblessTarget(t) && (phase === "bulk" || t.is_canary),
   );
   if (stranded.length === 0) return null;
 
   const count = stranded.length;
   const were = plural(count, "was", "were");
-  return {
+  const it = plural(count, "it", "them");
+  const common = {
+    phase,
     count,
     targetIds: stranded.map((t) => t.id),
     lines: stranded.map((t) => regenerationTargetLabel(detail, t.id)),
@@ -1174,6 +1232,40 @@ export function regenerationStrandedRelease(
       targetId: t.id,
       text: regenerationTargetLabel(detail, t.id),
     })),
+  };
+
+  if (phase === "canary") {
+    return {
+      ...common,
+      action: "launch-canary",
+      headline: `${lessonCountLabel(count)} ${were} launched but never started`,
+      detail: [
+        "Starting the canary and creating its revision job are two separate steps on the",
+        "server, so a canary can be recorded as started with nothing running behind it.",
+        `${REGENERATION_CANARY_RETRY_LABEL} is idempotent: it re-runs the same launch, gives no`,
+        "lesson a second revision job and consumes no extra version. It is not a decision about",
+        "the canary — nothing has been generated yet, so there is nothing to read and nothing",
+        "to decline.",
+      ].join(" "),
+      actionLabel: REGENERATION_CANARY_RETRY_LABEL,
+      pendingLabel: "Retrying canary generation…",
+      pollNote: [
+        `${lessonCountLabel(count)} ${were} launched but never got a revision job;`,
+        `refreshing cannot start ${it} —`,
+        `use "${REGENERATION_CANARY_RETRY_LABEL}" on this campaign.`,
+      ].join(" "),
+      pollReason: [
+        `${lessonCountLabel(count)} ${were} launched but never got a revision job.`,
+        `Nothing starts ${it} on its own and refreshing cannot fix it, so this report has`,
+        `stopped ticking: use "${REGENERATION_CANARY_RETRY_LABEL}" on this campaign — it`,
+        "re-runs the same idempotent launch and creates nothing twice.",
+      ].join(" "),
+    };
+  }
+
+  return {
+    ...common,
+    action: "approve",
     headline: `${lessonCountLabel(count)} ${were} approved but never started`,
     detail:
       "Approval and the release are two separate steps on the server, so an approval can be " +
@@ -1185,12 +1277,12 @@ export function regenerationStrandedRelease(
     pendingLabel: "Retrying the release…",
     pollNote: [
       `${lessonCountLabel(count)} ${were} approved but never got a revision job;`,
-      `refreshing cannot start ${plural(count, "it", "them")} —`,
+      `refreshing cannot start ${it} —`,
       `use "${REGENERATION_RELEASE_RETRY_LABEL}" on this campaign.`,
     ].join(" "),
     pollReason: [
       `${lessonCountLabel(count)} ${were} approved but never got a revision job.`,
-      `Nothing starts ${plural(count, "it", "them")} on its own and refreshing cannot fix it,`,
+      `Nothing starts ${it} on its own and refreshing cannot fix it,`,
       `so this report has stopped ticking: use "${REGENERATION_RELEASE_RETRY_LABEL}" on this`,
       "campaign — it re-runs the same idempotent approve call and creates nothing twice.",
       "Any lesson that did start keeps running in the background.",
@@ -1675,7 +1767,14 @@ export function regenerationPollDecision(
     targets.filter(predicate).length;
 
   const activity: string[] = [];
-  const generating = tally((t) => t.status === "generating");
+  // `generating` alone is NOT evidence of work: `_prepare_wave` writes that
+  // status and COMMITS before `_create_wave` gives the target its job, so a
+  // crashed release leaves rows that say "regenerating" with nothing behind
+  // them. Counting those was what kept a permanently dead report ticking, and
+  // what hid the recovery behind a lesson that was never going to move. The
+  // job id is the only evidence the report carries that something real was
+  // queued.
+  const generating = tally((t) => t.status === "generating" && t.revision_job_id !== null);
   if (generating > 0) activity.push(`${lessonCountLabel(generating)} regenerating`);
   const queued = tally((t) => t.status === "publication_pending");
   if (queued > 0) activity.push(`${lessonCountLabel(queued)} queued to publish`);
@@ -1688,8 +1787,9 @@ export function regenerationPollDecision(
     activity.push(`${lessonCountLabel(autoRetry)} waiting on an automatic publish retry`);
   }
   // Everything pushed above is SELF-MOVING: generation and publication proceed
-  // without an operator. A stranded lesson never will, so it is deliberately
-  // not counted here — it decides whether the poll stops, not whether it runs.
+  // without an operator, and every one of them is evidenced by a revision job.
+  // A stranded lesson never will move, so it is deliberately not counted here —
+  // it decides whether the poll stops, not whether it runs.
   if (stranded !== null && activity.length === 0) return stopped(stranded.pollReason);
 
   // Only trustworthy when no lesson is stranded: `bulk_running` is derived from
@@ -1899,6 +1999,16 @@ const REGENERATION_ACTION_COPY: Record<
   },
 };
 
+/** What a retry means for a lesson that never got a revision job at all. The
+ *  standard copy describes re-running a revision; there is no revision here to
+ *  re-run, and saying so is what tells the operator the campaign-level release
+ *  is the thing that failed. */
+const REGENERATION_JOBLESS_RETRY_DETAIL =
+  "This lesson was moved to regenerating but never got a revision job, so nothing is running " +
+  "for it. Retrying finishes the creation the release did not: it uses the snapshot and phase " +
+  "plan this campaign froze, gives the lesson no second job, re-plans nothing and consumes no " +
+  "extra version.";
+
 /**
  * What an operator may do to one target right now.
  *
@@ -1907,6 +2017,14 @@ const REGENERATION_ACTION_COPY: Record<
  * failed. Terminal targets offer nothing. While one of a target's mutations is
  * in flight every button on that row is disabled: the API is idempotent, so
  * this is about not lying to the operator rather than about safety.
+ *
+ * A `generating` target with NO revision job is retryable too, and this is the
+ * per-lesson half of the stranded-release recovery. `retry_generation` accepts
+ * `("generation_failed", "generating")` and, finding no job, runs
+ * `_create_wave([target_id], contract)` — i.e. it finishes the creation the
+ * release never got to. A `generating` target that HAS its job still offers
+ * nothing but abandon: retrying work already in flight is a no-op, and the
+ * button would be a lie.
  */
 export function regenerationTargetActions(
   target: RegenerationTargetReport,
@@ -1914,8 +2032,9 @@ export function regenerationTargetActions(
 ): RegenerationTargetAction[] {
   if (target.is_terminal) return [];
 
+  const joblessGeneration = target.status === "generating" && target.revision_job_id === null;
   const kinds: RegenerationActionKind[] = [];
-  if (target.status === "generation_failed") kinds.push("retry-generation");
+  if (target.status === "generation_failed" || joblessGeneration) kinds.push("retry-generation");
   if (target.status === "publication_failed") kinds.push("retry-publication");
   kinds.push("abandon");
 
@@ -1929,6 +2048,9 @@ export function regenerationTargetActions(
   return kinds.map((kind) => ({
     kind,
     ...REGENERATION_ACTION_COPY[kind],
+    ...(kind === "retry-generation" && joblessGeneration
+      ? { detail: REGENERATION_JOBLESS_RETRY_DETAIL }
+      : {}),
     enabled: disabledReason === null,
     disabledReason,
   }));
@@ -2024,6 +2146,111 @@ export function regenerationJudgeCounts(
 }
 
 /* ── load states: error, loading and empty are three different things ──── */
+
+export const REGENERATION_READ_RETRY_LABEL = "Try this read again";
+
+export const REGENERATION_SOURCES_LOADING = "Loading eligible lessons…";
+export const REGENERATION_SOURCES_EMPTY =
+  "No lesson in this book has a complete published homework job in this language to " +
+  "regenerate from.";
+export const REGENERATION_PLAN_NONE =
+  "Nothing selected yet — tick a phase above, or turn on the extract refresh further down.";
+export const REGENERATION_PLAN_LOADING = "Working out what this selection pulls in…";
+
+export interface RegenerationSourcesView {
+  mode: "blocked" | "loading" | "error" | "empty" | "list";
+  /** Non-null whenever the eligible read failed, even if stale rows render. */
+  error: RegenerationErrorView | null;
+  /** The single line that replaces the rows, or null when rows render. */
+  message: string | null;
+  /** Whatever the cache still holds — a failed refresh hides nothing. */
+  sources: RegenerationEligibleSource[];
+}
+
+/**
+ * A failed lesson read is NOT a book with no regenerable lessons.
+ *
+ * `/eligible` failing is a fact about the step where lessons are PICKED. It
+ * used to be handed to the phase step as a plan failure, so a 500 on the
+ * lesson read appeared under "Pick the phases to rebuild" while the lesson
+ * step calmly stated that this book has nothing to regenerate — a claim about
+ * data that never arrived, made in the one place an operator would believe it.
+ *
+ * `blocked` comes first because no request was made at all: until a book is
+ * picked the query is deliberately switched off (`regenerationEligibleQuery`),
+ * which is neither a failure nor an empty answer. `error` then wins over
+ * loading and empty, and never suppresses rows the cache still holds.
+ */
+export function regenerationSourcesView(input: {
+  sources: RegenerationEligibleSource[] | undefined;
+  isLoading: boolean;
+  error: RegenerationErrorView | null;
+  blockedReason: string | null;
+}): RegenerationSourcesView {
+  const sources = input.sources ?? [];
+  if (input.blockedReason) {
+    return { mode: "blocked", error: null, message: input.blockedReason, sources };
+  }
+  if (input.error) {
+    return { mode: "error", error: input.error, message: null, sources };
+  }
+  if (input.isLoading && sources.length === 0) {
+    return { mode: "loading", error: null, message: REGENERATION_SOURCES_LOADING, sources };
+  }
+  if (sources.length === 0) {
+    return { mode: "empty", error: null, message: REGENERATION_SOURCES_EMPTY, sources };
+  }
+  return { mode: "list", error: null, message: null, sources };
+}
+
+export interface RegenerationPlanStepView {
+  mode: "none" | "loading" | "error" | "ready";
+  message: string | null;
+}
+
+/**
+ * "Nothing is selected" and "the planner has not answered yet" are different.
+ *
+ * The cascade step rendered "Nothing selected yet." whenever the plan was
+ * absent — which is also what a plan in flight and a plan that just 500'd look
+ * like. Only the first is a statement about the operator's selection; the
+ * other two are statements about a request, and one of them has an error block
+ * of its own directly above.
+ */
+export function regenerationPlanStepView(input: {
+  plan: RegenerationPhasePlan | null;
+  hasSelection: boolean;
+  isLoading: boolean;
+  error: RegenerationErrorView | null;
+}): RegenerationPlanStepView {
+  if (input.plan) return { mode: "ready", message: null };
+  // The error itself renders through RegenerationProblem; repeating it as
+  // prose here would say the same thing twice, and claiming an empty selection
+  // would say something false.
+  if (input.error) return { mode: "error", message: null };
+  if (!input.hasSelection) return { mode: "none", message: REGENERATION_PLAN_NONE };
+  return { mode: "loading", message: REGENERATION_PLAN_LOADING };
+}
+
+/** One lineage that cannot be regenerated.
+ *
+ *  A `toc_entry_id` is the only identity `/eligible` returns for an INELIGIBLE
+ *  row — there is no title on it, because the lesson never had a finished job
+ *  to read one from — so the UUID has to render. Saying what it IS is the
+ *  difference between an identifier and a wall of hex, and the reasons are
+ *  server codes, which are spelled out like every other status on screen. */
+export function regenerationIneligibleLine(row: RegenerationIneligibleLineage): string {
+  const head = `Lesson id ${row.toc_entry_id} (${regenerationLanguageLabel(row.output_language)})`;
+  const why = [row.reasons.map(humanise).join("; "), row.detail].filter(Boolean).join(" — ");
+  return why ? `${head} — ${why}` : `${head} — no reason was recorded for this lineage.`;
+}
+
+/** A solver verdict, in operator words. The counts arrive keyed by the raw
+ *  `mismatch_regen`-style token, and every other status on these screens is
+ *  rendered as prose; this one was being echoed verbatim. */
+export function regenerationSolverStatusLabel(status: string): string {
+  return humanise(status) || status;
+}
 
 export const REGENERATION_LIST_LOADING = "Loading campaigns…";
 export const REGENERATION_LIST_EMPTY = "No regeneration campaigns yet.";

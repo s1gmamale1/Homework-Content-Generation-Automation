@@ -10,6 +10,7 @@ import {
   regenerationPublicationStateLabel,
   regenerationReasonError,
   regenerationReleasedFailureLines,
+  regenerationSolverStatusLabel,
   regenerationTargetActions,
 } from "@/lib/api";
 import type {
@@ -131,8 +132,8 @@ function TargetRow({
         {Object.entries(target.solver_status_counts)
           .filter(([, n]) => n > 0)
           .map(([status, n]) => (
-            <span key={status} className="font-mono">
-              solver {status} ×{n}
+            <span key={status}>
+              solver {regenerationSolverStatusLabel(status)} ×{n}
             </span>
           ))}
       </div>
