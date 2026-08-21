@@ -173,7 +173,11 @@ def test_content_provider_is_required_only_under_api_transport():
     )
     assert required_api_providers(api) == frozenset({"claude"})
 
-    cli = api.model_copy(update={"transport": "cli"})
+    # Rebuilt through the constructor, NOT `model_copy(update=...)`: model_copy
+    # skips `_validate_against_production_rules`, so it can mint a contract
+    # shape production could never build and this file's "every production
+    # validator runs" promise would quietly stop being true.
+    cli = resolved_contract(**{**api.model_dump(), "transport": "cli"})
     assert required_api_providers(cli) == frozenset()
 
 
@@ -315,6 +319,32 @@ def test_self_solve_by_the_primary_peer_falls_back_to_the_alternate():
     assert required_api_providers(contract) == frozenset({"claude", "gemini"})
 
 
+def test_clodex_content_requires_its_own_credential():
+    """`content_ok`'s third arm (`can_clodex_api`). Clodex is api-ONLY
+    (`API_ONLY_PROVIDERS`), so it is the one provider a cli fallback can never
+    rescue: without the key the campaign simply never runs."""
+    contract = resolved_contract(
+        provider="clodex",
+        model="gpt-5.6-sol",
+        transport="api",
+        # extract may not be clodex — `validate_role_provider` refuses it
+        # (the vision fallbacks need a CLI-capable provider).
+        extract_transport="cli",
+        extract_provider="gemini",
+        extract_model="gemini-3.1-flash-lite-preview",
+        judge_provider="claude",
+        judge_model="claude-opus-4-7",
+        solver_provider="claude",
+        solver_model="claude-sonnet-4-6",
+    )
+    assert required_api_providers(contract) == frozenset({"clodex", "claude"})
+
+    without_key = worker_view(api={"claude": True, "gemini": True})
+    with_key = worker_view(api={"claude": True, "clodex": True})
+    assert worker_can_execute(contract, without_key) is False
+    assert worker_can_execute(contract, with_key) is True
+
+
 def test_required_api_providers_returns_a_frozenset():
     assert isinstance(required_api_providers(resolved_contract()), frozenset)
 
@@ -369,6 +399,32 @@ def test_draining_worker_is_refused():
     assert worker_can_execute(resolved_contract(), worker) is False
 
 
+def test_live_worker_with_offline_status_is_refused():
+    """The reachable fail-open a status DENYLIST would leave behind.
+
+    `mark_stale_offline` stamps `status='offline'` on its own window while
+    liveness here is derived from the CALLER's `stale_after_seconds`, so a
+    caller with a wider window legitimately sees `offline` + `online=True`.
+    Counting that row as capacity approves a campaign that then stalls
+    forever."""
+    worker = worker_view(api=_ALL_CREDS, status="offline")
+    assert worker.get("online") is True, "the trap needs a LIVE offline-status row"
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_worker_with_an_unknown_status_is_refused():
+    """`workers.status` is a free String(32) with no CHECK constraint, so an
+    allowlist is the only shape that stays correct when a status is added."""
+    worker = worker_view(api=_ALL_CREDS, status="quarantined")
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_cli_contract_is_also_refused_by_a_non_online_status():
+    """The status allowlist is not conditional on needing a credential."""
+    worker = worker_view(capabilities=None, status="offline")
+    assert worker_can_execute(cli_only_contract(), worker) is False
+
+
 def test_worker_with_null_capabilities_is_refused():
     """`workers.capabilities` is nullable — a worker that has never published
     a blob must be refused, not crash the preflight."""
@@ -383,6 +439,31 @@ def test_worker_with_empty_capabilities_is_refused():
 
 def test_worker_with_no_api_section_is_refused():
     worker = worker_view(capabilities={"cli": {"gemini": True}})
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_worker_with_a_non_dict_capabilities_blob_does_not_raise():
+    """JSONB holds any JSON value. A preflight that raises on a malformed blob
+    takes the whole approval screen down with one bad worker row."""
+    worker = worker_view(capabilities="online")
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_worker_with_a_non_dict_api_section_does_not_raise():
+    worker = worker_view(capabilities={"api": "yes"})
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_stringly_typed_capability_fails_closed():
+    """`bool("false")` is True. A blob from an older or hand-edited worker that
+    says the STRING "false" must not be read as a credential — only a literal
+    `True` counts."""
+    worker = worker_view(api={"gemini": "false", "claude": "false"})
+    assert worker_can_execute(resolved_contract(), worker) is False
+
+
+def test_truthy_non_boolean_capability_fails_closed():
+    worker = worker_view(api={"gemini": 1, "claude": 1})
     assert worker_can_execute(resolved_contract(), worker) is False
 
 
@@ -510,8 +591,9 @@ async def test_check_active_workers_refuses_when_no_worker_has_the_credential(
     assert result.ok is False
     assert result.compatible_worker_ids == ()
     assert result.workers_online == 2
-    assert result.reason is not None
-    assert "claude" in result.reason
+    assert result.reason == (
+        "no online worker holds api credentials for claude, gemini"
+    )
 
 
 async def test_check_active_workers_refuses_when_nothing_is_online(fleet):
@@ -523,7 +605,7 @@ async def test_check_active_workers_refuses_when_nothing_is_online(fleet):
     assert result.ok is False
     assert result.workers_online == 0
     assert result.compatible_worker_ids == ()
-    assert result.reason is not None
+    assert result.reason == "no workers are online"
 
 
 async def test_check_active_workers_refuses_an_empty_registry(fleet):
@@ -534,7 +616,7 @@ async def test_check_active_workers_refuses_an_empty_registry(fleet):
 
     assert result.ok is False
     assert result.workers_online == 0
-    assert result.reason is not None
+    assert result.reason == "no workers are online"
 
 
 async def test_check_active_workers_refuses_first_on_the_fleet_budget_pause(
@@ -579,7 +661,109 @@ async def test_check_active_workers_refuses_a_fleet_that_is_entirely_draining(
     assert result.ok is False
     assert result.compatible_worker_ids == ()
     assert result.workers_online == 1
-    assert result.reason is not None
+    assert result.reason == "no live worker has status 'online' (saw: draining)"
+
+
+# ─── the reason LADDER: each rung, and the precedence between them ────────
+#
+# The ordering is the feature ("what can the operator act on first"), so every
+# rung is pinned to an EXACT string and every adjacent pair is pinned by a case
+# where BOTH conditions hold at once. Without the precedence cases a swapped
+# ladder still passes: each individual rung test only ever makes one condition
+# true, so it cannot tell rung order from rung content.
+
+
+async def test_pause_outranks_an_empty_fleet(fleet):
+    """Both true at once. Starting a worker would not help while the fleet's
+    api spend is paused, so the pause must be what the operator is told."""
+    fleet([], api_paused=True)
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.workers_online == 0, "the empty-fleet rung is also available"
+    assert result.reason == "fleet API spend is paused"
+
+
+async def test_pause_outranks_a_missing_credential(fleet):
+    fleet([worker_view("pc-vertex", api={"gemini": True})], api_paused=True)
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.reason == "fleet API spend is paused"
+
+
+async def test_an_empty_fleet_outranks_a_missing_credential(fleet):
+    """No worker is online AND no worker holds the credential — naming the
+    credential would send the operator to edit a `.env` on a host that is not
+    even running."""
+    fleet([worker_view("pc-dead", api={}, online=False)])
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.required_api_providers == ("claude", "gemini")
+    assert result.reason == "no workers are online"
+
+
+async def test_a_non_online_status_outranks_a_missing_credential(fleet):
+    """The one live worker is both draining AND under-credentialed. The drain
+    is the actionable fact: fixing the credential changes nothing."""
+    fleet([worker_view("pc-drain", api={"gemini": True}, status="draining")])
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.workers_online == 1
+    assert result.reason == "no live worker has status 'online' (saw: draining)"
+
+
+async def test_the_status_rung_names_every_status_it_saw_deterministically(
+    fleet,
+):
+    """`offline` and `draining` call for different operator actions, so the
+    rung reports what is actually there — sorted, so the string is stable."""
+    fleet(
+        [
+            worker_view("pc-a", api=_ALL_CREDS, status="offline"),
+            worker_view("pc-b", api=_ALL_CREDS, status="draining"),
+            worker_view("pc-c", api=_ALL_CREDS, status="offline"),
+        ]
+    )
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.ok is False
+    assert result.workers_online == 3
+    assert result.reason == (
+        "no live worker has status 'online' (saw: draining, offline)"
+    )
+
+
+async def test_a_live_offline_status_fleet_is_not_reported_as_draining(fleet):
+    """The status rung must describe the fleet it saw, not assume a drain."""
+    fleet([worker_view("pc-off", api=_ALL_CREDS, status="offline")])
+    result = await check_active_workers(
+        _StubSession(), resolved_contract(), stale_after_seconds=90
+    )
+
+    assert result.ok is False
+    assert result.reason == "no live worker has status 'online' (saw: offline)"
+
+
+async def test_a_cli_contract_still_needs_an_accepting_worker(fleet):
+    """A contract needing no credential cannot reach the credential rung, and
+    there is no "none of the above" rung — rungs 1-4 are exhaustive."""
+    fleet([worker_view("pc-drain", capabilities=None, status="draining")])
+    result = await check_active_workers(
+        _StubSession(), cli_only_contract(), stale_after_seconds=90
+    )
+
+    assert result.ok is False
+    assert result.required_api_providers == ()
+    assert result.reason == "no live worker has status 'online' (saw: draining)"
 
 
 async def test_check_active_workers_names_the_self_grade_peer_credential(fleet):
@@ -602,3 +786,6 @@ async def test_check_active_workers_names_the_self_grade_peer_credential(fleet):
 
     assert result.required_api_providers == ("claude", "gemini")
     assert result.ok is False
+    assert result.reason == (
+        "no online worker holds api credentials for claude, gemini"
+    )

@@ -47,14 +47,27 @@ parity wins:
    contributes a provider iff ``transport == 'api'`` and each role contributes
    one iff its own ``*_needs_api`` arm is true.
 
-What is NOT parity, on purpose: the offline/stale and ``draining`` refusals.
-``claim_next_job`` receives a credential dict, never the worker registry, so it
-cannot see either. They are preflight-only judgements about whether a worker is
-CAPACITY: a dead worker's credentials run nothing, and a draining worker — which
-may still claim until it observes the drain signal — must not be counted as
-capacity for a campaign that has not launched yet. Both make the preflight
-STRICTER than the gate, which is the safe direction: the campaign is refused
-with a reason instead of stalling.
+What is NOT parity, on purpose: the registry refusals. ``claim_next_job``
+receives a credential dict, never the worker registry, so it cannot see
+liveness or ``workers.status`` at all. They are preflight-only judgements about
+whether a worker is CAPACITY, and they are an ALLOWLIST — a worker counts only
+when it is live AND ``status == 'online'``:
+
+* a dead worker's credentials run nothing;
+* a ``draining`` worker may still claim until it observes the drain signal, but
+  must not be PROMISED as capacity for a campaign that has not launched yet;
+* every other status must fail closed. ``workers.status`` is a free
+  ``String(32)`` with no CHECK constraint (``app/models/worker.py``), and
+  ``workers_repo.mark_stale_offline`` stamps ``'offline'`` on its OWN window
+  while liveness here is derived from the CALLER's ``stale_after_seconds`` — so
+  a caller with a wider window legitimately sees ``status='offline'`` together
+  with ``online=True``. A denylist that refused only ``draining`` would count
+  that row as capacity, approve the campaign, and let it stall forever: exactly
+  the failure this module exists to prevent. Any status added later
+  (``paused``, ``quarantined``) is refused for free.
+
+All of these make the preflight STRICTER than the gate, which is the safe
+direction: the campaign is refused with a reason instead of stalling.
 """
 
 from __future__ import annotations
@@ -70,10 +83,11 @@ from app.schemas.regeneration_contract import ResolvedLaunchContract
 from app.services.agent_models import resolve_role_transport
 from app.services.model_tiers import resolve_judge, resolve_solver
 
-# `workers.status` is a free String(32) column; this is the one value that means
-# "an operator asked this worker to stop taking work". Named here rather than
-# inlined so the drain semantics are greppable from both sides.
-_DRAINING = "draining"
+# The ONLY `workers.status` value that means "this worker is taking work".
+# An allowlist, not a denylist — see the module docstring: the column has no
+# CHECK constraint, so anything else (`draining`, `offline`, a status added
+# next year) must fail closed rather than be counted as fleet capacity.
+_STATUS_ONLINE = "online"
 
 # The exact reason the fleet-wide api spend pause surfaces with. Rendered by
 # later tasks; pinned by test so a reword is a visible change.
@@ -84,11 +98,12 @@ _PAUSED_REASON = "fleet API spend is paused"
 class WorkerExecutability:
     """Whether the live fleet can run a contract, and what is missing if not.
 
-    ``workers_online`` counts every worker whose heartbeat is fresh —
-    INCLUDING draining ones. That is deliberate: "3 workers online, none can
-    run this" is the diagnosis an operator needs, and hiding the draining
-    workers would make the same fleet look empty for one contract and populated
-    for another.
+    ``workers_online`` is pure LIVENESS: every worker whose heartbeat is fresh,
+    whatever its registry ``status`` (draining, offline, anything). That is
+    deliberate — "3 workers online, none can run this" is the diagnosis an
+    operator needs, and filtering by status here would make the same fleet look
+    empty for one contract and populated for another. ``compatible_worker_ids``
+    is the strict subset that can actually serve THIS contract.
 
     ``required_api_providers`` is sorted so the tuple is stable to render and
     to assert on.
@@ -159,20 +174,43 @@ def required_api_providers(contract: ResolvedLaunchContract) -> frozenset[str]:
     return frozenset(required)
 
 
-def _published_api_capabilities(worker: dict[str, Any]) -> dict[str, Any]:
-    """The ``api`` section of a worker's published capability blob, defensively.
+def _pause_blocks(required: frozenset[str], fleet_api_paused: bool) -> bool:
+    """Does the fleet-wide api spend pause block a contract needing ``required``?
 
-    ``workers.capabilities`` is nullable (a worker that has never heartbeat a
-    blob, or an older worker that published a different shape), so every lookup
-    here has to survive ``None`` and a missing ``"api"`` key. Absent evidence is
-    NOT a credential: the result is an empty mapping, and every membership test
-    against it fails closed.
+    ONE definition, two readers (``worker_can_execute`` decides with it,
+    ``check_active_workers`` words its reason with it) — the rule must not be
+    written twice, because a divergence between the verdict and the message it
+    carries is invisible to a test that only reads one of them.
+
+    Mirrors ``claim_next_job``'s ``fleet_gate`` (module docstring, deviation 2):
+    the pause blocks a contract iff the contract actually spends on api, which
+    is exactly ``required_api_providers`` being non-empty.
     """
-    blob = worker.get("capabilities") or {}
+    return fleet_api_paused and bool(required)
+
+
+def _published_api_credentials(worker: dict[str, Any]) -> frozenset[str]:
+    """The api credentials a worker CLAIMS to hold, read fail-closed.
+
+    ``workers.capabilities`` is a nullable JSONB blob published by the worker
+    itself, so this function's whole job is to survive whatever is in it:
+    ``None`` (a worker that never heartbeat a blob), a non-mapping, a missing
+    or non-mapping ``"api"`` section, and values that are not booleans.
+
+    Only a literal ``True`` counts. ``worker._capability_blob`` publishes real
+    Python bools, so nothing legitimate is lost — but a blob from an older or
+    hand-edited worker carrying the STRING ``"false"`` is truthy in Python, and
+    ``bool("false")`` would hand a credential to a worker that just told us it
+    has none. Absent, malformed and non-``True`` evidence are all the same
+    answer here: not a credential.
+    """
+    blob = worker.get("capabilities")
     if not isinstance(blob, dict):
-        return {}
-    api = blob.get("api") or {}
-    return api if isinstance(api, dict) else {}
+        return frozenset()
+    api = blob.get("api")
+    if not isinstance(api, dict):
+        return frozenset()
+    return frozenset(name for name, value in api.items() if value is True)
 
 
 def worker_can_execute(
@@ -187,34 +225,36 @@ def worker_can_execute(
 
     Three independent refusals:
 
-    * **liveness / drain** — ``online`` must be true and ``status`` must not be
-      ``draining``. Preflight-only (see module docstring); a stale heartbeat
-      already arrives here as ``online=False``, so "stale" and "offline" are
-      one rule, decided against the DB clock inside the repository.
-    * **fleet api pause** — refuses iff the contract touches api at all, which
-      mirrors ``claim_next_job``'s ``fleet_gate`` (deviation 2). A cli-only
-      contract is unaffected: the pause is a SPEND lever and a cli campaign
-      spends nothing.
+    * **registry** — the worker must be live (``online``) AND registered
+      ``status == 'online'``. An ALLOWLIST: see the module docstring for why
+      refusing only ``draining`` fails open on ``offline``. Preflight-only; a
+      stale heartbeat already arrives here as ``online=False``, so "stale" and
+      "not live" are one rule, decided against the DB clock inside the
+      repository.
+    * **fleet api pause** — ``_pause_blocks``: refuses iff the contract touches
+      api at all, mirroring ``claim_next_job``'s ``fleet_gate`` (deviation 2).
+      A cli-only contract is unaffected: the pause is a SPEND lever and a cli
+      campaign spends nothing.
     * **credentials** — every provider in ``required_api_providers`` must be
-      truthy in the worker's published ``capabilities["api"]``. ANDed, exactly
-      like the SQL gate ANDs its per-role arms: one missing key is enough.
+      published as ``True`` by the worker. A subset test, which is how the SQL
+      gate ANDs its per-role arms: one missing credential is enough to refuse.
     """
     if worker.get("online") is not True:
         return False
-    if worker.get("status") == _DRAINING:
+    if worker.get("status") != _STATUS_ONLINE:
         return False
 
     required = required_api_providers(contract)
-    if fleet_api_paused and required:
+    if _pause_blocks(required, fleet_api_paused):
         return False
 
-    api = _published_api_capabilities(worker)
-    return all(bool(api.get(provider)) for provider in required)
+    return required <= _published_api_credentials(worker)
 
 
 async def check_active_workers(
     session: AsyncSession,
     contract: ResolvedLaunchContract,
+    *,
     stale_after_seconds: int,
 ) -> WorkerExecutability:
     """Ask the LIVE fleet whether ``contract`` is launchable, with a reason.
@@ -224,17 +264,41 @@ async def check_active_workers(
     read through their repositories so this stays the only place regeneration
     reasons about fleet capacity.
 
-    The refusals are ordered by what an operator can ACT on:
+    ``stale_after_seconds`` is keyword-only, matching every neighbour that
+    takes it (``workers_repo.list_with_liveness`` / ``has_live_workers`` /
+    ``aggregate_fleet_capability``) — the value is a policy window, and a bare
+    integer at a call site reads as anything.
+
+    **``ok`` is ``worker_can_execute``'s verdict and nothing else.** This
+    function does not re-decide any rule; it only counts, names and explains.
+    That is what keeps the parity test (which exercises ``worker_can_execute``)
+    load-bearing for what an operator actually sees here.
+
+    The REASON ladder is ordered by what an operator can ACT on, and the order
+    is part of the contract — each rung is pinned by test:
 
     1. the fleet api pause — a lever someone deliberately pulled, and the one
-       fact that makes every other diagnosis noise. Checked first, but (see
-       module docstring, deviation 2) only when the contract actually spends on
-       api; a cli campaign is launchable during an api pause, exactly as
-       ``claim_next_job`` would claim it;
-    2. nothing online at all — start a worker;
-    3. everything online is draining — stop the drain, or wait;
-    4. online workers exist but none holds the credentials — the missing
+       fact that makes every other diagnosis noise. It outranks even an empty
+       fleet: starting a worker would not help. Worded from ``_pause_blocks``,
+       the same predicate ``worker_can_execute`` refused with, so the verdict
+       and its explanation cannot drift apart;
+    2. nothing live at all — start a worker;
+    3. live workers exist but none is registered ``status='online'`` — the
+       statuses actually seen are named, because "draining" and "offline" call
+       for different operator actions;
+    4. accepting workers exist but none holds the credentials — the missing
        providers are named, because that is a ``.env`` fix on a specific host.
+
+    There is deliberately no fifth "none of the above" rung: a contract that
+    needs no credential is executable on ANY accepting worker, so rungs 1-4 are
+    exhaustive whenever ``compatible`` is empty. A fallback rung would be
+    permanently dead code asserting otherwise.
+
+    Raises ``RuntimeError`` (from ``budget_repo.get_state``) if the
+    ``budget_state`` singleton is missing — a broken migration state. That is
+    deliberately NOT converted into ``ok=False``: "the fleet cannot run this"
+    and "this deployment is misconfigured" are different answers, and silently
+    reporting the first would send an operator hunting for credentials.
     """
     required = required_api_providers(contract)
     required_sorted = tuple(sorted(required))
@@ -245,44 +309,31 @@ async def check_active_workers(
     workers = await workers_repo.list_with_liveness(
         session, stale_after_seconds=stale_after_seconds
     )
-    online = [w for w in workers if w.get("online") is True]
-    workers_online = len(online)
+    live = [w for w in workers if w.get("online") is True]
+    workers_online = len(live)
 
-    if fleet_api_paused and required:
-        return WorkerExecutability(
-            ok=False,
-            workers_online=workers_online,
-            compatible_worker_ids=(),
-            required_api_providers=required_sorted,
-            fleet_api_paused=True,
-            reason=_PAUSED_REASON,
-        )
-
-    # The compatibility verdict is `worker_can_execute`'s alone — including the
-    # drain rule — so the preflight has exactly ONE definition of "this worker
-    # can run it" and the parity test covers the definition this function uses.
-    # `accepting` exists only to tell an all-draining fleet apart from an
-    # under-credentialed one when composing the reason.
     compatible = tuple(
         str(w.get("pc_id"))
-        for w in online
+        for w in live
         if worker_can_execute(contract, w, fleet_api_paused)
     )
-    accepting = [w for w in online if w.get("status") != _DRAINING]
+    # Only ever used to WORD rung 3 — never to decide `ok`.
+    accepting = [w for w in live if w.get("status") == _STATUS_ONLINE]
 
     if compatible:
         reason = None
+    elif _pause_blocks(required, fleet_api_paused):
+        reason = _PAUSED_REASON
     elif workers_online == 0:
         reason = "no workers are online"
     elif not accepting:
-        reason = "every online worker is draining"
-    elif required_sorted:
+        seen = ", ".join(sorted({str(w.get("status")) for w in live}))
+        reason = f"no live worker has status 'online' (saw: {seen})"
+    else:
         reason = (
             "no online worker holds api credentials for "
             + ", ".join(required_sorted)
         )
-    else:
-        reason = "no online worker can run this contract"
 
     return WorkerExecutability(
         ok=bool(compatible),

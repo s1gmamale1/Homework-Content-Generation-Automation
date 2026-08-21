@@ -27,11 +27,19 @@ whether a worker is capacity (see the service module's docstring). Every worker
 view in this table is therefore live and accepting, and the pure tests in
 ``tests/services/test_regeneration_executability.py`` own those rules.
 
-Isolation: each row seeds its OWN book/TOC/source/campaign/target/revision,
-gives the revision a dominating ``priority`` so it outranks anything a previous
-run may have left behind, asserts on the claimed job's IDENTITY (not merely
-"something was claimed"), and rolls the claim back so no row's claim can leak
-into the next one's.
+Isolation, and what it does NOT promise: each row seeds its OWN book/TOC/
+source/campaign/target/revision, asserts on the claimed job's IDENTITY (not
+merely "something was claimed"), and rolls the claim back so no row's claim can
+leak into the next one's.
+
+``priority`` is set above every literal this repository uses so the row wins
+the claim ordering against anything left behind by a hard-killed run — but that
+is a best effort, not a guarantee: the queue is global and any future fixture
+may outrank it. So the failure mode is handled explicitly instead of being
+assumed away. If the gate claims SOMEBODY ELSE's job, ``_sql_gate_would_claim``
+fails with that job's id and says so, rather than folding it into ``False`` and
+reporting a preflight/gate "drift" that did not happen — a confidently wrong
+diagnosis is worse than a loud unexplained one.
 """
 
 from __future__ import annotations
@@ -53,10 +61,13 @@ db_only = pytest.mark.skipif(
 
 _SUBJECT = "math-algebra"
 _MAX_ATTEMPTS = 3
-# Priority is the DOMINANT sort key in `claim_next_job`. Ours wins against any
-# ordinary (priority 0) row a previous test or run left pending, so "was our
-# job claimable" and "was our job claimed" are the same question.
-_PRIORITY = 10_000
+# Priority is the dominant sort key in `claim_next_job`. This must outrank
+# every other priority literal in the repository, or a row left behind by a
+# hard-killed run wins the claim instead of ours: `tests/services/
+# test_solver_fail_closed_e2e.py` and `tests/services/test_queue_retry_e2e.py`
+# both seed at 1_000_000 against this same scratch DATABASE_URL. Well inside
+# int4. Not a guarantee on its own — see `_sql_gate_would_claim`.
+_PRIORITY = 1_000_000_000
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -360,6 +371,102 @@ PARITY_TABLE: list[Row] = [
         worker(gemini=False, claude=False),
         False,
     ),
+    # ── fleet pause driven by a per-ROLE arm, not by `transport == 'api'` ──
+    # `job_resolved_api` is `transport=='api' OR judge_needs_api OR
+    # extract_needs_api OR solver_needs_api`. The two pause rows above all
+    # resolve through the FIRST disjunct, so the three role arms are never the
+    # deciding term; deleting any of them from `jobs.py` would leave the table
+    # green. These rows make each role arm decide the pause on its own.
+    Row(
+        "paused-cli-job-whose-JUDGE-is-api",
+        contract(
+            **_CLAUDE_CLI,
+            transport="cli",
+            extract_transport="cli",
+            extract_provider="claude",
+            extract_model="claude-haiku-4-5-20251001",
+            judge_transport="api",
+            judge_provider="gemini",
+            judge_model="gemini-3.5-flash",
+            solver_transport="cli",
+            solver_provider="claude",
+            solver_model="claude-opus-4-7",
+        ),
+        worker(gemini=True, claude=True),
+        True,
+    ),
+    Row(
+        "paused-cli-job-whose-EXTRACT-is-api",
+        contract(
+            **_CLAUDE_CLI,
+            transport="cli",
+            extract_transport="api",
+            extract_provider="gemini",
+            extract_model="gemini-3.5-flash",
+            judge_transport="cli",
+            judge_provider="claude",
+            judge_model="claude-opus-4-7",
+            solver_transport="cli",
+            solver_provider="claude",
+            solver_model="claude-haiku-4-5-20251001",
+        ),
+        worker(gemini=True, claude=True),
+        True,
+    ),
+    Row(
+        "paused-cli-job-whose-SOLVER-is-api",
+        contract(
+            **_CLAUDE_CLI,
+            transport="cli",
+            extract_transport="cli",
+            extract_provider="claude",
+            extract_model="claude-haiku-4-5-20251001",
+            judge_transport="cli",
+            judge_provider="claude",
+            judge_model="claude-opus-4-7",
+            solver_transport="api",
+            solver_provider="gemini",
+            solver_model="gemini-3.5-flash",
+        ),
+        worker(gemini=True, claude=True),
+        True,
+    ),
+    # ── clodex: `content_ok`'s third arm, and the one provider with no cli
+    # fallback (API_ONLY_PROVIDERS) — without the key nothing ever runs it.
+    Row(
+        "clodex-content-without-the-clodex-key",
+        contract(
+            provider="clodex",
+            model="gpt-5.6-sol",
+            transport="api",
+            extract_transport="cli",
+            extract_provider="gemini",
+            extract_model="gemini-3.1-flash-lite-preview",
+            judge_provider="claude",
+            judge_model="claude-opus-4-7",
+            solver_provider="claude",
+            solver_model="claude-sonnet-4-6",
+        ),
+        worker(gemini=True, claude=True),
+        False,
+    ),
+    Row(
+        "clodex-content-with-the-clodex-key",
+        contract(
+            provider="clodex",
+            model="gpt-5.6-sol",
+            transport="api",
+            extract_transport="cli",
+            extract_provider="gemini",
+            extract_model="gemini-3.1-flash-lite-preview",
+            judge_provider="claude",
+            judge_model="claude-opus-4-7",
+            solver_provider="claude",
+            solver_model="claude-sonnet-4-6",
+        ),
+        worker(clodex=True, claude=True),
+        False,
+    ),
     # ── mixed credentials, inherited transports ──
     Row(
         "inherited-api-roles-with-only-the-gemini-key",
@@ -508,7 +615,14 @@ async def _purge(ids: dict) -> None:
 
 async def _sql_gate_would_claim(row: Row, revision_id) -> bool:
     """Did `claim_next_job` claim OUR revision? Rolled back either way, so a
-    claim (ours or a stray one) cannot bleed into the next row."""
+    claim (ours or a stray one) cannot bleed into the next row.
+
+    Three outcomes, not two. "The gate refused our row" and "the gate claimed
+    somebody else's row" must NOT both collapse to False: one leaked pending
+    row would turn every expected-True case into a failure whose message blames
+    a preflight/claim-gate drift that never happened. The foreign claim is
+    therefore its own, differently-worded failure.
+    """
     from app.db import SessionLocal
 
     async with SessionLocal() as session:
@@ -520,7 +634,17 @@ async def _sql_gate_would_claim(row: Row, revision_id) -> bool:
                 capabilities=credential_caps(row.worker),
                 fleet_api_paused=row.fleet_api_paused,
             )
-            return claimed is not None and claimed.job.id == revision_id
+            if claimed is None:
+                return False
+            if claimed.job.id != revision_id:
+                pytest.fail(
+                    f"[{row.name}] claim_next_job claimed a FOREIGN job "
+                    f"({claimed.job.id}, priority={claimed.job.priority}) "
+                    f"instead of this row's revision ({revision_id}). That is "
+                    "stale rows in the scratch DB, NOT a preflight/claim-gate "
+                    "drift: clear the leftover pending jobs and re-run."
+                )
+            return True
         finally:
             await session.rollback()
 
@@ -567,3 +691,15 @@ def test_the_parity_table_exercises_both_verdicts():
     assert any(
         required_api_providers(r.contract) == frozenset() for r in PARITY_TABLE
     ), "no cli-only row: the conditional content-credential rule is untested"
+    assert any(
+        r.fleet_api_paused and r.contract.transport == "cli"
+        for r in PARITY_TABLE
+    ), (
+        "no paused row with transport='cli': the pause would only ever be "
+        "decided by `job_resolved_api`'s first disjunct, leaving the per-role "
+        "judge/extract/solver arms unproven"
+    )
+    assert any(r.contract.provider == "clodex" for r in PARITY_TABLE), (
+        "no clodex row: `content_ok`'s third arm is unproven, and clodex is "
+        "the one provider a cli fallback cannot rescue"
+    )
