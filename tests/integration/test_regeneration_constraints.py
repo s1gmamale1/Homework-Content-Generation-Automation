@@ -1147,6 +1147,73 @@ _CREATE_DESTINATION = dict(
     reviewed_notion_lesson_title="7 Photosynthesis",
 )
 
+# Every shape the rule must refuse, keyed by what is wrong with it. Shared by
+# the database test (the CHECK refuses each) and the repository test (the
+# repository refuses each BEFORE the row is built) so the two can never drift.
+_REFUSED_DESTINATIONS = {
+    # 'reuse' with nothing to reuse.
+    "container reuse without a page id": {
+        **_REUSE_DESTINATION,
+        "reviewed_notion_container_page_id": None,
+    },
+    "lesson reuse without a page id": {
+        **_REUSE_DESTINATION,
+        "reviewed_notion_lesson_page_id": None,
+    },
+    # 'create' carrying a page id it would never use.
+    "container create with a page id": {
+        **_CREATE_DESTINATION,
+        "reviewed_notion_container_page_id": "container-page-1",
+    },
+    "lesson create with a page id": {
+        **_CREATE_DESTINATION,
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+    },
+    "unknown lesson policy": {
+        **_REUSE_DESTINATION,
+        "notion_parent_policy": "adopt",
+    },
+    "unknown container policy": {
+        **_REUSE_DESTINATION,
+        "notion_container_policy": "adopt",
+    },
+    # A brand-new container has no children, so there is no existing Lesson
+    # Topic inside it to reuse.
+    "reused lesson under a created container": {
+        **_REUSE_DESTINATION,
+        "notion_container_policy": "create",
+        "reviewed_notion_container_page_id": None,
+    },
+    # Whatever is written, the operator must have seen its title.
+    "no reviewed title": {
+        **_REUSE_DESTINATION,
+        "reviewed_notion_lesson_title": None,
+    },
+    # A reviewed value with no policy at all is a decision nobody made.
+    "container page id with no policy at all": {
+        "reviewed_notion_container_page_id": "container-page-1",
+    },
+    "lesson page id with no policy at all": {
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+    },
+}
+
+# The two refusals that only hold if every comparison in the CHECK is TOTAL —
+# see `test_destination_check_is_total_for_a_missing_policy`. Kept apart from
+# the table above because they are the specific proof of that property.
+_NULL_POLICY_DESTINATIONS = {
+    "lesson policy with no container policy beside it": {
+        "notion_container_policy": None,
+        "reviewed_notion_container_page_id": None,
+        "notion_parent_policy": "reuse",
+        "reviewed_notion_lesson_page_id": "lesson-page-1",
+        "reviewed_notion_lesson_title": "7 Photosynthesis",
+    },
+    "reviewed title with no policy at all": {
+        "reviewed_notion_lesson_title": "7 Photosynthesis",
+    },
+}
+
 
 async def _accepts_destination(campaign_id, toc_id, job_id, **destination) -> None:
     """Commit one target carrying `destination`, then delete it again.
@@ -1264,54 +1331,7 @@ async def test_destination_check_accepts_only_legacy_reuse_or_create_shapes():
         )
 
         # ── refused ─────────────────────────────────────────────────────────
-        refusals = {
-            # 'reuse' with nothing to reuse.
-            "container reuse without a page id": {
-                **_REUSE_DESTINATION,
-                "reviewed_notion_container_page_id": None,
-            },
-            "lesson reuse without a page id": {
-                **_REUSE_DESTINATION,
-                "reviewed_notion_lesson_page_id": None,
-            },
-            # 'create' carrying a page id it would never use.
-            "container create with a page id": {
-                **_CREATE_DESTINATION,
-                "reviewed_notion_container_page_id": "container-page-1",
-            },
-            "lesson create with a page id": {
-                **_CREATE_DESTINATION,
-                "reviewed_notion_lesson_page_id": "lesson-page-1",
-            },
-            "unknown lesson policy": {
-                **_REUSE_DESTINATION,
-                "notion_parent_policy": "adopt",
-            },
-            "unknown container policy": {
-                **_REUSE_DESTINATION,
-                "notion_container_policy": "adopt",
-            },
-            # A brand-new container has no children, so there is no existing
-            # Lesson Topic inside it to reuse.
-            "reused lesson under a created container": {
-                **_REUSE_DESTINATION,
-                "notion_container_policy": "create",
-                "reviewed_notion_container_page_id": None,
-            },
-            # Whatever is written, the operator must have seen its title.
-            "no reviewed title": {
-                **_REUSE_DESTINATION,
-                "reviewed_notion_lesson_title": None,
-            },
-            # A reviewed value with no policy is a decision nobody made.
-            "container page id with no policy at all": {
-                "reviewed_notion_container_page_id": "container-page-1",
-            },
-            "lesson page id with no policy at all": {
-                "reviewed_notion_lesson_page_id": "lesson-page-1",
-            },
-        }
-        for label, destination in refusals.items():
+        for label, destination in _REFUSED_DESTINATIONS.items():
             message = await _refuses_destination(
                 campaign_id, toc_id, job_id, **destination
             )
@@ -1345,27 +1365,11 @@ async def test_destination_check_is_total_for_a_missing_policy():
 
         job_id = jobs["uz"]
 
-        # A lesson policy with NO container policy beside it.
-        message = await _refuses_destination(
-            campaign_id,
-            toc_id,
-            job_id,
-            notion_container_policy=None,
-            reviewed_notion_container_page_id=None,
-            notion_parent_policy="reuse",
-            reviewed_notion_lesson_page_id="lesson-page-1",
-            reviewed_notion_lesson_title="7 Photosynthesis",
-        )
-        assert _DESTINATION_CHECK in message
-
-        # Every policy NULL, but a reviewed title present.
-        message = await _refuses_destination(
-            campaign_id,
-            toc_id,
-            job_id,
-            reviewed_notion_lesson_title="7 Photosynthesis",
-        )
-        assert _DESTINATION_CHECK in message
+        for label, destination in _NULL_POLICY_DESTINATIONS.items():
+            message = await _refuses_destination(
+                campaign_id, toc_id, job_id, **destination
+            )
+            assert _DESTINATION_CHECK in message, f"{label} was not refused"
     finally:
         await _purge(book_id)
 
@@ -1414,18 +1418,27 @@ async def test_repository_refuses_a_partial_destination_and_a_v1_campaign_versio
             await s.commit()
             campaign_id = campaign.id
 
-        # A lesson policy with no container policy beside it never reaches SQL.
+        # Parity: every shape the CHECK refuses is refused here too, before any
+        # SQL is emitted. Sharing the tables is what keeps the two in step — a
+        # rule added to one and forgotten in the other fails this loop.
         async with SessionLocal() as s:
-            with pytest.raises(ValueError):
-                await targets_repo.create_target(
-                    s,
-                    campaign_id=campaign_id,
-                    toc_entry_id=toc_id,
-                    output_language="uz",
-                    phase_plan=copy.deepcopy(_PHASE_PLAN),
-                    source_job_id=jobs["uz"],
-                    notion_parent_policy="reuse",
-                )
+            for label, destination in {
+                **_REFUSED_DESTINATIONS,
+                **_NULL_POLICY_DESTINATIONS,
+            }.items():
+                try:
+                    await targets_repo.create_target(
+                        s,
+                        campaign_id=campaign_id,
+                        toc_entry_id=toc_id,
+                        output_language="uz",
+                        phase_plan=copy.deepcopy(_PHASE_PLAN),
+                        source_job_id=jobs["uz"],
+                        **destination,
+                    )
+                except ValueError:
+                    continue
+                pytest.fail(f"create_target accepted {label!r}")
             await s.rollback()
 
         # The whole shape is stored verbatim.

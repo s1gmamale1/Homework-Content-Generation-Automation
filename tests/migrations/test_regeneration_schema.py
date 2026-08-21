@@ -520,10 +520,22 @@ async def test_0064_adds_campaign_version_and_reviewed_destination_and_reverts()
         assert destination_rule is not None, f"{_DESTINATION_CHECK} missing"
         # Three-valued logic: a CHECK is SATISFIED by UNKNOWN, so a rule built
         # from bare `= 'reuse'` comparisons ACCEPTS the half-filled shapes it
-        # was written to refuse. The total operators are the fix, and pg prints
-        # them back verbatim, so they can be pinned here.
-        assert "IS NOT DISTINCT FROM" in destination_rule, destination_rule
+        # was written to refuse. What is pinned here is that the comparisons
+        # against the two policy columns are TOTAL — PostgreSQL stores
+        # `a IS NOT DISTINCT FROM b` back as `NOT (a IS DISTINCT FROM b)`, so
+        # the assertion is on the operator, not on the spelling.
+        assert "IS DISTINCT FROM" in destination_rule, destination_rule
+        # The one partial comparison that IS allowed — `IN ('reuse','create')`,
+        # stored as `= ANY (ARRAY[...])` — sits behind this explicit guard, the
+        # same pairing 0063 uses for the revision session-limit strategy.
         assert "notion_parent_policy IS NOT NULL" in destination_rule, destination_rule
+        for policy in ("notion_parent_policy", "notion_container_policy"):
+            for literal in ("'reuse'::text", "'create'::text"):
+                assert f"({policy})::text = {literal}" not in destination_rule, (
+                    f"{policy} is compared with an UNGUARDED `=` against "
+                    f"{literal} — that evaluates to NULL when the policy is "
+                    f"missing, and a NULL CHECK result PASSES"
+                )
         for column in _DESTINATION_COLUMNS:
             assert column in destination_rule, column
 

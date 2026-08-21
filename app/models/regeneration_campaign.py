@@ -75,6 +75,19 @@ class RegenerationCampaign(Base, UUIDPK, Timestamps):
     # whole point is "current prompts", so which "current" must be recorded.
     app_git_revision: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
+    # The Notion version number this whole campaign publishes ("Homework V2").
+    # NOT the same column as `regeneration_targets.publication_version`, which
+    # is the per-lesson allocation guarded by
+    # `uq_regeneration_targets_publication_version`; this one is the campaign's
+    # single declared version.
+    #
+    # Nullable, because logical V1 is the pre-existing `Homework` page that no
+    # campaign produced, and every campaign drafted before the guided wizard has
+    # no version to claim. Task 4 is what makes it mandatory on a new
+    # service-created campaign; retro-assigning one here would invent a
+    # publication that never happened.
+    publication_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+
     # ─── audit trail ──────────────────────────────────────────────────────
     canary_launched_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
@@ -109,6 +122,12 @@ class RegenerationCampaign(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "canary_size >= 0",
             name="ck_regeneration_campaigns_canary_size",
+        ),
+        # Already total: `NULL IS NULL` is TRUE, so the NULL case is decided by
+        # the first disjunct and never leaves the predicate UNKNOWN.
+        CheckConstraint(
+            "publication_version IS NULL OR publication_version >= 2",
+            name="ck_regeneration_campaigns_publication_version",
         ),
     )
 

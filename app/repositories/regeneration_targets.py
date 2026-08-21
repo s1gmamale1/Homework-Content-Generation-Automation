@@ -24,7 +24,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.homework_job import HomeworkJob
 from app.models.regeneration_campaign import RegenerationCampaign
-from app.models.regeneration_target import RegenerationTarget
+from app.models.regeneration_target import (
+    NOTION_DESTINATION_POLICIES,
+    RegenerationTarget,
+)
 from app.models.toc_entry import TOCEntry
 
 # How many claimable rows one sweep inspects before giving up for this tick. A
@@ -81,6 +84,83 @@ def _publication_lineage_lock_key(toc_entry_id: UUID, output_language: str) -> i
     return int.from_bytes(digest, "big", signed=True)
 
 
+def _validate_reviewed_destination(
+    *,
+    notion_container_policy: Optional[str],
+    reviewed_notion_container_page_id: Optional[str],
+    notion_parent_policy: Optional[str],
+    reviewed_notion_lesson_page_id: Optional[str],
+    reviewed_notion_lesson_title: Optional[str],
+) -> None:
+    """Refuse anything but no destination at all, or a whole coherent one.
+
+    The Python twin of ``ck_regeneration_targets_notion_parent_decision``. The
+    CHECK is the authority — this exists so a caller gets a readable
+    ``ValueError`` naming the offending field instead of an ``IntegrityError``
+    raised by a flush several statements later, possibly after other rows in
+    the same transaction have already been built.
+    """
+    values = (
+        notion_container_policy,
+        reviewed_notion_container_page_id,
+        notion_parent_policy,
+        reviewed_notion_lesson_page_id,
+        reviewed_notion_lesson_title,
+    )
+    if all(v is None for v in values):
+        # No reviewed decision — the historical/internal shape. Legal.
+        return
+    if notion_parent_policy not in NOTION_DESTINATION_POLICIES:
+        raise ValueError(
+            "notion_parent_policy must be one of "
+            f"{list(NOTION_DESTINATION_POLICIES)} once any reviewed destination "
+            f"field is set (got {notion_parent_policy!r})"
+        )
+    if notion_container_policy not in NOTION_DESTINATION_POLICIES:
+        raise ValueError(
+            "notion_container_policy must be one of "
+            f"{list(NOTION_DESTINATION_POLICIES)} once any reviewed destination "
+            f"field is set (got {notion_container_policy!r})"
+        )
+    if reviewed_notion_lesson_title is None:
+        raise ValueError(
+            "reviewed_notion_lesson_title is required — the operator approved a "
+            "destination by its title, so it is recorded whether the Lesson "
+            "Topic is reused or created"
+        )
+    # `reuse` names a page that exists; `create` names one that does not yet.
+    if notion_container_policy == "reuse":
+        if reviewed_notion_container_page_id is None:
+            raise ValueError(
+                "notion_container_policy='reuse' needs "
+                "reviewed_notion_container_page_id — there is nothing to reuse"
+            )
+    elif reviewed_notion_container_page_id is not None:
+        raise ValueError(
+            "notion_container_policy='create' must not carry "
+            "reviewed_notion_container_page_id — the container does not exist yet"
+        )
+    if notion_parent_policy == "reuse":
+        # A container that is about to be created has no children, so there is
+        # no existing Lesson Topic inside it to reuse.
+        if notion_container_policy != "reuse":
+            raise ValueError(
+                "notion_parent_policy='reuse' requires "
+                "notion_container_policy='reuse' — a container that does not "
+                "exist yet holds no Lesson Topic to reuse"
+            )
+        if reviewed_notion_lesson_page_id is None:
+            raise ValueError(
+                "notion_parent_policy='reuse' needs "
+                "reviewed_notion_lesson_page_id — there is nothing to reuse"
+            )
+    elif reviewed_notion_lesson_page_id is not None:
+        raise ValueError(
+            "notion_parent_policy='create' must not carry "
+            "reviewed_notion_lesson_page_id — the Lesson Topic does not exist yet"
+        )
+
+
 async def create_target(
     session: AsyncSession,
     *,
@@ -91,6 +171,11 @@ async def create_target(
     source_job_id: Optional[UUID] = None,
     is_canary: bool = False,
     status: str = "planned",
+    notion_container_policy: Optional[str] = None,
+    reviewed_notion_container_page_id: Optional[str] = None,
+    notion_parent_policy: Optional[str] = None,
+    reviewed_notion_lesson_page_id: Optional[str] = None,
+    reviewed_notion_lesson_title: Optional[str] = None,
 ) -> RegenerationTarget:
     """Insert one lesson's target. The caller must be ready for an
     ``IntegrityError``: ``uq_regeneration_targets_active_lineage`` is what stops
@@ -100,7 +185,20 @@ async def create_target(
     ``app.services.regeneration_planner.RegenerationPhasePlan.to_json()`` — the
     planner is the only producer, and ``from_json`` the only reader. This
     repository deliberately does no serialization of its own, so there is
-    exactly one definition of the stored shape."""
+    exactly one definition of the stored shape.
+
+    The five reviewed-destination arguments default to None together, which is
+    the legal "no decision recorded" shape historical and internal callers
+    produce; any PARTIAL combination is refused before the row is built. There
+    is deliberately no later setter — the destination is what the operator
+    approved, so it is written once here and never moved."""
+    _validate_reviewed_destination(
+        notion_container_policy=notion_container_policy,
+        reviewed_notion_container_page_id=reviewed_notion_container_page_id,
+        notion_parent_policy=notion_parent_policy,
+        reviewed_notion_lesson_page_id=reviewed_notion_lesson_page_id,
+        reviewed_notion_lesson_title=reviewed_notion_lesson_title,
+    )
     target = RegenerationTarget(
         campaign_id=campaign_id,
         toc_entry_id=toc_entry_id,
@@ -109,6 +207,11 @@ async def create_target(
         source_job_id=source_job_id,
         is_canary=is_canary,
         status=status,
+        notion_container_policy=notion_container_policy,
+        reviewed_notion_container_page_id=reviewed_notion_container_page_id,
+        notion_parent_policy=notion_parent_policy,
+        reviewed_notion_lesson_page_id=reviewed_notion_lesson_page_id,
+        reviewed_notion_lesson_title=reviewed_notion_lesson_title,
     )
     session.add(target)
     await session.flush()

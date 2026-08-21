@@ -27,9 +27,22 @@ async def create_campaign(
     estimated_cost_low_usd: Optional[float] = None,
     estimated_cost_high_usd: Optional[float] = None,
     app_git_revision: Optional[str] = None,
+    publication_version: Optional[int] = None,
 ) -> RegenerationCampaign:
     """Insert a draft campaign. The JSON columns are the campaign's frozen
-    specification — write them here and never mutate them again."""
+    specification — write them here and never mutate them again.
+
+    ``publication_version`` is the version this whole campaign publishes and
+    defaults to None so historical/internal callers are unaffected. The
+    authority is ``ck_regeneration_campaigns_publication_version``; the refusal
+    is repeated here so a caller gets a readable ``ValueError`` instead of an
+    ``IntegrityError`` from a flush several statements later.
+    """
+    if publication_version is not None and publication_version < 2:
+        raise ValueError(
+            "publication_version must be >= 2 — logical V1 is the pre-existing "
+            f"Homework page, which no campaign produced (got {publication_version})"
+        )
     campaign = RegenerationCampaign(
         status=status,
         selection_spec=selection_spec,
@@ -42,6 +55,7 @@ async def create_campaign(
         estimated_cost_low_usd=estimated_cost_low_usd,
         estimated_cost_high_usd=estimated_cost_high_usd,
         app_git_revision=app_git_revision,
+        publication_version=publication_version,
     )
     session.add(campaign)
     await session.flush()

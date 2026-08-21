@@ -48,8 +48,45 @@ PUBLICATION_STATUSES = (
 TERMINAL_STATUSES = ("published", "abandoned")
 
 
+# The two levels of the reviewed Notion destination, and the decisions the
+# operator may make at each. `container` is the page that holds Lesson Topics;
+# `parent` is the Lesson Topic itself, under which `Homework V2` is written.
+NOTION_DESTINATION_POLICIES = ("reuse", "create")
+
+
 def _sql_list(values: tuple[str, ...]) -> str:
     return ",".join(f"'{v}'" for v in values)
+
+
+# The reviewed-destination rule, as one SQL expression. Every comparison is
+# TOTAL — see the long comment on the constraint that uses it. Migration
+# `0064_regen_reviewed_destination` carries its own verbatim copy, as every
+# migration here does, so a later model edit can never silently rewrite
+# already-applied DDL.
+NOTION_DESTINATION_RULE = f"""(notion_parent_policy IS NULL
+ AND notion_container_policy IS NULL
+ AND reviewed_notion_container_page_id IS NULL
+ AND reviewed_notion_lesson_page_id IS NULL
+ AND reviewed_notion_lesson_title IS NULL)
+OR
+(notion_parent_policy IS NOT NULL
+ AND notion_parent_policy IN ({_sql_list(NOTION_DESTINATION_POLICIES)})
+ AND reviewed_notion_lesson_title IS NOT NULL
+ AND (
+   (notion_container_policy IS NOT DISTINCT FROM 'reuse'
+    AND reviewed_notion_container_page_id IS NOT NULL)
+   OR
+   (notion_container_policy IS NOT DISTINCT FROM 'create'
+    AND reviewed_notion_container_page_id IS NULL)
+ )
+ AND (
+   (notion_parent_policy IS NOT DISTINCT FROM 'reuse'
+    AND notion_container_policy IS NOT DISTINCT FROM 'reuse'
+    AND reviewed_notion_lesson_page_id IS NOT NULL)
+   OR
+   (notion_parent_policy IS NOT DISTINCT FROM 'create'
+    AND reviewed_notion_lesson_page_id IS NULL)
+ ))"""
 
 
 class RegenerationTarget(Base, UUIDPK, Timestamps):
@@ -142,6 +179,35 @@ class RegenerationTarget(Base, UUIDPK, Timestamps):
     # first allocated number is 2.
     publication_version: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     notion_page_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+
+    # ─── reviewed Notion destination (what the operator approved) ─────────
+    # Where the `Homework V2` sibling goes, decided by the operator in the
+    # guided wizard and frozen here: `reuse` names an existing page by id,
+    # `create` names a page that does not exist yet, so it carries a title
+    # instead. Publication reads these — it never re-derives the destination
+    # from a live Notion search, which is how a run ends up writing somewhere
+    # nobody approved.
+    #
+    # All five are nullable so historical targets, which predate the wizard,
+    # keep a legal (all-null) shape rather than being assigned a decision
+    # nobody made; `ck_regeneration_targets_notion_parent_decision` below is
+    # what stops a HALF-filled one. Task 4 makes them mandatory on every new
+    # service-created campaign.
+    notion_container_policy: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+    reviewed_notion_container_page_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
+    notion_parent_policy: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True
+    )
+    reviewed_notion_lesson_page_id: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True
+    )
+    reviewed_notion_lesson_title: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True
+    )
 
     # ─── durable publisher claim (survives a publisher restart) ───────────
     publication_claim_token: Mapped[Optional[UUID]] = mapped_column(
@@ -238,5 +304,24 @@ class RegenerationTarget(Base, UUIDPK, Timestamps):
         CheckConstraint(
             "publication_attempts >= 0",
             name="ck_regeneration_targets_publication_attempts",
+        ),
+        # Either NO reviewed destination at all (a historical target), or a
+        # WHOLE coherent one. A half-filled destination is how a publisher ends
+        # up writing `Homework V2` somewhere nobody approved, so this is a
+        # database rule rather than a convention every future caller must
+        # remember.
+        #
+        # `IS NOT DISTINCT FROM` and the leading `IS NOT NULL` are load-bearing,
+        # not style. SQL is three-valued and a CHECK constraint is SATISFIED by
+        # UNKNOWN: written with bare `notion_container_policy = 'reuse'`, this
+        # predicate evaluates to NULL — and PostgreSQL therefore ACCEPTS the row
+        # — for exactly the shapes it exists to refuse, e.g. a `reuse` lesson
+        # policy with no container policy beside it, or every policy NULL with a
+        # reviewed title set. Making each comparison total turns those NULLs
+        # into FALSE. Same trap, same fix as
+        # `ck_homework_jobs_revision_session_limit_strategy`.
+        CheckConstraint(
+            NOTION_DESTINATION_RULE,
+            name="ck_regeneration_targets_notion_parent_decision",
         ),
     )
