@@ -729,11 +729,22 @@ def test_the_parity_table_exercises_both_verdicts():
     ), "no cli-only row: the conditional content-credential rule is untested"
     # `job_resolved_api` is a FOUR-disjunct OR (`jobs.py`): content transport,
     # then judge/extract/solver. A row satisfies the gate as soon as ANY one is
-    # true, so an arm is only PROVEN by a row in which it is the SOLE api arm.
-    # Requiring merely "a paused row with transport='cli'" is not that: the
-    # cli-only paused row satisfies it while touching no api arm at all, which
-    # is how all three role rows could be deleted with this guard still green.
-    for role in ("judge", "extract", "solver"):
+    # true, so an arm is only PROVEN by a row in which it is the SOLE api arm —
+    # every clause below therefore requires the other three to be cli, not just
+    # this one to be api.
+    #
+    # Two ways to get this wrong, both already made once here:
+    #   * requiring merely "a paused row with transport='cli'" — satisfied by
+    #     the cli-only paused row, which touches NO api arm at all, so all three
+    #     role rows could be deleted with the guard still green;
+    #   * requiring "this role is api" without the sole-arm conjunct — satisfied
+    #     by ONE row with judge AND extract AND solver all api, which would
+    #     answer all three clauses at once while proving no individual arm.
+    #     That is a realistic maintenance edit (consolidating the role rows),
+    #     and the guard would report everything fine with all three protections
+    #     gone.
+    _ROLE_ARMS = ("judge", "extract", "solver")
+    for role in _ROLE_ARMS:
         assert any(
             r.fleet_api_paused
             and r.contract.transport == "cli"
@@ -741,13 +752,22 @@ def test_the_parity_table_exercises_both_verdicts():
                 getattr(r.contract, f"{role}_transport"), r.contract.transport
             )
             == "api"
+            and all(
+                resolve_role_transport(
+                    getattr(r.contract, f"{other}_transport"),
+                    r.contract.transport,
+                )
+                != "api"
+                for other in _ROLE_ARMS
+                if other != role
+            )
             for r in PARITY_TABLE
         ), (
-            f"no paused row whose {role} resolves to api under a cli content "
-            f"transport: `job_resolved_api`'s {role}_needs_api arm is the only "
-            "thing that would block such a job, so deleting that arm from "
-            "jobs.py would leave this table green while api spend continues "
-            "through a fleet-wide budget pause"
+            f"no paused row whose SOLE api arm is {role} (cli content "
+            f"transport, the other two roles cli): `job_resolved_api`'s "
+            f"{role}_needs_api arm is the only thing that would block such a "
+            "job, so deleting that arm from jobs.py would leave this table "
+            "green while api spend continues through a fleet-wide budget pause"
         )
     assert any(
         r.fleet_api_paused
@@ -757,7 +777,7 @@ def test_the_parity_table_exercises_both_verdicts():
                 getattr(r.contract, f"{role}_transport"), r.contract.transport
             )
             != "api"
-            for role in ("judge", "extract", "solver")
+            for role in _ROLE_ARMS
         )
         for r in PARITY_TABLE
     ), (
