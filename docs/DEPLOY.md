@@ -65,6 +65,13 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `SESSION_LIMIT_STRATEGY` | no | `pause` | Fleet-wide default for what a worker does on a Claude **session-limit** (`fleet-session-limit-autopause-1`, worklog 0089). `pause` = parse the stated reset time, requeue the job (no attempt burned), self-cooldown that worker until reset, auto-resume. `switch` = fail the limited role over to a non-limited model down `FAILOVER_PROVIDER_ORDER` and keep generating. Per-batch `session_limit_strategy` (`pause`/`switch`/`inherit`) overrides this; `inherit` (the batch default) falls back to this env value. Must be `pause` or `switch`. |
 | `SESSION_LIMIT_DEFAULT_TZ` | no | `America/Chicago` | IANA tz used to interpret a session-limit reset clock-time (`resets 12:50am`) when the message states no tz. |
 | `SESSION_LIMIT_DEFAULT_COOLDOWN_SECONDS` | no | `3600` | Fallback worker self-cooldown when a session-limit's reset time can't be parsed. |
+| `REGENERATION_ENABLED` | no | `false` | Master flag for versioned homework regeneration. Off ⇒ every `/api/v1/regeneration*` route returns **404** (deliberately not 403 — a stale SPA must not be able to detect that the routes exist). Head-only; workers need neither regeneration flag. |
+| `REGENERATION_PUBLISHER_ENABLED` | no | `false` | Second, independent flag for the loop that publishes `Homework V{n}` Notion sibling pages. Separate from the flag above so generation can be exercised with delivery dark. **Enable on the ONE designated head/API process** (the claim protocol is safe if two run it, but don't). While it is off, `POST /regeneration/campaigns/{id}/approve` and `POST /regeneration/targets/{id}/retry-publication` return `409 publisher_disabled` — so the flag-on order is schema → `REGENERATION_ENABLED` → this → SPA rebuild. |
+| `REGENERATION_PUBLISHER_INTERVAL_SECONDS` | no | `30` | Idle sweep interval. A pass that did work loops straight back, so a backlog drains at Notion's pace, not at this interval. Delivery is **serial** — one pass publishes at most one page. |
+| `REGENERATION_PUBLISHER_LEASE_SECONDS` | no | `300` | Durable publication claim lease; keep well above a realistic Notion write (page + children + PDF upload). On shutdown the publisher gets a **30s** grace to finish the target it is on; a target cancelled past that keeps its lease until this expires, and only then can another pass adopt the half-written page by its marker. Don't expect a restarted head to resume a killed delivery immediately. |
+| `REGENERATION_PUBLISHER_MAX_ATTEMPTS` | no | `5` | Automatic delivery attempts before a target parks in `publication_failed` for an operator. Must be ≥ 1. |
+| `REGENERATION_PUBLISHER_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | no | `60` / `3600` | Exponential backoff between delivery attempts, and its ceiling. |
+| `REGENERATION_LAUNCH_WAVE_SIZE` / `_INTERVAL_SECONDS` | no | `4` / `60` | Launch stagger for a campaign's bulk wave. Same mechanism as `BATCH_LAUNCH_WAVE_*`, deliberately more conservative because a regeneration wave re-runs whole snapshots on top of whatever the fleet is already generating. Either at `0` disables the stagger. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -278,6 +285,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 - [ ] Worker concurrency tuned to your tier:
       `AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (the live knob — `agent._effective_concurrency()`; each job makes ~3-4 phase calls in parallel; `GEMINI_MAX_CONCURRENCY` is the deprecated fallback used only when `AGENT_MAX_CONCURRENCY` is left at default)
 - [ ] If horizontally scaling: `WORKER_CONCURRENCY=0` on API pods so they don't double-claim jobs alongside dedicated worker pods
+- [ ] Versioned homework regeneration left **off** unless separately authorized: `REGENERATION_ENABLED=false` and `REGENERATION_PUBLISHER_ENABLED=false`, and the SPA built **without** `VITE_REGENERATION_ENABLED=1`. Verify with a `404` from `GET /api/v1/regeneration/campaigns` and no `Regeneration publisher started` line in the boot log. Migration 0063 may stay applied (the tables are simply unused) — see [the regeneration runbook](./runbooks/versioned-homework-regeneration.md)
 
 ---
 
@@ -355,6 +363,43 @@ retain the complete auth/vault/fence hardening.
 **Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini *file-cache* SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern. (Note: this is only about the legacy cache — `transport=api` *does* use SDKs today, `google-genai` + `anthropic` via `app/services/api_transport.py`.)
 
 **Idempotency-Key in-memory cache** is per-process. With multi-pod API, the same Idempotency-Key sent to two pods will create two jobs (the natural-key + advisory lock still prevent same-section duplicates). For strict cross-pod idempotency, move `_IDEMPOTENCY_CACHE` from `app/api/v1/jobs.py` to a Redis or DB table. For most deployments, the natural-key idempotency is sufficient.
+
+
+**Versioned homework regeneration ships dormant — and the UI flag is build-time.** The
+feature is gated by `REGENERATION_ENABLED` + `REGENERATION_PUBLISHER_ENABLED` (both
+`false`) **and** a third, separate switch on the frontend: the SPA must be built with
+`VITE_REGENERATION_ENABLED=1`. `isRegenerationEnabled` matches the **literal string
+`"1"`** — `true`, `TRUE`, `yes` and `on` all silently leave the nav item and the
+`/regeneration` route out of the bundle, with no warning anywhere, so an operator who
+sets `=true` will report "the feature did not ship". Because it is baked in at build
+time, changing it requires `npm run build` and a reload; editing `.env` and restarting
+the API does nothing for the frontend. Note also that the shipped `Dockerfile` runs a
+plain `npm run build` with **no `ARG`/`ENV` for this variable**, so an image built
+as-is always ships the regeneration UI hidden — on a bare-metal head, build the SPA on
+the host (`cd web && VITE_REGENERATION_ENABLED=1 npm run build`; FastAPI serves
+`web/dist`).
+
+**Regeneration and the cost caps — both scopes.** Revision jobs carry `batch_id=NULL`
+(enforced by CHECK), and the per-batch cap joins usage rows to a batch, so
+`COST_CAP_BATCH_USD` **never applies to a regeneration campaign**, however large. The
+fleet-daily query has no job-kind filter, so regeneration spend **does** count toward
+`COST_CAP_FLEET_DAILY_USD` and a big campaign can trip it and **pause ordinary api
+batches fleet-wide**. Budget and stage campaigns accordingly.
+
+**Regeneration history blocks book/TOC deletion.** Every regeneration FK is RESTRICT
+(a target records a publication version consumed forever). While history exists, book
+delete, TOC-entry delete and `/toc/retry` refuse with a structured `409`
+(`book_delete_blocked_by_regeneration` / `toc_entry_delete_blocked_by_regeneration` /
+`toc_retry_blocked_by_regeneration`) rather than a raw FK error. Cancelling or
+abandoning a campaign does not erase the audit history and does not unblock them.
+
+**Rolling regeneration back** is just: turn both backend flags off and restart the
+head. No publisher loop starts, every route 404s, in-flight revision jobs still finish
+as ordinary jobs and are never archived to the legacy `Homework` page
+(`notion_archive.archive_job` intrinsically refuses any job with
+`revision_of_job_id IS NOT NULL`, regardless of `force` or caller), and **every
+existing `Homework` / `Homework V2` / `Homework V3` page in Notion is untouched** —
+rollback deletes nothing.
 
 
 ## Dashboard viewer port (worklog 0153)

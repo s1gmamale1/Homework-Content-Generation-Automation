@@ -14,6 +14,17 @@
 4. Each phase produces **markdown** (the deliverable). The operator console streams progress over SSE and renders each phase's markdown for review.
 5. The packet downloads as a **ZIP of one markdown file per phase**.
 
+**Versioned regeneration (shipped dormant, flags off).** An already-finished lesson can be
+re-run with the *currently deployed* prompts and published as a **new sibling page** —
+`Homework V2`, `Homework V3` — beside the original. The existing `Homework` page is logical V1
+and is never renamed, cleared or deleted, and neither is any earlier version. You pick phases;
+the dependency graph auto-includes everything downstream (selecting `flashcards` regenerates
+10 of 11 phases), everything else is copied for free into a complete snapshot. One human gate —
+a canary review — then successful targets publish automatically. Off behind
+`REGENERATION_ENABLED` + `REGENERATION_PUBLISHER_ENABLED` (backend) and a build-time
+`VITE_REGENERATION_ENABLED=1` (SPA); enabling it is a separate operator decision. Operator
+guide: **[docs/runbooks/versioned-homework-regeneration.md](./docs/runbooks/versioned-homework-regeneration.md)**.
+
 Besides the student homework packet, the app also generates a per-lesson **teacher lesson-plan
 deck** (`kind="teacher_material"`) — a structured cover/objectives/lesson-map/stage-scripts/quiz/
 rubric deck built from the same cached lesson `extract`, in one schema-validated pass. It's launched
@@ -149,6 +160,7 @@ All settings via env vars; defaults in [`app/config.py`](./app/config.py). Essen
 | `BOOK_FETCH_WARN_MB` | Loud-warn threshold for an oversized book PDF (default 100 MB; `0` disables). Warn only — never a refusal, so big books stay supported. Concurrent jobs of one book on a host already collapse to a single transfer |
 | `QUEUE_BACKPRESSURE_LIMIT` | `503` when `pending` depth exceeds; `0` disables |
 | `NOTION_API_KEY` / `NOTION_*` | Optional: Notion archive + Fetch-From-Notion |
+| `REGENERATION_ENABLED` / `REGENERATION_PUBLISHER_ENABLED` | **Both `false`** — versioned homework regeneration ships dormant. The first gates the whole feature (every `/api/v1/regeneration*` route 404s while off); the second gates the head-side loop that publishes `Homework V{n}` Notion siblings, and must run on **one** designated head. Approving a canary requires the publisher flag already on. The UI is a separate **build-time** flag: `VITE_REGENERATION_ENABLED=1` (**literal `"1"` only** — `true`/`yes`/`on` silently leave it hidden), baked into `npm run build`. See [the regeneration runbook](./docs/runbooks/versioned-homework-regeneration.md). |
 | `ANTHROPIC_API_KEY`; `GEMINI_API_KEY` or Vertex credentials; `CLODEX_API_KEY` | Provider-specific credentials for `transport=api`. Clodex defaults to `https://clodex.xyz/v1` and never reads `OPENAI_API_KEY`. |
 
 > `GEMINI_MODEL` is **vestigial** (leftover from the removed SDK era) — nothing reads it. `GEMINI_API_KEY` is no longer vestigial: since Phase 4 it selects API-key auth for `transport=api` gemini jobs.

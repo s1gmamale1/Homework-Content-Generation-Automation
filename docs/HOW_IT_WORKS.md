@@ -135,7 +135,7 @@ The flow in words:
 ## 4. The data model (what's stored, and why)
 
 Everything lives in **Postgres** (locally on port **5433**, not the usual 5432, because
-Windows often already runs its own Postgres on 5432). Seven tables matter
+Windows often already runs its own Postgres on 5432). These are the tables that matter
 (full column-level detail lives in `docs/DATABASE.md`):
 
 | Table | One row per… | Holds |
@@ -147,11 +147,17 @@ Windows often already runs its own Postgres on 5432). Seven tables matter
 | `agent_usages` | one CLI subprocess call | provider, model, normalized token counts, duration, success/failure, and the raw envelope. This is how the usage dashboard and the end-of-job cost table are built. |
 | `batches` | fleet batch (one per `(book, transport, output_language)` since migration 0038 — a different-transport OR different-language re-launch forks a new batch for clean per-combination benchmarking) | the launch-time subject/grade/provider/model/transport (+ Phase-4.1 role-transport launch defaults; member jobs carry the truth). **No stored counters** — progress is computed on read from member jobs (one vote per lesson, its newest job), so retries can't inflate the tally. |
 | `workers` | worker process (a fleet PC) | `pc_id` ("hostname:pid"), `last_heartbeat`, status label, and a `capabilities` JSONB blob (which provider CLIs are installed + which api creds are present, published each beat — migration 0035). Online/offline is **derived** from heartbeat freshness against the DB clock, never stored. |
+| `regeneration_campaigns` | versioned-regeneration campaign | the **immutable** spec of one regeneration run: which lessons, which phases, what was auto-included and what was excluded (with the operator's acknowledgement), whether extraction was refreshed, the resolved provider/model/transport contract, the canary size, the estimate, and the lifecycle audit stamps. Migration 0063, shipped behind `REGENERATION_ENABLED=false`. |
+| `regeneration_targets` | one lesson + output language inside a campaign | the frozen phase plan, the generation status, and — kept deliberately **separate** — the publication status, reserved version, Notion page id, lease and retry state. Only `published` and `abandoned` are terminal; a failed target stays visible and retryable, and blocks a competing campaign for the same lesson+language until it is resolved. |
 | `budget_state` | singleton (id=1) | C4 fleet-level api pause: `api_paused_at` / `api_paused_reason`. Seeded at migration time; `claim_next_job` checks it to skip all api-transport jobs when non-NULL. Also carries per-batch pause state via `batches.paused_at`/`paused_reason`. |
 
 Two things people trip on:
 - **The PDF is on disk, not in the DB.** The path is deterministic. Every phase re-reads it
   from there. Don't delete it after TOC extraction — later phases need it again.
+- **A regeneration "revision job" is still a `homework_jobs` row.** It keeps `kind='homework'` and
+  reuses the entire pipeline, phase, cost and download stack; what marks it is
+  `revision_of_job_id IS NOT NULL`. It always has `batch_id=NULL` (a database CHECK makes a
+  revision-in-a-batch impossible), so Fleet rollups, adoption, resume and dedup queries never see it.
 - **Retries reuse the job row.** Because phase rows survive a crash (the orphan sweep only
   marks them `failed`, doesn't delete them), the pipeline uses
   `phase_repo.create_or_reset`, never a raw `create` — otherwise the unique constraint trips.
@@ -658,6 +664,74 @@ launched books and is 3N+1).
 Known limit: the subject registry has no per-grade curriculum map, so every grade treats all 26
 subjects as potential gaps (Geometry reads as "missing" in Grade 1). The gap list is honest but not
 curriculum-accurate — tracked as `per-grade-curriculum-map-1`.
+
+### Versioned regeneration (shipped dormant — flags off)
+
+Sometimes a lesson's homework is already published and *then* the prompts get better. You want a
+new version without destroying the old one. That is what this does.
+
+**The shape.** Regenerating a lesson does not touch its existing Notion page. It publishes a new
+sibling next to it:
+
+```text
+Lesson Topic
+├── Homework      ← V1, the original. Never renamed, cleared or deleted.
+├── Homework V2   ← first approved regeneration
+└── Homework V3   ← the next one
+```
+
+Version numbers count per **lesson + output language**, so Uzbek V2 and Russian V2 of the same
+lesson are independent. The first number the database allocates is **2**, because V1 is the
+pre-existing page and has no row.
+
+**Prompts are never chosen.** There is no prompt-set picker. A campaign always uses the prompt
+files deployed with the running app, and records the Git revision plus each regenerated phase's
+prompt hash for the audit trail. Deploy the prompts you want, *then* run the campaign.
+
+**You pick phases; the graph decides the rest.** Selecting a phase automatically pulls in
+everything downstream of it in `PHASE_DEPS` — otherwise a copied phase would have been written
+against an upstream output that no longer exists. Everything *not* pulled in is **copied** from
+the source job: same content, same judge status, zero model cost, with a link back to the exact
+row it came from. The result is always a complete snapshot, so a half-finished revision can never
+publish. Measured against the current 11-phase flow, selecting `flashcards` regenerates **10 of
+11** phases, `memory-check` 5, `boss-arena` 2, and `reflection` only itself — an "early phase" is
+not a cheap edit, and the UI shows the real expansion before you spend anything. You can push an
+auto-included phase back to "copied", but only after explicitly acknowledging that the packet may
+end up internally inconsistent. Re-running the `extract` is **off by default**; turning it on makes
+every content phase downstream and so effectively regenerates the whole lesson.
+
+**One human gate, and it is early.** The operator launches a small **canary** first. Canary
+lessons generate, then stop — nothing is written to Notion. You review the real content, the
+copied-vs-regenerated split, judge statuses and *actual* cost against the estimate, then approve
+or reject once. Rejecting costs nothing and consumes no version number. **Approving releases
+everything**: the canaries publish, the remaining lessons generate (staggered), and each one
+publishes automatically as soon as its snapshot is complete. There is no second, per-lesson
+approval — so approve only when you would be happy with the whole campaign.
+
+**Soft judge warnings publish; hard failures don't.** The existing judge behaviour is preserved
+exactly. `unavailable`, `refused`, `major_shipped` and `major_regen_failed` leave a complete,
+usable snapshot: they are shown prominently in the canary review and the report, but after
+approval they do not block publication. If one of those is unacceptable, that is a reason to
+**reject the canary**. A real phase failure, a missing phase, an auth/config failure or a blocked
+solver mismatch (`mismatch_blocked`) leaves the lesson in `generation_failed`, which cannot
+publish.
+
+**Generation and delivery fail independently.** A revision is never regenerated just because
+Notion was down. `retry-generation` re-runs the revision on its existing plan; `retry-publication`
+only re-queues delivery — it never calls a model, never allocates a new version, and is idempotent
+across crashes because the publisher recognises its own page by a five-field marker embedded in it
+(never by title). If a page with the right title carries a *missing or foreign* marker, that is a
+`VersionPageCollision`: the publisher refuses to overwrite it, forever. The two exits are to clean
+up the Notion page by hand and retry, or to `abandon` the target — which leaves the page in place
+and **permanently consumes that version number**, so the next regeneration lands one higher.
+
+**Where it lives.** `app/services/regeneration_*.py` (planner, states, discovery, estimator,
+snapshot, campaign, job-state, publisher) + `notion_versioned_homework.py`, the
+`/api/v1/regeneration` router, tables `regeneration_campaigns` / `regeneration_targets`
+(migration 0063), and the `/regeneration` SPA area. It is off behind `REGENERATION_ENABLED` and
+`REGENERATION_PUBLISHER_ENABLED` (backend, both `false`) plus a build-time
+`VITE_REGENERATION_ENABLED=1` on the SPA — and turning any of them on is a separate operator
+decision. Full operator guide: **`docs/runbooks/versioned-homework-regeneration.md`**.
 
 ---
 
@@ -1290,6 +1364,8 @@ DATABASE_URL=postgresql+asyncpg://edu:edu@localhost:5433/edu_homework `
 | Touch worker liveness / the registry | `app/repositories/workers.py` + `app/api/v1/workers.py` |
 | Change the fleet dashboard | `web/src/routes/fleet.tsx` + `web/src/components/fleet/` |
 | Set up a new worker PC | `docs/fleet/worker-pc-setup.md` |
+| Regenerate a published lesson as `Homework V2`/`V3` | `docs/runbooks/versioned-homework-regeneration.md` (operator), `app/services/regeneration_*.py` + `app/api/v1/regeneration.py` (code) |
+| Change which phases a regeneration pulls in | `app/services/regeneration_planner.py` — it reads `flows.PHASE_DEPS`; the closure is not configurable separately |
 | See the project's terse rules | `CLAUDE.md` |
 | Read the running worklog/history | `docs/memory/MASTER_MEMORY.md` |
 
