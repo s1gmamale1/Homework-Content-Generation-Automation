@@ -8,13 +8,19 @@ drops a constraint name or an ``ondelete`` cannot pass.
 """
 from __future__ import annotations
 
+import importlib.util
 import inspect
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from app.config import Settings
 from app.models import RegenerationCampaign, RegenerationTarget
+from app.models.regeneration_target import (
+    NOTION_DESTINATION_POLICIES,
+    NOTION_DESTINATION_RULE,
+)
 from app.models.homework_job import HomeworkJob
 from app.models.phase_output import PhaseOutput
 from app.schemas.regeneration_contract import (
@@ -341,6 +347,63 @@ def test_reviewed_destination_check_is_declared_and_null_safe():
         "reviewed_notion_lesson_title",
     ):
         assert column in sqltext, f"{column} not constrained"
+
+
+
+def _migration(revision: str):
+    """Load one alembic revision as a module.
+
+    `alembic/versions` is not an importable package, so this is the same
+    `spec_from_file_location` load `tests/integration/test_migration_0053_
+    solver_blocked.py` uses. Loading it — rather than re-typing the SQL here —
+    is the whole point: the assertion has to read the deployed DDL, not a third
+    copy of it that could drift with the other two.
+    """
+    path = Path(__file__).parents[2] / "alembic" / "versions" / f"{revision}.py"
+    spec = importlib.util.spec_from_file_location(revision, path)
+    assert spec is not None and spec.loader is not None, path
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_orm_rules_are_byte_identical_to_the_applied_0064_ddl():
+    """The Python twin and the deployed CHECK must be the SAME predicate.
+
+    0064 is already applied, so its SQL is frozen: PostgreSQL keeps enforcing
+    the text that migration installed no matter what the model says afterwards.
+    The ORM, by contrast, interpolates `NOTION_DESTINATION_POLICIES` into its
+    `IN (...)` list — so the obvious way to add a third policy (widen the
+    tuple) silently makes the declarative rule ACCEPT shapes the live
+    constraint still refuses. The result is exactly the `IntegrityError`-at-
+    flush that this twin exists to prevent, appearing only in production.
+
+    Byte-identity is the assertion because these two strings are compared to
+    each other nowhere else, and any difference at all is a divergence: a
+    widened rule needs a NEW migration, not an edited model.
+    """
+    migration = _migration("0064_regen_reviewed_destination")
+
+    assert (
+        NOTION_DESTINATION_RULE == migration._DESTINATION_RULE
+    ), "the ORM destination rule has drifted from the DDL 0064 applied"
+    assert (
+        _check_constraints(RegenerationCampaign)[
+            "ck_regeneration_campaigns_publication_version"
+        ]
+        == migration._CAMPAIGN_VERSION_RULE
+    ), "the ORM campaign-version rule has drifted from the DDL 0064 applied"
+    # And the constraint really is built from that constant, not a stale copy
+    # of it that happens to sit beside it in the same module.
+    assert (
+        _check_constraints(RegenerationTarget)[
+            "ck_regeneration_targets_notion_parent_decision"
+        ]
+        == migration._DESTINATION_RULE
+    )
+    # The policy tuple is what the ORM interpolates, so it is named here too:
+    # widening it is the edit that breaks the identity above.
+    assert NOTION_DESTINATION_POLICIES == ("reuse", "create")
 
 
 # ── homework_jobs / phase_outputs ───────────────────────────────────────────
