@@ -1,0 +1,600 @@
+"""The campaign report: buckets, provenance, judge/solver counts, money.
+
+Two layers, on purpose.
+
+**Assembly (always runs, no database).** A whole campaign is composed from
+target/job/phase/usage rows and the report is asserted end to end: every bucket
+populated at once, soft judge statuses summed across targets, copied vs
+regenerated counted from the real phase rows, the publication history of a
+retried delivery, and a human-readable reason on every failed or abandoned row.
+
+**Gather (real Postgres, ``RUN_DB_INTEGRATION=1``).** The SQL half — that the
+actual-cost query reaches this campaign's revision jobs and NOTHING else, that
+a source's publication version resolves through the revision chain, that the
+report path repairs a crashed revision before rendering it, and that the route
+returns all of it through the real session.
+"""
+from __future__ import annotations
+
+import os
+import uuid
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.api.v1 import regeneration as regen_api
+from app.auth import get_current_user
+from app.config import settings
+from app.db import get_session
+from app.schemas import regeneration as out
+from app.services.flows import flow_for
+from app.services.regeneration_planner import build_phase_plan
+from main import app
+
+client = TestClient(app)
+
+NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+SUBJECT = "math-algebra"
+CANONICAL = ("extract", *flow_for(SUBJECT))
+PLAN = build_phase_plan(subject=SUBJECT, selected_phases=["flashcards"]).to_json()
+BASE = "/api/v1/regeneration"
+
+
+# ═════════════════════════ assembly (no database) ════════════════════════
+
+
+def _campaign(**overrides):
+    base = dict(
+        id=uuid4(),
+        status="attention_required",
+        selection_spec={"output_languages": ["uz"]},
+        requested_phases=["flashcards"],
+        excluded_phases=["reflection"],
+        launch_contract={"provider": "gemini", "model": "gemini-3.6-flash",
+                         "transport": "api"},
+        refresh_extraction=False,
+        exclusion_acknowledged=True,
+        canary_size=1,
+        estimated_cost_low_usd=0.4,
+        estimated_cost_high_usd=1.2,
+        app_git_revision="a4a0aa5",
+        canary_launched_at=NOW - timedelta(hours=2),
+        approved_at=NOW - timedelta(hours=1),
+        rejected_at=None,
+        cancel_requested_at=None,
+        completed_at=None,
+        rejected_reason=None,
+        cancel_requested_reason=None,
+        created_at=NOW - timedelta(hours=3),
+        updated_at=NOW,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _target(campaign_id, status, **overrides):
+    published_like = status in (
+        "publication_pending", "publishing", "published", "publication_failed"
+    )
+    base = dict(
+        id=uuid4(),
+        campaign_id=campaign_id,
+        toc_entry_id=uuid4(),
+        output_language="uz",
+        is_canary=False,
+        source_job_id=uuid4(),
+        status=status,
+        phase_plan=PLAN,
+        publication_released_at=NOW if published_like else None,
+        publication_version=2 if published_like else None,
+        notion_page_id="page-abc" if status == "published" else None,
+        publication_attempts=0,
+        publication_next_attempt_at=None,
+        publication_last_error=None,
+        terminal_at=NOW if status in ("published", "abandoned") else None,
+        terminal_reason=None,
+        abandon_requested_at=None,
+        abandon_requested_reason=None,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _job(status="done", **overrides):
+    base = dict(
+        id=uuid4(),
+        status=status,
+        scheduled_at=NOW,
+        error_message=None,
+        last_error=None,
+        current_phase=None,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _phase(name, *, judge=None, solver=None, copied=False, status="done"):
+    return SimpleNamespace(
+        phase_name=name,
+        judge_status=judge,
+        solver_status=solver,
+        copied_from_phase_output_id=uuid4() if copied else None,
+        status=status,
+    )
+
+
+def _usage(job_id, **overrides):
+    base = dict(
+        homework_job_id=job_id,
+        provider="gemini",
+        model_name="gemini-3.6-flash",
+        operation="phase.run",
+        prompt_tokens=10_000,
+        output_tokens=2_000,
+        cached_tokens=0,
+        cache_creation_tokens=0,
+        total_tokens=12_000,
+        success=True,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _full_campaign():
+    """One campaign holding every bucket at once, with real phase rows."""
+    campaign = _campaign()
+    targets, jobs, rows, usage = [], {}, {}, []
+
+    published = _target(campaign.id, "published", is_canary=True)
+    pending = _target(campaign.id, "publication_pending")
+    backing_off = _target(
+        campaign.id, "publication_failed",
+        publication_attempts=2,
+        publication_next_attempt_at=NOW + timedelta(minutes=5),
+        publication_last_error="notion 502 bad gateway",
+    )
+    parked = _target(
+        campaign.id, "publication_failed",
+        publication_attempts=5,
+        publication_next_attempt_at=None,
+        publication_last_error="VersionPageCollision: Homework V2 exists with a "
+                               "different marker",
+    )
+    gen_failed = _target(campaign.id, "generation_failed")
+    abandoned = _target(
+        campaign.id, "abandoned",
+        publication_released_at=NOW, publication_version=3,
+        publication_attempts=5,
+        publication_last_error="notion 403 forbidden",
+        terminal_reason="abandoned by op: destination page was archived",
+        abandon_requested_at=NOW, abandon_requested_reason="destination archived",
+    )
+    generating = _target(campaign.id, "generating")
+    publishing = _target(campaign.id, "publishing")
+
+    for target, job_status in (
+        (published, "done"), (pending, "done"), (backing_off, "done"),
+        (parked, "done"), (gen_failed, "failed"), (abandoned, "done"),
+        (generating, "running"), (publishing, "done"),
+    ):
+        targets.append(target)
+        job = _job(job_status)
+        if job_status == "failed":
+            job.error_message = "phase 'flashcards' failed: provider 500"
+        jobs[target.id] = job
+        rows[target.id] = [
+            _phase("extract", copied=True),
+            _phase("flashcards", judge="major_shipped"),
+            _phase("boss-arena", judge="ok", solver="ok"),
+        ]
+        usage.append(_usage(job.id))
+    # A copied extract's free provenance marker, and one source-job row that
+    # must never be counted.
+    usage.append(_usage(jobs[published.id].id, provider="<cache>",
+                        model_name="<cache>", operation="lesson.extract",
+                        prompt_tokens=0, output_tokens=0, total_tokens=0))
+    usage.append(_usage(published.source_job_id, prompt_tokens=999_999))
+    return campaign, targets, jobs, rows, usage
+
+
+def _report():
+    campaign, targets, jobs, rows, usage = _full_campaign()
+    return out.CampaignDetailOut.build(
+        campaign, targets, now=NOW,
+        jobs_by_target=jobs, phase_rows_by_target=rows,
+        source_versions={t.id: 1 for t in targets},
+        usage_rows=usage,
+    ), targets, jobs
+
+
+def test_the_report_populates_every_bucket_and_loses_no_target():
+    report, targets, _jobs = _report()
+    body = report.model_dump()
+
+    assert set(body["buckets"]) == set(out.BUCKETS)
+    assert len(body["buckets"]["published"]) == 1
+    assert len(body["buckets"]["publication_pending"]) == 1
+    assert len(body["buckets"]["publication_failed"]) == 2
+    assert len(body["buckets"]["generation_failed"]) == 1
+    assert len(body["buckets"]["abandoned"]) == 1
+    # `generating` + `publishing`: in-flight rows are reported, not dropped.
+    assert len(body["buckets"]["in_flight"]) == 2
+    assert sum(len(v) for v in body["buckets"].values()) == len(targets)
+    assert body["target_count"] == len(targets)
+    assert body["status_counts"]["publishing"] == 1
+    assert body["status_counts"]["generating"] == 1
+
+
+def test_the_report_separates_backing_off_from_operator_parked():
+    report, _targets, _jobs = _report()
+    by_state = {t.publication_state: t for t in report.targets}
+
+    assert by_state["backing_off"].action_required is False
+    assert "automatic retry is scheduled" in by_state["backing_off"].reason
+    assert by_state["action_required"].action_required is True
+    assert "NO AUTOMATIC RETRY" in by_state["action_required"].reason
+    assert "VersionPageCollision" in by_state["action_required"].reason
+    # Same status, two different situations.
+    assert by_state["backing_off"].status == by_state["action_required"].status
+
+
+def test_every_failed_or_abandoned_row_reads_as_a_sentence_not_a_code():
+    report, _targets, _jobs = _report()
+    for target in report.targets:
+        assert target.reason and target.reason[-1] in ".…"
+        if target.status == "generation_failed":
+            assert "provider 500" in target.reason
+            assert "Retry generation or abandon" in target.reason
+        if target.status == "abandoned":
+            # BOTH: why we stopped, and what broke.
+            assert "destination page was archived" in target.reason
+            assert "notion 403 forbidden" in target.reason
+            assert target.delivery_error == "notion 403 forbidden"
+
+
+def test_publication_history_survives_into_the_report():
+    report, _targets, _jobs = _report()
+    parked = next(t for t in report.targets
+                  if t.publication_state == "action_required")
+    assert parked.publication_attempts == 5
+    assert parked.publication_version == 2
+    assert parked.publication_released_at is not None
+    assert parked.publication_last_error.startswith("VersionPageCollision")
+
+    published = next(t for t in report.targets if t.status == "published")
+    assert published.notion_page_url == "https://www.notion.so/pageabc"
+    assert published.publication_version == 2
+
+
+def test_soft_judge_statuses_are_counted_not_treated_as_failures():
+    report, targets, _jobs = _report()
+    # One `major_shipped` and one `ok` per target.
+    assert report.judge_status_counts["major_shipped"] == len(targets)
+    assert report.solver_status_counts["ok"] == len(targets)
+    # A soft judge status does not put a target in a failure bucket.
+    published = next(t for t in report.targets if t.status == "published")
+    assert published.judge_status_counts == {"major_shipped": 1, "ok": 1}
+    assert published.bucket == "published"
+
+
+def test_copied_and_regenerated_provenance_comes_from_the_phase_rows():
+    report, targets, _jobs = _report()
+    assert report.provenance.copied_phase_count == len(targets)      # 1 each
+    assert report.provenance.regenerated_phase_count == 2 * len(targets)
+    assert report.provenance.phase_row_count == 3 * len(targets)
+
+
+def test_actual_cost_excludes_source_job_usage_and_free_markers():
+    report, targets, jobs = _report()
+    cost = report.actual_cost
+
+    assert cost.excluded_row_count == 1          # the source-job row
+    assert cost.call_count == len(targets) + 1   # + the free <cache> marker
+    assert cost.paid_call_count == len(targets)
+    assert cost.zero_cost_marker_count == 1
+    assert cost.prompt_tokens == 10_000 * len(targets)
+    assert cost.usd > 0
+
+    # The excluded source row is 100x the tokens of a revision row: had it been
+    # counted, the total would be dominated by it.
+    assert cost.prompt_tokens < 999_999
+
+
+def test_the_canary_block_points_at_the_revision_job_to_review():
+    report, _targets, jobs = _report()
+    assert len(report.canary) == 1
+    canary = report.canary[0]
+    assert canary.content_path == f"/api/v1/jobs/{canary.revision_job_id}"
+    assert canary.download_path == f"/api/v1/jobs/{canary.revision_job_id}/download"
+    assert canary.revision_job_id in {job.id for job in jobs.values()}
+
+
+def test_the_report_keeps_the_frozen_plan_and_the_extraction_choice():
+    report, _targets, _jobs = _report()
+    assert report.requested_phases == ["flashcards"]
+    assert report.excluded_phases == ["reflection"]
+    assert report.refresh_extraction is False
+    assert report.exclusion_acknowledged is True
+    assert report.launch_contract["transport"] == "api"
+    plan = report.targets[0].phase_plan
+    assert "flashcards" in plan.regenerated_phases
+    assert plan.refresh_extraction is False
+
+
+# ═════════════════════════ gather (real Postgres) ════════════════════════
+
+_DB = pytest.mark.skipif(
+    os.environ.get("RUN_DB_INTEGRATION") != "1",
+    reason="needs a real Postgres; set RUN_DB_INTEGRATION=1 + DATABASE_URL",
+)
+_MARKER = "pytest-regen-wave4-reports"
+
+
+async def _seed(*, target_status="published", job_status="done", canary=True):
+    """One book/lesson, a V1 source with usage, a campaign, a target and its
+    revision job with its own usage."""
+    from app.db import SessionLocal
+    from app.models.agent_usage import AgentUsage
+    from app.models.book import Book
+    from app.models.homework_job import HomeworkJob
+    from app.models.phase_output import PhaseOutput
+    from app.models.regeneration_campaign import RegenerationCampaign
+    from app.models.regeneration_target import RegenerationTarget
+    from app.models.toc_entry import TOCEntry
+
+    published_like = target_status in (
+        "publication_pending", "publishing", "published", "publication_failed"
+    )
+    async with SessionLocal() as session:
+        book = Book(
+            subject=SUBJECT, original_filename="regen_reports.pdf",
+            content_sha256=uuid.uuid4().hex * 2, file_size_bytes=1,
+            status="toc_ready", grade="5",
+        )
+        session.add(book)
+        await session.flush()
+        toc = TOCEntry(book_id=book.id, section_title="Lesson 1",
+                       section_number="1", chapter_title="Chapter 1",
+                       order_index=0)
+        session.add(toc)
+        await session.flush()
+
+        source = HomeworkJob(
+            book_id=book.id, toc_entry_id=toc.id, subject=SUBJECT, status="done",
+            provider="gemini", model="gemini-3.6-flash", transport="api",
+            output_language="uz",
+        )
+        session.add(source)
+        await session.flush()
+        source_phase = PhaseOutput(
+            job_id=source.id, phase_name="flashcards", phase_order=1,
+            prompt_hash="builtin:flashcards:v1", provider="gemini",
+            model_name="gemini-3.6-flash", output_md="# source", status="done",
+        )
+        session.add(source_phase)
+        await session.flush()
+        # The V1 run's own spend. It must NEVER reach the campaign's cost.
+        session.add(AgentUsage(
+            homework_job_id=source.id, phase_output_id=source_phase.id,
+            provider="gemini", model_name="gemini-3.6-flash",
+            operation="phase.run", auth_mode="api",
+            prompt_tokens=500_000, output_tokens=100_000, total_tokens=600_000,
+            success=True,
+        ))
+
+        campaign = RegenerationCampaign(
+            status="approved", selection_spec={"marker": _MARKER},
+            requested_phases=["flashcards"], excluded_phases=[],
+            launch_contract={"provider": "gemini", "model": "gemini-3.6-flash",
+                             "transport": "api"},
+            canary_size=1, app_git_revision=_MARKER,
+            approved_at=datetime.now(timezone.utc),
+        )
+        session.add(campaign)
+        await session.flush()
+        target = RegenerationTarget(
+            campaign_id=campaign.id, toc_entry_id=toc.id, output_language="uz",
+            phase_plan=PLAN, source_job_id=source.id, is_canary=canary,
+            status=target_status,
+            publication_released_at=(
+                datetime.now(timezone.utc) if published_like else None),
+            publication_version=2 if published_like else None,
+            notion_page_id="page-abc" if target_status == "published" else None,
+            terminal_at=(datetime.now(timezone.utc)
+                         if target_status in ("published", "abandoned") else None),
+        )
+        session.add(target)
+        await session.flush()
+        revision = HomeworkJob(
+            book_id=book.id, toc_entry_id=toc.id, subject=SUBJECT,
+            status=job_status, provider="gemini", model="gemini-3.6-flash",
+            transport="api", output_language="uz",
+            revision_of_job_id=source.id, regeneration_target_id=target.id,
+            session_limit_strategy="pause",
+        )
+        session.add(revision)
+        await session.flush()
+        for order, name in enumerate(CANONICAL):
+            session.add(PhaseOutput(
+                job_id=revision.id, phase_name=name, phase_order=order,
+                prompt_hash=f"builtin:{name}:v9", provider="gemini",
+                model_name="gemini-3.6-flash", output_md=f"# {name}",
+                status="done",
+                judge_status="major_shipped" if name == "flashcards" else None,
+                copied_from_phase_output_id=(
+                    source_phase.id if name != "flashcards" else None),
+            ))
+        await session.flush()
+        session.add(AgentUsage(
+            homework_job_id=revision.id, provider="gemini",
+            model_name="gemini-3.6-flash", operation="phase.run",
+            auth_mode="api", prompt_tokens=1_000, output_tokens=200,
+            total_tokens=1_200, success=True,
+        ))
+        await session.commit()
+        return SimpleNamespace(
+            campaign_id=campaign.id, target_id=target.id,
+            source_job_id=source.id, revision_job_id=revision.id,
+            toc_entry_id=toc.id, book_id=book.id,
+        )
+
+
+@_DB
+async def test_actual_cost_query_reaches_revision_jobs_only():
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        report = await regen_api._campaign_detail(
+            session, seeded.campaign_id, now=datetime.now(timezone.utc)
+        )
+
+    assert report.actual_cost.call_count == 1
+    assert report.actual_cost.prompt_tokens == 1_000
+    assert report.actual_cost.revision_job_count == 1
+    # The V1 job's 500k-token row is not merely outnumbered — it never entered
+    # the query, so it is not even in `excluded_row_count`.
+    assert report.actual_cost.excluded_row_count == 0
+    assert report.actual_cost.usd > 0
+
+
+@_DB
+async def test_the_report_resolves_the_source_version_and_lesson():
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        report = await regen_api._campaign_detail(
+            session, seeded.campaign_id, now=datetime.now(timezone.utc)
+        )
+
+    target = report.targets[0]
+    # The source is an ordinary completed job: logical V1, which has no row.
+    assert target.source_publication_version == 1
+    assert target.source_job_id == seeded.source_job_id
+    assert target.revision_job_id == seeded.revision_job_id
+    assert target.lesson.section_title == "Lesson 1"
+    assert target.lesson.book_id == seeded.book_id
+
+
+@_DB
+async def test_provenance_and_judge_counts_come_from_the_stored_phase_rows():
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        report = await regen_api._campaign_detail(
+            session, seeded.campaign_id, now=datetime.now(timezone.utc)
+        )
+
+    assert report.provenance.phase_row_count == len(CANONICAL)
+    assert report.provenance.regenerated_phase_count == 1     # flashcards
+    assert report.provenance.copied_phase_count == len(CANONICAL) - 1
+    assert report.judge_status_counts == {"major_shipped": 1}
+    assert report.canary[0].revision_job_id == seeded.revision_job_id
+
+
+@_DB
+async def test_the_report_path_repairs_a_crashed_revision_before_rendering():
+    """The worker died between the job's terminal commit and its target update:
+    the target still says `generating` over a finished job."""
+    from app.db import SessionLocal
+    from app.models.regeneration_target import RegenerationTarget
+
+    seeded = await _seed(target_status="generating", job_status="failed")
+    async with SessionLocal() as session:
+        moved = await regen_api._reconcile(session)
+        assert moved >= 1
+        refreshed = await session.get(RegenerationTarget, seeded.target_id)
+        assert refreshed.status == "generation_failed"
+
+        report = await regen_api._campaign_detail(
+            session, seeded.campaign_id, now=datetime.now(timezone.utc)
+        )
+    assert report.buckets["generation_failed"] == [seeded.target_id]
+    assert report.targets[0].action_required is True
+
+
+@_DB
+async def test_the_campaign_list_counts_targets_per_campaign():
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        campaigns, counts, total = await regen_api._list_campaigns(
+            session, statuses=None, limit=200, offset=0
+        )
+
+    assert total >= 1
+    assert seeded.campaign_id in {c.id for c in campaigns}
+    assert counts[seeded.campaign_id]["published"] == 1
+
+
+@_DB
+async def test_the_route_serves_the_whole_report_over_a_real_session(monkeypatch):
+    """Driven through ASGITransport, not ``TestClient``: the client's own
+    portal loop would hand the engine's asyncpg connections to a second event
+    loop and the pool would tear down across loops."""
+    from httpx import ASGITransport, AsyncClient
+
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+
+    async def _real_session():
+        async with SessionLocal() as session:
+            yield session
+
+    app.dependency_overrides[get_session] = _real_session
+    regen_api.reset_rollup_debounce()
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as http:
+            response = await http.get(f"{BASE}/campaigns/{seeded.campaign_id}")
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)
+        app.dependency_overrides.pop(get_session, None)
+        regen_api.reset_rollup_debounce()
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == str(seeded.campaign_id)
+    assert body["buckets"]["published"] == [str(seeded.target_id)]
+    assert body["actual_cost"]["prompt_tokens"] == 1_000
+    assert body["targets"][0]["notion_page_url"] == "https://www.notion.so/pageabc"
+    assert body["targets"][0]["reason"].startswith("published as Homework V2")
+    assert body["rollup_error"] is None
+
+
+@_DB
+async def test_a_single_target_report_matches_the_campaign_report(monkeypatch):
+    from app.db import SessionLocal
+
+    seeded = await _seed()
+    async with SessionLocal() as session:
+        target = await regen_api._load_target(session, seeded.target_id)
+        single = await regen_api._target_report(
+            session, target, now=datetime.now(timezone.utc)
+        )
+        report = await regen_api._campaign_detail(
+            session, seeded.campaign_id, now=datetime.now(timezone.utc)
+        )
+
+    from_campaign = report.targets[0]
+    assert single.id == from_campaign.id
+    assert single.revision_job_id == from_campaign.revision_job_id
+    assert single.copied_phase_count == from_campaign.copied_phase_count
+    assert single.judge_status_counts == from_campaign.judge_status_counts
+    assert single.source_publication_version == (
+        from_campaign.source_publication_version
+    )

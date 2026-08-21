@@ -1,0 +1,1112 @@
+"""Route behaviour for the regeneration API, over service fakes.
+
+No database and no model call: the campaign service, the discovery/estimator
+reads and the report gather are faked, so what is under test is exactly the
+router's job — authentication, the feature gate, request validation, the
+exception→status mapping, idempotency, and the shape of a partial release.
+
+The report content itself is proven against a real Postgres in
+``tests/api/test_regeneration_reports.py``.
+"""
+from __future__ import annotations
+
+import ast
+import inspect
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+from uuid import uuid4
+
+import pytest
+from fastapi.testclient import TestClient
+
+import app.auth as auth_module
+from app.api.v1 import regeneration as regen_api
+from app.auth import get_current_user
+from app.config import settings
+from app.db import get_session
+from app.schemas import regeneration as schemas
+from app.services import regeneration_campaign as campaign_service
+from app.services import regeneration_discovery as discovery
+from app.services.regeneration_planner import build_phase_plan
+from main import app
+
+client = TestClient(app)
+
+NOW = datetime(2026, 8, 20, 12, 0, tzinfo=timezone.utc)
+SUBJECT = "math-algebra"
+BASE = "/api/v1/regeneration"
+
+
+# ────────────────────────────── fixtures ─────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _feature_on(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+
+    async def _fake_session():
+        session = MagicMock()
+        session.commit = AsyncMock()
+        # Plain scalar reads (`get_campaign`, `_load_target`) resolve to
+        # "missing" unless a test says otherwise.
+        session.scalar = AsyncMock(return_value=None)
+        # `launch_defaults_repo.get` is a real read on the estimate path; give
+        # it the singleton row shape so contract resolution stays under test.
+        session.get = AsyncMock(return_value=SimpleNamespace(
+            extract_provider="gemini", extract_model="gemini-3.5-flash-lite",
+            extract_transport="api",
+            judge_provider="gemini", judge_model="gemini-3.6-flash",
+            judge_transport="api",
+            solver_provider="gemini", solver_model="gemini-3.6-flash",
+            solver_transport="api",
+        ))
+        yield session
+
+    app.dependency_overrides[get_session] = _fake_session
+    # The report gather is DB-shaped; every route test that isn't about the
+    # report itself gets a canned one.
+    monkeypatch.setattr(regen_api, "_reconcile", AsyncMock(return_value=0))
+    yield
+    app.dependency_overrides.pop(get_current_user, None)
+    app.dependency_overrides.pop(get_session, None)
+    regen_api.reset_rollup_debounce()
+
+
+def _campaign(**overrides):
+    base = dict(
+        id=uuid4(),
+        status="draft",
+        selection_spec={},
+        requested_phases=["flashcards"],
+        excluded_phases=[],
+        launch_contract={"provider": "gemini", "model": "gemini-3.6-flash"},
+        refresh_extraction=False,
+        exclusion_acknowledged=False,
+        canary_size=1,
+        estimated_cost_low_usd=None,
+        estimated_cost_high_usd=None,
+        app_git_revision=None,
+        canary_launched_at=None,
+        approved_at=None,
+        rejected_at=None,
+        cancel_requested_at=None,
+        completed_at=None,
+        rejected_reason=None,
+        cancel_requested_reason=None,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _target(campaign_id=None, **overrides):
+    base = dict(
+        id=uuid4(),
+        campaign_id=campaign_id or uuid4(),
+        toc_entry_id=uuid4(),
+        output_language="uz",
+        is_canary=False,
+        source_job_id=uuid4(),
+        status="generating",
+        phase_plan=build_phase_plan(
+            subject=SUBJECT, selected_phases=["flashcards"]
+        ).to_json(),
+        publication_released_at=None,
+        publication_version=None,
+        notion_page_id=None,
+        publication_attempts=0,
+        publication_next_attempt_at=None,
+        publication_last_error=None,
+        terminal_at=None,
+        terminal_reason=None,
+        abandon_requested_at=None,
+        abandon_requested_reason=None,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _detail(campaign=None, targets=()):
+    campaign = campaign or _campaign()
+    return schemas.CampaignDetailOut.build(campaign, list(targets), now=NOW)
+
+
+def _fake_service(**methods):
+    service = SimpleNamespace()
+    for name in (
+        "create_campaign", "launch_canary", "approve_canary", "reject_canary",
+        "cancel", "retry_generation", "retry_publication", "abandon", "roll_up",
+    ):
+        setattr(service, name, AsyncMock(return_value=methods.get(name)))
+    for name, value in methods.items():
+        if isinstance(value, AsyncMock):
+            setattr(service, name, value)
+    return service
+
+
+def _install_service(monkeypatch, service):
+    monkeypatch.setattr(regen_api, "_service", lambda: service)
+    return service
+
+
+def _install_detail(monkeypatch, detail=None):
+    detail = detail if detail is not None else _detail()
+    mock = AsyncMock(return_value=detail)
+    monkeypatch.setattr(regen_api, "_campaign_detail", mock)
+    return mock
+
+
+def _install_target_report(monkeypatch, target=None):
+    out = schemas.TargetReportOut.from_row(target or _target(), now=NOW)
+    mock = AsyncMock(return_value=out)
+    monkeypatch.setattr(regen_api, "_target_report", mock)
+    return mock
+
+
+def _create_body(**overrides):
+    body = {
+        "selection": {"toc_entry_ids": [str(uuid4())]},
+        "contract": {
+            "provider": "gemini",
+            "model": "gemini-3.6-flash",
+            "transport": "api",
+        },
+        "selected_phases": ["flashcards"],
+        "actor": "operator",
+    }
+    body.update(overrides)
+    return body
+
+
+def _estimate_body(**overrides):
+    body = _create_body()
+    body.pop("actor")
+    body.update(overrides)
+    return body
+
+
+def _source(**overrides):
+    base = dict(
+        source_job_id=uuid4(),
+        toc_entry_id=uuid4(),
+        book_id=uuid4(),
+        subject=SUBJECT,
+        grade="5",
+        output_language="uz",
+        source_publication_version=1,
+        next_expected_version=2,
+        source_is_revision=False,
+        book_filename="algebra.pdf",
+        section_number="1",
+        section_title="Lesson 1",
+        chapter_title="Chapter 1",
+        page_start=3,
+        notion_lesson_page_id="page-1",
+        order_index=0,
+    )
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _candidate(source=None, reasons=()):
+    source = source if source is not None else _source()
+    return discovery.SourceCandidate(
+        toc_entry_id=source.toc_entry_id if source else uuid4(),
+        output_language=source.output_language if source else "uz",
+        source=source,
+        reasons=tuple(reasons),
+    )
+
+
+# ═══════════════════════════ authentication ══════════════════════════════
+
+
+_READ_ROUTES = (
+    ("get", f"{BASE}/eligible", None),
+    ("get", f"{BASE}/campaigns", None),
+    ("get", f"{BASE}/campaigns/{uuid4()}", None),
+)
+_WRITE_ROUTES = (
+    ("post", f"{BASE}/phase-plan", {"subject": SUBJECT, "selected_phases": ["reflection"]}),
+    ("post", f"{BASE}/estimate", {}),
+    ("post", f"{BASE}/campaigns", {}),
+    ("post", f"{BASE}/campaigns/{uuid4()}/canary", {}),
+    ("post", f"{BASE}/campaigns/{uuid4()}/approve", {}),
+    ("post", f"{BASE}/campaigns/{uuid4()}/reject", {"reason": "no"}),
+    ("post", f"{BASE}/campaigns/{uuid4()}/cancel", {"reason": "no"}),
+    ("post", f"{BASE}/targets/{uuid4()}/retry-generation", {}),
+    ("post", f"{BASE}/targets/{uuid4()}/retry-publication", {}),
+    ("post", f"{BASE}/targets/{uuid4()}/abandon", {"reason": "no"}),
+)
+
+
+@pytest.mark.parametrize("method,url,body", _READ_ROUTES + _WRITE_ROUTES)
+def test_anonymous_requests_are_refused_on_every_route(monkeypatch, method, url, body):
+    """Router-level auth, not route location and not the feature flag."""
+    app.dependency_overrides.pop(get_current_user, None)
+    monkeypatch.setattr(auth_module, "valid_auth_tokens", lambda: {"s3cret-token"})
+
+    response = getattr(client, method)(url, json=body) if body is not None \
+        else getattr(client, method)(url)
+
+    assert response.status_code == 401
+    assert "token" in response.json()["detail"].lower()
+
+
+def test_a_valid_operator_token_reaches_the_state_gate(monkeypatch):
+    """Operator auth (header OR the SSE query form), not SA-key-strict auth."""
+    app.dependency_overrides.pop(get_current_user, None)
+    monkeypatch.setattr(auth_module, "valid_auth_tokens", lambda: {"s3cret-token"})
+    _install_service(monkeypatch, _fake_service())
+    monkeypatch.setattr(
+        regen_api, "_load_campaign",
+        AsyncMock(side_effect=campaign_service.CampaignNotFound("nope")),
+    )
+
+    response = client.get(
+        f"{BASE}/campaigns/{uuid4()}",
+        headers={"Authorization": "Bearer s3cret-token"},
+    )
+    assert response.status_code == 404
+
+
+def test_the_router_uses_general_operator_auth_not_the_sa_key_dependency():
+    from app.api.v1 import __init__ as api_init  # noqa: F401
+    from app.api.v1 import api_v1_router
+    from app.auth import get_current_user_strict
+
+    regen_routes = [
+        route for route in api_v1_router.routes
+        if getattr(route, "path", "").startswith("/api/v1/regeneration")
+    ]
+    assert regen_routes, "the regeneration router is not mounted"
+    for route in regen_routes:
+        callables = [
+            dep.call for dep in route.dependant.dependencies if dep.call is not None
+        ]
+        assert get_current_user in callables
+        assert get_current_user_strict not in callables
+
+
+# ═══════════════════════════ discovery / preview ═════════════════════════
+
+
+def test_eligible_lists_sources_and_says_why_the_rest_were_left_out(monkeypatch):
+    source = _source()
+    left_out = discovery.SourceCandidate(
+        toc_entry_id=uuid4(), output_language="ru", source=None,
+        reasons=(discovery.NO_COMPLETED_SOURCE_REASON,),
+    )
+    listed = AsyncMock(return_value=[_candidate(source), left_out])
+    monkeypatch.setattr(discovery, "list_source_candidates", listed)
+
+    response = client.get(
+        f"{BASE}/eligible",
+        params={"book_id": str(source.book_id), "output_language": ["uz", "ru"]},
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["eligible_count"] == 1
+    assert body["sources"][0]["source_publication_version"] == 1
+    assert body["sources"][0]["next_expected_version"] == 2
+    assert body["ineligible"][0]["reasons"] == [discovery.NO_COMPLETED_SOURCE_REASON]
+    kwargs = listed.await_args.kwargs
+    assert kwargs["book_ids"] == [source.book_id]
+    assert kwargs["output_languages"] == ["uz", "ru"]
+
+
+def test_phase_plan_previews_broken_edges_without_refusing_the_preview():
+    response = client.post(
+        f"{BASE}/phase-plan",
+        json={
+            "subject": SUBJECT,
+            "selected_phases": ["flashcards"],
+            "excluded_affected_phases": ["reflection"],
+            "exclusion_acknowledged": False,
+        },
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["acknowledgement_required"] is True
+    assert body["broken_dependency_edges"] == [
+        {"upstream": "boss-arena", "downstream": "reflection"}
+    ]
+    assert body["acknowledgement_message"]
+    assert len(body["auto_included_phases"]) >= 8
+
+
+def test_phase_plan_refuses_an_unknown_subject_or_phase():
+    assert client.post(
+        f"{BASE}/phase-plan",
+        json={"subject": "not-a-subject", "selected_phases": ["reflection"]},
+    ).status_code == 422
+    assert client.post(
+        f"{BASE}/phase-plan",
+        json={"subject": SUBJECT, "selected_phases": ["not-a-phase"]},
+    ).status_code == 422
+
+
+def test_estimate_is_read_only_and_carries_preflight_and_incompleteness(monkeypatch):
+    source = _source()
+    monkeypatch.setattr(
+        discovery, "list_source_candidates", AsyncMock(return_value=[_candidate(source)])
+    )
+    failure = discovery.NotionPreflightFailure(
+        source_job_id=source.source_job_id, toc_entry_id=source.toc_entry_id,
+        subject=SUBJECT, grade="5", output_language="uz",
+        lesson_title="Lesson 1", reason=discovery.NO_SUBJECT_PAGE_REASON,
+        detail="NOTION_SUBJECT_PAGES has no page for math-algebra|5",
+    )
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[failure])
+    )
+    estimate = SimpleNamespace(
+        low_usd=1.0, high_usd=2.0, line_items=(), target_count=1,
+        regenerated_phase_count=10, copied_phase_count=1,
+        regenerated_extract_count=0, copied_extract_count=1,
+        window_start=NOW - timedelta(days=30), window_end=NOW,
+        notes=("note",), is_estimate=True, has_unpriced_lines=True,
+    )
+    priced = AsyncMock(return_value=estimate)
+    monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
+
+    response = client.post(f"{BASE}/estimate", json=_estimate_body())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_count"] == 1
+    assert body["estimate"]["is_complete"] is False
+    assert body["estimate"]["incomplete_reason"]
+    assert body["preflight"]["ok"] is False
+    assert body["preflight"]["failures"][0]["reason"] == discovery.NO_SUBJECT_PAGE_REASON
+    assert body["phase_plans"][0]["subject"] == SUBJECT
+    assert priced.await_count == 1
+
+
+def test_estimate_with_no_eligible_lineage_reports_it_without_pricing(monkeypatch):
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[
+            discovery.SourceCandidate(
+                toc_entry_id=uuid4(), output_language="uz", source=None,
+                reasons=(discovery.NO_COMPLETED_SOURCE_REASON,),
+            )
+        ]),
+    )
+    priced = AsyncMock()
+    monkeypatch.setattr(regen_api, "_estimate_regeneration", priced)
+
+    response = client.post(f"{BASE}/estimate", json=_estimate_body())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_count"] == 0
+    assert body["estimate"] is None
+    assert body["ineligible"]
+    assert priced.await_count == 0
+
+
+# ═══════════════════════════ campaign creation ═══════════════════════════
+
+
+def test_create_campaign_returns_the_new_campaign_report(monkeypatch):
+    campaign = _campaign()
+    service = _install_service(
+        monkeypatch, _fake_service(create_campaign=AsyncMock(return_value=campaign))
+    )
+    detail = _install_detail(monkeypatch, _detail(campaign))
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body(canary_size=2))
+
+    assert response.status_code == 201
+    assert response.json()["id"] == str(campaign.id)
+    spec = service.create_campaign.await_args.args[0]
+    assert spec.canary_size == 2
+    assert spec.selected_phases == ("flashcards",)
+    assert spec.contract.transport == "api"
+    assert detail.await_count == 1
+
+
+@pytest.mark.parametrize(
+    "error,expected_status,marker",
+    [
+        (
+            campaign_service.ActiveLineageConflict([(uuid4(), "uz")]),
+            409,
+            "active_lineage_conflict",
+        ),
+        (
+            campaign_service.NoEligibleTargets([
+                discovery.SourceCandidate(
+                    toc_entry_id=uuid4(), output_language="uz", source=None,
+                    reasons=("no completed homework job",),
+                )
+            ]),
+            409,
+            "no_eligible_targets",
+        ),
+        (
+            campaign_service.NonApiTransport([("transport", "cli")]),
+            422,
+            "non_api_transport",
+        ),
+        (
+            campaign_service.RetiredModelRefusal(
+                [("judge", "gemini", "gemini-2.5-flash")], what="create a campaign"
+            ),
+            409,
+            "retired_model",
+        ),
+    ],
+)
+def test_create_campaign_maps_each_service_refusal(
+    monkeypatch, error, expected_status, marker
+):
+    _install_service(
+        monkeypatch, _fake_service(create_campaign=AsyncMock(side_effect=error))
+    )
+    _install_detail(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == expected_status
+    assert response.json()["detail"]["error"] == marker
+    assert response.json()["detail"]["message"]
+
+
+def test_create_campaign_maps_an_unacknowledged_exclusion_to_422(monkeypatch):
+    from app.services.regeneration_planner import ExclusionAcknowledgementRequired
+
+    _install_service(
+        monkeypatch,
+        _fake_service(create_campaign=AsyncMock(
+            side_effect=ExclusionAcknowledgementRequired(
+                "excluded phases will be left stale by regenerated upstreams"
+            )
+        )),
+    )
+    response = client.post(
+        f"{BASE}/campaigns",
+        json=_create_body(
+            excluded_affected_phases=["reflection"], exclusion_acknowledged=False
+        ),
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "exclusion_acknowledgement_required"
+
+
+def test_create_campaign_refuses_a_prompt_set_selector():
+    response = client.post(f"{BASE}/campaigns", json=_create_body(prompt_set="old"))
+    assert response.status_code == 422
+
+
+# ═══════════════════════════ campaign reads ══════════════════════════════
+
+
+def test_campaign_detail_reconciles_then_rolls_up(monkeypatch):
+    campaign = _campaign()
+    service = _install_service(monkeypatch, _fake_service())
+    detail = _install_detail(monkeypatch, _detail(campaign))
+    monkeypatch.setattr(regen_api, "_load_campaign", AsyncMock(return_value=campaign))
+
+    response = client.get(f"{BASE}/campaigns/{campaign.id}")
+
+    assert response.status_code == 200
+    assert regen_api._reconcile.await_count == 1
+    assert service.roll_up.await_count == 1
+    assert detail.await_count == 1
+
+
+def test_repeated_detail_polls_do_not_take_the_campaign_write_lock(monkeypatch):
+    """MI-1: `roll_up` holds the campaign FOR UPDATE and makes the publisher's
+    wait-free claim skip that campaign, so a poll must not run it every time."""
+    campaign = _campaign()
+    service = _install_service(monkeypatch, _fake_service())
+    _install_detail(monkeypatch, _detail(campaign))
+    monkeypatch.setattr(regen_api, "_load_campaign", AsyncMock(return_value=campaign))
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(regen_api, "_clock", lambda: clock["t"])
+    monkeypatch.setattr(settings, "regeneration_publisher_interval_seconds", 30)
+
+    for _ in range(5):
+        assert client.get(f"{BASE}/campaigns/{campaign.id}").status_code == 200
+    assert service.roll_up.await_count == 1
+
+    clock["t"] += 31
+    assert client.get(f"{BASE}/campaigns/{campaign.id}").status_code == 200
+    assert service.roll_up.await_count == 2
+    # Reconciliation is NOT debounced: it is the crash-repair path and it takes
+    # no campaign lock unless a target actually needs repair.
+    assert regen_api._reconcile.await_count == 6
+
+
+def test_the_rollup_debounce_state_stays_bounded(monkeypatch):
+    monkeypatch.setattr(regen_api, "_clock", lambda: 5000.0)
+    monkeypatch.setattr(settings, "regeneration_publisher_interval_seconds", 30)
+    for _ in range(regen_api._DEBOUNCE_MAX_ENTRIES + 50):
+        regen_api._claim_rollup_slot(uuid4())
+    assert len(regen_api._ROLLUP_DEBOUNCE) <= regen_api._DEBOUNCE_MAX_ENTRIES
+
+
+def test_the_rollup_debounce_prunes_expired_entries(monkeypatch):
+    clock = {"t": 100.0}
+    monkeypatch.setattr(regen_api, "_clock", lambda: clock["t"])
+    monkeypatch.setattr(settings, "regeneration_publisher_interval_seconds", 30)
+    stale = uuid4()
+    assert regen_api._claim_rollup_slot(stale) is True
+    clock["t"] += 3600
+    assert regen_api._claim_rollup_slot(uuid4()) is True
+    assert stale not in regen_api._ROLLUP_DEBOUNCE
+
+
+def test_a_failing_rollup_does_not_500_the_report(monkeypatch):
+    campaign = _campaign()
+    _install_service(
+        monkeypatch,
+        _fake_service(roll_up=AsyncMock(
+            side_effect=ValueError("publication state before campaign approval")
+        )),
+    )
+    detail = _install_detail(monkeypatch, _detail(campaign))
+    monkeypatch.setattr(regen_api, "_load_campaign", AsyncMock(return_value=campaign))
+
+    response = client.get(f"{BASE}/campaigns/{campaign.id}")
+
+    assert response.status_code == 200
+    assert "publication state" in response.json()["rollup_error"]
+    assert detail.await_count == 1
+
+
+def test_campaign_detail_404s_for_an_unknown_campaign(monkeypatch):
+    _install_service(monkeypatch, _fake_service())
+    monkeypatch.setattr(
+        regen_api, "_load_campaign",
+        AsyncMock(side_effect=campaign_service.CampaignNotFound("gone")),
+    )
+    assert client.get(f"{BASE}/campaigns/{uuid4()}").status_code == 404
+
+
+def test_campaign_list_paginates_and_filters(monkeypatch):
+    campaign = _campaign(status="bulk_running")
+    listed = AsyncMock(return_value=([campaign], {campaign.id: {"published": 2}}, 1))
+    monkeypatch.setattr(regen_api, "_list_campaigns", listed)
+
+    response = client.get(
+        f"{BASE}/campaigns", params={"status": "bulk_running", "limit": 10}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["count"] == 1
+    assert body["campaigns"][0]["bucket_counts"]["published"] == 2
+    assert listed.await_args.kwargs["statuses"] == ["bulk_running"]
+    assert listed.await_args.kwargs["limit"] == 10
+
+
+# ═══════════════════════════ canary / approval ═══════════════════════════
+
+
+def test_canary_launch_returns_the_refreshed_campaign(monkeypatch):
+    campaign = _campaign(status="canary_running")
+    service = _install_service(
+        monkeypatch, _fake_service(launch_canary=AsyncMock(return_value=campaign))
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+
+    response = client.post(f"{BASE}/campaigns/{campaign.id}/canary")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "canary_running"
+    assert service.launch_canary.await_args.args[0] == campaign.id
+    assert regen_api._reconcile.await_count == 1
+
+
+def test_canary_preflight_failures_are_one_409_listing_every_lesson(monkeypatch):
+    failures = [
+        discovery.NotionPreflightFailure(
+            source_job_id=uuid4(), toc_entry_id=uuid4(), subject=SUBJECT,
+            grade="5", output_language="uz", lesson_title=f"Lesson {i}",
+            reason=discovery.NO_SUBJECT_PAGE_REASON, detail="fix NOTION_SUBJECT_PAGES",
+        )
+        for i in range(4)
+    ]
+    _install_service(
+        monkeypatch,
+        _fake_service(launch_canary=AsyncMock(
+            side_effect=campaign_service.PreflightBlocked(failures)
+        )),
+    )
+
+    response = client.post(f"{BASE}/campaigns/{uuid4()}/canary")
+
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "preflight_blocked"
+    assert detail["count"] == 4
+    assert len(detail["failures"]) == 4
+    assert {f["lesson_title"] for f in detail["failures"]} == {
+        "Lesson 0", "Lesson 1", "Lesson 2", "Lesson 3"
+    }
+
+
+def test_a_partial_release_is_committed_success_not_a_failure(monkeypatch):
+    """`PartialWaveRelease` is raised AFTER every healthy job is committed."""
+    campaign = _campaign(status="bulk_running", approved_at=NOW)
+    failed_target = _target(campaign_id=campaign.id, status="abandoned",
+                            terminal_at=NOW)
+    failure = campaign_service.WaveFailure(
+        target_id=failed_target.id,
+        source_job_id=failed_target.source_job_id,
+        reason="snapshot no longer validates",
+    )
+    _install_service(
+        monkeypatch,
+        _fake_service(approve_canary=AsyncMock(
+            side_effect=campaign_service.PartialWaveRelease([failure])
+        )),
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+    monkeypatch.setattr(
+        regen_api, "_current_target_statuses",
+        AsyncMock(return_value={failed_target.id: "abandoned"}),
+    )
+
+    response = client.post(f"{BASE}/campaigns/{campaign.id}/approve", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "bulk_running"
+    assert len(body["released_failures"]) == 1
+    entry = body["released_failures"][0]
+    assert entry["target_id"] == str(failed_target.id)
+    assert entry["source_job_id"] == str(failed_target.source_job_id)
+    assert entry["reason"] == "snapshot no longer validates"
+    # NOT the exception message's "all are generation_failed" claim.
+    assert entry["current_status"] == "abandoned"
+
+
+def test_approval_is_idempotent_and_returns_the_current_resource(monkeypatch):
+    campaign = _campaign(status="bulk_running", approved_at=NOW)
+    service = _install_service(
+        monkeypatch, _fake_service(approve_canary=AsyncMock(return_value=campaign))
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+
+    first = client.post(f"{BASE}/campaigns/{campaign.id}/approve", json={})
+    second = client.post(f"{BASE}/campaigns/{campaign.id}/approve", json={})
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["id"] == second.json()["id"]
+    assert service.approve_canary.await_count == 2
+
+
+def test_approval_of_a_terminal_campaign_is_a_human_readable_409(monkeypatch):
+    _install_service(
+        monkeypatch,
+        _fake_service(approve_canary=AsyncMock(
+            side_effect=campaign_service.IllegalCampaignAction(
+                "campaign is 'cancelled' — it can no longer be approved"
+            )
+        )),
+    )
+    response = client.post(f"{BASE}/campaigns/{uuid4()}/approve", json={})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "illegal_campaign_state"
+    assert "can no longer be approved" in detail["message"]
+
+
+def test_approve_requires_the_publisher_flag(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    service = _install_service(monkeypatch, _fake_service())
+
+    response = client.post(f"{BASE}/campaigns/{uuid4()}/approve", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "publisher_disabled"
+    assert "publication" in response.json()["detail"]["message"].lower()
+    assert service.approve_canary.await_count == 0
+
+
+def test_reject_and_cancel_return_the_refreshed_campaign(monkeypatch):
+    campaign = _campaign(status="rejected", rejected_at=NOW)
+    service = _install_service(
+        monkeypatch,
+        _fake_service(
+            reject_canary=AsyncMock(return_value=campaign),
+            cancel=AsyncMock(return_value=campaign),
+        ),
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+
+    reject = client.post(
+        f"{BASE}/campaigns/{campaign.id}/reject",
+        json={"actor": "op", "reason": "content was wrong"},
+    )
+    cancel = client.post(
+        f"{BASE}/campaigns/{campaign.id}/cancel",
+        json={"actor": "op", "reason": "stop"},
+    )
+
+    assert reject.status_code == 200
+    assert cancel.status_code == 200
+    assert service.reject_canary.await_args.kwargs["reason"] == "content was wrong"
+    assert service.cancel.await_args.kwargs["actor"] == "op"
+
+
+def test_reject_and_cancel_require_a_reason():
+    assert client.post(
+        f"{BASE}/campaigns/{uuid4()}/reject", json={"actor": "op"}
+    ).status_code == 422
+    assert client.post(
+        f"{BASE}/campaigns/{uuid4()}/cancel", json={"actor": "op", "reason": " "}
+    ).status_code == 422
+
+
+def test_canary_and_reject_do_not_require_the_publisher_flag(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    campaign = _campaign(status="canary_running")
+    service = _install_service(
+        monkeypatch,
+        _fake_service(
+            launch_canary=AsyncMock(return_value=campaign),
+            reject_canary=AsyncMock(return_value=campaign),
+        ),
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+
+    assert client.post(f"{BASE}/campaigns/{campaign.id}/canary").status_code == 200
+    assert client.post(
+        f"{BASE}/campaigns/{campaign.id}/reject",
+        json={"actor": "op", "reason": "no"},
+    ).status_code == 200
+    assert service.launch_canary.await_count == 1
+
+
+# ═══════════════════════════ target actions ══════════════════════════════
+
+
+def test_retry_generation_returns_the_refreshed_target(monkeypatch):
+    target = _target(status="generating")
+    service = _install_service(
+        monkeypatch, _fake_service(retry_generation=AsyncMock(return_value=target))
+    )
+    _install_target_report(monkeypatch, target)
+
+    response = client.post(f"{BASE}/targets/{target.id}/retry-generation", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target"]["id"] == str(target.id)
+    assert body["campaign_id"] == str(target.campaign_id)
+    assert service.retry_generation.await_args.args[0] == target.id
+    assert regen_api._reconcile.await_count == 1
+
+
+def test_retry_generation_partial_release_is_200_with_the_real_status(monkeypatch):
+    target = _target(status="generation_failed")
+    failure = campaign_service.WaveFailure(
+        target_id=target.id, source_job_id=target.source_job_id,
+        reason="source snapshot was purged",
+    )
+    _install_service(
+        monkeypatch,
+        _fake_service(retry_generation=AsyncMock(
+            side_effect=campaign_service.PartialWaveRelease([failure])
+        )),
+    )
+    _install_target_report(monkeypatch, target)
+    monkeypatch.setattr(regen_api, "_load_target", AsyncMock(return_value=target))
+    monkeypatch.setattr(
+        regen_api, "_current_target_statuses",
+        AsyncMock(return_value={target.id: "generation_failed"}),
+    )
+
+    response = client.post(f"{BASE}/targets/{target.id}/retry-generation", json={})
+
+    assert response.status_code == 200
+    assert response.json()["released_failures"][0]["current_status"] == "generation_failed"
+
+
+def test_retry_generation_does_not_require_the_publisher_flag(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    target = _target()
+    service = _install_service(
+        monkeypatch, _fake_service(retry_generation=AsyncMock(return_value=target))
+    )
+    _install_target_report(monkeypatch, target)
+
+    assert client.post(
+        f"{BASE}/targets/{target.id}/retry-generation", json={}
+    ).status_code == 200
+    assert service.retry_generation.await_count == 1
+
+
+def test_retry_generation_maps_a_retired_model_to_a_visible_409(monkeypatch):
+    _install_service(
+        monkeypatch,
+        _fake_service(retry_generation=AsyncMock(
+            side_effect=campaign_service.RetiredModelRefusal(
+                [("content", "gemini", "gemini-2.5-flash")],
+                what="retry this revision",
+            )
+        )),
+    )
+    response = client.post(f"{BASE}/targets/{uuid4()}/retry-generation", json={})
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["error"] == "retired_model"
+    assert detail["retired"] == [
+        {"role": "content", "provider": "gemini", "model": "gemini-2.5-flash"}
+    ]
+
+
+def test_retry_publication_captures_the_error_before_the_service_clears_it(monkeypatch):
+    before = _target(
+        status="publication_failed",
+        publication_released_at=NOW,
+        publication_version=2,
+        publication_attempts=5,
+        publication_next_attempt_at=None,
+        publication_last_error="notion 502 bad gateway",
+    )
+    after = _target(
+        id=before.id, campaign_id=before.campaign_id,
+        toc_entry_id=before.toc_entry_id, source_job_id=before.source_job_id,
+        status="publication_pending", publication_released_at=NOW,
+        publication_version=2, publication_attempts=5,
+        publication_next_attempt_at=None, publication_last_error=None,
+    )
+    service = _install_service(
+        monkeypatch, _fake_service(retry_publication=AsyncMock(return_value=after))
+    )
+    monkeypatch.setattr(regen_api, "_load_target", AsyncMock(return_value=before))
+    _install_target_report(monkeypatch, after)
+
+    response = client.post(f"{BASE}/targets/{before.id}/retry-publication", json={})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["previous_publication_error"] == "notion 502 bad gateway"
+    assert body["previous_publication_attempts"] == 5
+    assert body["target"]["publication_last_error"] is None
+    assert body["target"]["status"] == "publication_pending"
+    assert service.retry_publication.await_count == 1
+
+
+def test_retry_publication_requires_the_publisher_flag(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", False)
+    service = _install_service(monkeypatch, _fake_service())
+
+    response = client.post(f"{BASE}/targets/{uuid4()}/retry-publication", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "publisher_disabled"
+    assert service.retry_publication.await_count == 0
+
+
+def test_retry_publication_on_a_pending_target_is_idempotent(monkeypatch):
+    target = _target(status="publication_pending", publication_released_at=NOW,
+                     publication_version=2)
+    _install_service(
+        monkeypatch, _fake_service(retry_publication=AsyncMock(return_value=target))
+    )
+    monkeypatch.setattr(regen_api, "_load_target", AsyncMock(return_value=target))
+    _install_target_report(monkeypatch, target)
+
+    response = client.post(f"{BASE}/targets/{target.id}/retry-publication", json={})
+
+    assert response.status_code == 200
+    assert response.json()["target"]["status"] == "publication_pending"
+    assert response.json()["previous_publication_error"] is None
+
+
+def test_target_actions_map_illegal_state_to_409_and_missing_to_404(monkeypatch):
+    _install_service(
+        monkeypatch,
+        _fake_service(
+            abandon=AsyncMock(side_effect=campaign_service.IllegalTargetAction(
+                "target is published — a delivered version cannot be abandoned"
+            )),
+            retry_publication=AsyncMock(
+                side_effect=campaign_service.TargetNotFound("no such target")
+            ),
+        ),
+    )
+    monkeypatch.setattr(regen_api, "_load_target", AsyncMock(return_value=_target()))
+
+    conflict = client.post(
+        f"{BASE}/targets/{uuid4()}/abandon", json={"actor": "op", "reason": "x"}
+    )
+    missing = client.post(f"{BASE}/targets/{uuid4()}/retry-publication", json={})
+
+    assert conflict.status_code == 409
+    assert conflict.json()["detail"]["error"] == "illegal_target_state"
+    assert "cannot be abandoned" in conflict.json()["detail"]["message"]
+    assert missing.status_code == 404
+
+
+def test_abandon_records_the_reason_and_returns_the_terminal_target(monkeypatch):
+    target = _target(status="abandoned", terminal_at=NOW,
+                     terminal_reason="abandoned by op: destination retired")
+    service = _install_service(
+        monkeypatch, _fake_service(abandon=AsyncMock(return_value=target))
+    )
+    _install_target_report(monkeypatch, target)
+
+    response = client.post(
+        f"{BASE}/targets/{target.id}/abandon",
+        json={"actor": "op", "reason": "destination retired"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["target"]["bucket"] == "abandoned"
+    assert "destination retired" in response.json()["target"]["reason"]
+    assert service.abandon.await_args.kwargs["reason"] == "destination retired"
+
+
+# ═══════════════════════════ standing prohibitions ═══════════════════════
+
+
+def test_the_router_never_touches_the_deadlocking_claim_primitive():
+    """T9-1: `claim_target_publication` inverts the campaign→target lock order.
+    Production claiming is `claim_next_publication`, inside the publisher.
+
+    Checked over the parsed NAMES rather than the file text, so the module may
+    still explain the prohibition in prose without tripping its own guard.
+    """
+    tree = ast.parse(inspect.getsource(regen_api))
+    referenced = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    } | {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert "claim_target_publication" not in referenced
+    assert "claim_next_publication" not in referenced
+
+
+def test_the_router_exposes_no_prompt_set_or_publication_approval_route():
+    paths = {route.path for route in regen_api.router.routes}
+    assert not any("prompt" in path for path in paths)
+    assert not any("publication-approval" in path or "approve-publication" in path
+                   for path in paths)
+    assert "/regeneration/targets/{target_id}/retry-publication" in paths
+
+
+def test_retry_publication_maps_its_three_refusals_distinguishably(monkeypatch):
+    """T9-2: the service raises three different refusals from this one route —
+    wrong status, an abandon intent, and a cancelling campaign — and an
+    operator must be able to tell them apart from the response alone."""
+    target = _target(status="publication_failed", publication_released_at=NOW,
+                     publication_version=2)
+    monkeypatch.setattr(regen_api, "_load_target", AsyncMock(return_value=target))
+    _install_target_report(monkeypatch, target)
+
+    seen = []
+    for error in (
+        campaign_service.IllegalTargetAction(
+            "target is 'published' — only a failed publication can be re-queued"
+        ),
+        campaign_service.IllegalTargetAction(
+            "target is being abandoned — publication retry is refused"
+        ),
+        campaign_service.IllegalCampaignAction(
+            "campaign is cancelling — publication retry is refused"
+        ),
+    ):
+        _install_service(
+            monkeypatch,
+            _fake_service(retry_publication=AsyncMock(side_effect=error)),
+        )
+        response = client.post(f"{BASE}/targets/{target.id}/retry-publication",
+                               json={})
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        seen.append((detail["error"], detail["message"]))
+
+    assert seen[0][0] == seen[1][0] == "illegal_target_state"
+    assert seen[2][0] == "illegal_campaign_state"
+    # Three refusals, three different sentences.
+    assert len({message for _error, message in seen}) == 3
+
+
+def test_a_mutation_never_consults_the_report_debounce(monkeypatch):
+    """Binding 4: the debounce is a REPORT concern. A mutation's rollup is
+    service-owned and must not be skipped, or an approval could return a
+    campaign status that predates it."""
+    campaign = _campaign(status="bulk_running", approved_at=NOW)
+    service = _install_service(
+        monkeypatch, _fake_service(approve_canary=AsyncMock(return_value=campaign))
+    )
+    _install_detail(monkeypatch, _detail(campaign))
+    monkeypatch.setattr(regen_api, "_clock", lambda: 1000.0)
+
+    for _ in range(3):
+        assert client.post(
+            f"{BASE}/campaigns/{campaign.id}/approve", json={}
+        ).status_code == 200
+
+    assert service.approve_canary.await_count == 3
+    # The route itself took no rollup slot: only reports do.
+    assert regen_api._ROLLUP_DEBOUNCE == {}
+    assert service.roll_up.await_count == 0
+
+
+def test_estimate_flags_acknowledgement_per_subject_not_campaign_wide(monkeypatch):
+    """A campaign may span subjects, and the plan is built from each SOURCE
+    JOB's flow, so the acknowledgement flag is per plan.
+
+    Every deployed flow currently has the same shape, so this pins the
+    RELATION — a plan claims an acknowledgement is needed exactly when it has
+    broken edges — rather than a divergence that does not exist yet.
+    """
+    math = _source(subject="math-algebra")
+    history = _source(subject="history")
+    monkeypatch.setattr(
+        discovery, "list_source_candidates",
+        AsyncMock(return_value=[_candidate(math), _candidate(history)]),
+    )
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        regen_api, "_estimate_regeneration",
+        AsyncMock(return_value=SimpleNamespace(
+            low_usd=1.0, high_usd=2.0, line_items=(), target_count=2,
+            regenerated_phase_count=2, copied_phase_count=20,
+            regenerated_extract_count=0, copied_extract_count=2,
+            window_start=NOW - timedelta(days=30), window_end=NOW,
+            notes=(), is_estimate=True, has_unpriced_lines=False,
+        )),
+    )
+
+    response = client.post(
+        f"{BASE}/estimate",
+        json=_estimate_body(
+            selected_phases=["boss-arena"],
+            excluded_affected_phases=["reflection"],
+            exclusion_acknowledged=False,
+        ),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["acknowledgement_required"] is True
+    by_subject = {plan["subject"]: plan for plan in body["phase_plans"]}
+    assert set(by_subject) == {"math-algebra", "history"}
+    for plan in by_subject.values():
+        # Per-plan, and consistent with that plan's own edges.
+        assert plan["acknowledgement_required"] == bool(
+            plan["broken_dependency_edges"]
+        )
+
+
+def test_campaign_list_refuses_an_unknown_status_filter():
+    response = client.get(f"{BASE}/campaigns", params={"status": "not-a-status"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["error"] == "unknown_campaign_status"
