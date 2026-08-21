@@ -390,6 +390,9 @@ export function pruneRegenerationDraft(
   const selectedTocEntryIds = draft.selectedTocEntryIds.filter((id) =>
     inputs.eligibleTocEntryIds.has(id),
   );
+  // Built once and as a Set: a selection runs to hundreds of lessons, and
+  // every surviving override is tested against it below.
+  const selectedTocEntryIdSet = new Set(selectedTocEntryIds);
   const selectedPhases = draft.selectedPhases.filter((phase) => inputs.validPhaseNames.has(phase));
   const excludedPhases = draft.excludedPhases.filter((phase) => inputs.validPhaseNames.has(phase));
   const modelIsOffered =
@@ -407,10 +410,21 @@ export function pruneRegenerationDraft(
       acknowledged: false,
       canarySize: clampCanarySize(draft.canarySize, selectedTocEntryIds.length),
       model: modelIsOffered ? draft.model : null,
-      // An override names a publication destination for one lesson; a lesson
-      // with no regenerable lineage has nothing left to publish.
-      destinationOverrides: draft.destinationOverrides.filter((override) =>
-        inputs.eligibleTocEntryIds.has(override.tocEntryId),
+      // An override names one lesson's publication destination inside ONE
+      // language's Notion container, so it belongs to the draft only while
+      // BOTH halves of that pair still hold: the lesson is still ticked after
+      // pruning (which has already dropped every lesson that stopped being
+      // eligible, so eligibility needs no second test), and its language is
+      // still the draft's. Either half alone leaks a stale page into the
+      // estimate — an untargeted lesson keeps its eligibility, and a language
+      // switch keeps the lesson id — and the server revalidates the chosen
+      // page against the reviewed language container, so a mismatch is a
+      // refusal, not a nuance. A book change needs no test of its own: it
+      // clears the selection, so nothing survives the first half.
+      destinationOverrides: draft.destinationOverrides.filter(
+        (override) =>
+          selectedTocEntryIdSet.has(override.tocEntryId) &&
+          override.outputLanguage === draft.language,
       ),
     },
     removedLessonCount: draft.selectedTocEntryIds.length - selectedTocEntryIds.length,

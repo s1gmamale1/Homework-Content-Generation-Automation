@@ -393,6 +393,49 @@ test("pruning drops destination overrides for lessons that are gone", () => {
   ]);
 });
 
+test("pruning drops destination overrides for lessons the operator unticked", () => {
+  const restored = pruneRegenerationDraft(
+    { ...savedDraft, selectedTocEntryIds: ["kept"] },
+    {
+      // "gone" is still perfectly regenerable — it was simply untargeted.
+      eligibleTocEntryIds: new Set(["kept", "gone"]),
+      validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+      validPhaseNames: new Set(["reflection"]),
+    },
+  );
+  // Unticking a lesson does not cost it its eligibility, so eligibility alone
+  // cannot decide this: the override would ride into the estimate — and into
+  // the campaign the operator confirms — for a lesson nothing is regenerating.
+  assert.deepStrictEqual(restored.draft.destinationOverrides, [
+    { tocEntryId: "kept", outputLanguage: "uz", notionLessonPageId: "page-kept" },
+  ]);
+});
+
+test("pruning drops destination overrides recorded for another output language", () => {
+  const switched: GuidedRegenerationDraft = {
+    ...savedDraft,
+    language: "ru",
+    destinationOverrides: [
+      { tocEntryId: "kept", outputLanguage: "uz", notionLessonPageId: "page-uz" },
+      { tocEntryId: "gone", outputLanguage: "ru", notionLessonPageId: "page-ru" },
+    ],
+  };
+  const restored = pruneRegenerationDraft(switched, {
+    // Both lessons are selected and eligible: only the language separates them.
+    eligibleTocEntryIds: new Set(["kept", "gone"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+    validPhaseNames: new Set(["reflection"]),
+  });
+  // A chosen Notion page is a child of ONE language's container, which is what
+  // the server revalidates; an override carried over from the language the
+  // operator left names a page in the wrong container. An override already
+  // recorded for the language now on screen is still the operator's own answer,
+  // so this is an equality test, not "a language change wipes the overrides".
+  assert.deepStrictEqual(restored.draft.destinationOverrides, [
+    { tocEntryId: "gone", outputLanguage: "ru", notionLessonPageId: "page-ru" },
+  ]);
+});
+
 test("pruning clamps the canary down to the lessons that survived", () => {
   const restored = pruneRegenerationDraft(
     { ...savedDraft, selectedTocEntryIds: ["kept", "gone", "also-gone"], canarySize: 3 },
