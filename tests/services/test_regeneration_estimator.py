@@ -877,22 +877,201 @@ async def test_copied_work_is_zero_without_being_called_unpriced():
     assert empty.has_unpriced_lines is False
 
 
+# ───────────── zero-volume observations are not evidence ─────────────
+
+
+def _zero_volume_obs(**overrides):
+    """A successful, well-formed observation that BILLS NOTHING.
+
+    A real shape, not a contrivance: a provider whose envelope reports no token
+    breakdown writes successful rows with every billable field 0 (the documented
+    kimi gap is exactly this), and a run of them averages to exactly this row.
+    """
+    kwargs = dict(prompt=0, output=0, cached=0, cache_creation=0, n=4)
+    kwargs.update(overrides)
+    return _obs("phase.run", "reflection", GEN_MODEL, **kwargs)
+
+
+#   static authoring envelope: 24,000 prompt × $1.50/M + 6,000 output × $9.00/M
+STATIC_AUTHORING_UNIT = 0.036 + 0.054
+
+
 @pytest.mark.asyncio
-async def test_a_priced_model_with_a_zero_token_observation_is_not_called_unpriced():
-    """Non-vacuity fence for the detector: the marker is about a MISSING RATE,
-    not about any $0.00 line. A priced pair whose observed mean happens to be
-    zero tokens keeps its observed basis."""
+async def test_an_observation_that_bills_nothing_is_not_volume_evidence():
+    """A successful call that bills zero tokens is MISSING volume, not a free
+    call. Treated as authoritative it prices a real future model call as a
+    complete $0.00 line; it must fall back to the static envelope exactly like a
+    phase with no history at all."""
     from app.services import regeneration_estimator as estimator
 
-    empty_obs = _obs("phase.run", "reflection", GEN_MODEL, prompt=0, output=0)
-    source, plans, session = _one_target_setup(rows=[empty_obs])
+    source, plans, session = _one_target_setup(rows=[_zero_volume_obs()])
     est = await estimator.estimate_regeneration(
         session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
     )
+
     (authoring,) = [
         li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
     ]
-    assert authoring.unit_cost_usd == 0.0
+    assert authoring.basis == estimator.STATIC_BASIS
+    assert authoring.observations == 0
+    assert authoring.unit_cost_usd == pytest.approx(STATIC_AUTHORING_UNIT)
+    assert authoring.cost_low_usd == pytest.approx(STATIC_AUTHORING_UNIT)
+    # a priced pair: this fallback is about VOLUME and says nothing about rates
     assert authoring.is_unpriced is False
-    assert authoring.basis.startswith("observed")
     assert est.has_unpriced_lines is False
+    # identical treatment to the judge line, which has no observation at all
+    (judge,) = [
+        li for li in est.line_items if li.kind == "judge" and li.budget == "base"
+    ]
+    assert (judge.basis, judge.observations) == (
+        authoring.basis,
+        authoring.observations,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_ignored_zero_volume_history_is_explained_in_the_notes():
+    """The operator must be able to see WHY a line that has history is priced
+    from the envelope anyway."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(rows=[_zero_volume_obs(n=7)])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (note,) = [n for n in est.notes if n.startswith(estimator.ZERO_VOLUME_HISTORY)]
+    assert "7" in note                        # how much history was ignored
+    assert "reflection" in note               # for which phase
+    assert f"gemini/{GEN_MODEL}" in note      # on which pair
+    assert estimator.STATIC_BASIS in note     # and what was priced instead
+    # NOT reported as absent history: history exists, it just bills nothing
+    assert not any("no successful api authoring call" in n for n in est.notes)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field, value, unit",
+    [
+        # hand-derived against gemini-3.5-flash: in $1.50, out $9.00, cached $0.15
+        ("prompt", 10_000, 0.015),
+        ("output", 1_000, 0.009),
+        ("cached", 6_000, 0.0009),  # prompt 0 ⇒ uncached input clamps to 0
+    ],
+)
+async def test_one_nonzero_billable_field_keeps_the_observed_basis(field, value, unit):
+    """The fallback triggers on ZERO billable volume, never on a small or
+    lopsided one: any single field ``pricing.cost_usd`` bills is real evidence
+    and keeps the observed basis."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(
+        rows=[_zero_volume_obs(**{field: value})]
+    )
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    assert authoring.observations == 4
+    assert authoring.basis == "observed mean of 4 api call(s) in the last 30 days"
+    assert authoring.unit_cost_usd == pytest.approx(unit)
+    assert not any(n.startswith(estimator.ZERO_VOLUME_HISTORY) for n in est.notes)
+
+
+@pytest.mark.asyncio
+async def test_cache_creation_volume_is_evidence_even_with_no_write_rate():
+    """Volume and RATE stay separate questions, and the fourth billable field is
+    really in the predicate. gemini entries deliberately carry no ``cache_write``
+    rate, so a cache-creation-only observation prices at $0.00 — but it IS real
+    volume, so it keeps its observed basis and is surfaced by the pre-existing
+    missing-rate marker rather than silently re-based on the envelope."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(
+        rows=[_zero_volume_obs(cache_creation=4_000)]
+    )
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    assert authoring.observations == 4
+    assert "observed mean of 4 api call(s)" in authoring.basis
+    assert estimator.STATIC_BASIS not in authoring.basis
+    assert authoring.unit_cost_usd == 0.0
+    assert authoring.is_unpriced is True
+    assert not any(n.startswith(estimator.ZERO_VOLUME_HISTORY) for n in est.notes)
+
+
+@pytest.mark.asyncio
+async def test_an_unpriced_pair_stays_visibly_unpriced_after_the_volume_fallback(
+    monkeypatch,
+):
+    """The two conditions compose. Missing volume is repaired from the static
+    envelope; the missing RATE must survive that repair loudly. What this fences
+    is a $0.00 line that reads neither UNPRICED nor static — the exact shape an
+    operator would approve as a free campaign."""
+    from app.services import pricing
+    from app.services import regeneration_estimator as estimator
+
+    monkeypatch.delitem(pricing.PRICE_MAP, ("gemini", GEN_MODEL))
+    source, plans, session = _one_target_setup(rows=[_zero_volume_obs()])
+    est = await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    (authoring,) = [
+        li for li in est.line_items if li.kind == "authoring" and li.budget == "base"
+    ]
+    assert authoring.observations == 0
+    assert authoring.unit_cost_usd == 0.0
+    assert authoring.is_unpriced is True
+    assert authoring.basis.startswith(estimator.UNPRICED_BASIS)
+    assert estimator.STATIC_BASIS in authoring.basis  # volume provenance kept
+    assert est.has_unpriced_lines is True
+    assert any(n.startswith(estimator.ZERO_VOLUME_HISTORY) for n in est.notes)
+    # the judge pair is still priced, and the static volume really is nonzero
+    (judge,) = [
+        li for li in est.line_items if li.kind == "judge" and li.budget == "base"
+    ]
+    assert judge.is_unpriced is False and judge.unit_cost_usd > 0
+
+
+@pytest.mark.asyncio
+async def test_a_non_billable_total_cannot_turn_zero_priced_volume_into_evidence():
+    """``agent_usages`` carries a ``total_tokens`` column, and a row may report a
+    nonzero total while every field ``pricing.cost_usd`` actually bills is 0 (a
+    provider summary figure, thoughts-only accounting, a metadata total).
+    Deciding on a total would re-admit exactly the line this change removes: a
+    real call priced as observed at $0.00. Three fences — the SELECT never
+    carries a total, the priced mapping has no total key, and the predicate
+    itself ignores one."""
+    from app.services import regeneration_estimator as estimator
+
+    source, plans, session = _one_target_setup(rows=[_zero_volume_obs()])
+    await estimator.estimate_regeneration(
+        session, targets=[source], plans=plans, launch_contract=_contract(), now=NOW
+    )
+
+    sql = _sql(session.statements[0])
+    assert "total_tokens" not in sql
+    for key in estimator._TOKEN_KEYS:
+        assert f"avg(agent_usages.{key})" in sql
+
+    priced = estimator._Observation(
+        prompt_tokens=0.0,
+        output_tokens=0.0,
+        cached_tokens=0.0,
+        cache_creation_tokens=0.0,
+        samples=1,
+    ).usage()
+    assert set(priced) == set(estimator._TOKEN_KEYS)
+
+    metadata_only = {**priced, "total_tokens": 99_000}
+    assert estimator.billable_token_volume(metadata_only) == 0
+    assert estimator.price_unit("gemini", GEN_MODEL, metadata_only) == (0.0, False)

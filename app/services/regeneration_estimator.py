@@ -17,12 +17,16 @@ else:
    from the last :data:`OBSERVATION_WINDOW_DAYS` days, joined through
    ``phase_output_id`` to the phase they belong to, averaged per
    (operation, phase, provider, model) and priced with ``pricing.cost_usd``.
-   Where there is no matching history, a documented conservative envelope
-   (:data:`STATIC_TOKEN_ENVELOPE`) is priced with the same static table. A
-   (provider, model) that table has no rate for is NOT quietly a $0 line: it
-   keeps the $0.00 figure (no rate is ever invented) but is marked
-   :data:`UNPRICED_BASIS` on the line, named in ``notes``, and flagged
-   campaign-wide by :attr:`RegenerationEstimate.has_unpriced_lines`.
+   Where there is no matching history — or where the only matching history
+   BILLS NOTHING (see :func:`billable_token_volume`) — a documented
+   conservative envelope (:data:`STATIC_TOKEN_ENVELOPE`) is priced with the
+   same static table. A (provider, model) that table has no rate for is NOT
+   quietly a $0 line: it keeps the $0.00 figure (no rate is ever invented) but
+   is marked :data:`UNPRICED_BASIS` on the line, named in ``notes``, and
+   flagged campaign-wide by
+   :attr:`RegenerationEstimate.has_unpriced_lines`. Missing volume and a
+   missing rate are independent: a priced pair falling back to the envelope is
+   NOT unpriced, and an unpriced pair stays visibly unpriced after it.
 
 The join is an INNER join on purpose: a usage row with no ``phase_output_id``
 (a TOC extraction, a golden eval, a fidelity audit) is not evidence about a
@@ -152,10 +156,25 @@ UNPRICED_BASIS = (
     "$0.00 is an ABSENT price, not a free call"
 )
 
-#: Token keys that make an envelope "real work" — the detector below asks
-#: ``pricing`` behaviorally (nonzero volume that still prices at $0 means no
-#: rate exists) rather than re-reading ``PRICE_MAP``, whose model resolution and
-#: per-provider fallbacks belong to that module alone.
+#: Stable, machine-matchable prefix for the note emitted when the window's only
+#: matching history bills nothing.
+#:
+#: A successful call whose every billable token field is 0 is MISSING VOLUME,
+#: not free work: the row proves the call happened, not what it costs. Averaged
+#: in as authoritative it prices a real future model call at $0.00 and the whole
+#: campaign reads free — worse than having no history at all, because the line
+#: also claims to be "observed". Such a group is dropped and the line falls back
+#: to :data:`STATIC_TOKEN_ENVELOPE`, exactly like a phase never run on this
+#: pair; the operator is told, because history that was ignored is a fact about
+#: the estimate.
+ZERO_VOLUME_HISTORY = "ZERO-VOLUME HISTORY"
+
+#: The exact fields ``pricing.cost_usd`` charges for, and the only definition
+#: of "real work" in this module: :func:`billable_token_volume` sums them, and
+#: the unpriced detector asks ``pricing`` behaviorally on top of that sum
+#: (nonzero volume that still prices at $0 means no rate exists) rather than
+#: re-reading ``PRICE_MAP``, whose model resolution and per-provider fallbacks
+#: belong to that module alone.
 _TOKEN_KEYS = (
     "prompt_tokens",
     "output_tokens",
@@ -164,13 +183,29 @@ _TOKEN_KEYS = (
 )
 
 
+def billable_token_volume(usage: Mapping) -> int:
+    """Tokens in ``usage`` that ``pricing.cost_usd`` can actually charge for.
+
+    Exactly the four fields that function reads, and nothing else. A summary
+    figure such as ``agent_usages.total_tokens`` is deliberately NOT counted:
+    it never reaches pricing (``observation_stmt`` does not select it and
+    ``_Observation.usage`` does not emit it), and letting a non-billable total
+    stand in for volume would let a row that charges nothing be read as
+    evidence about what a call costs.
+
+    Zero here means the same thing in both directions: whatever the rate, this
+    shape prices at $0.00 — so it is a statement about VOLUME, never about
+    whether a rate exists.
+    """
+    return sum(int(usage.get(key) or 0) for key in _TOKEN_KEYS)
+
+
 def price_unit(
     provider: str, model: Optional[str], usage: Mapping
 ) -> tuple[float, bool]:
     """``(unit cost, is_unpriced)`` for one call of ``usage`` shape."""
     unit = pricing.cost_usd(provider, model, dict(usage))
-    volume = sum(int(usage.get(key) or 0) for key in _TOKEN_KEYS)
-    return unit, (unit == 0.0 and volume > 0)
+    return unit, (unit == 0.0 and billable_token_volume(usage) > 0)
 
 
 @dataclass(frozen=True)
@@ -504,14 +539,35 @@ async def estimate_regeneration(
             cache_key = (kind, phase, provider, model)
             if cache_key not in priced:
                 observation = observed.get(cache_key)
+                zero_volume_samples = 0
+                # Decided on the SAME mapping that would be priced (rounded
+                # ints), not on the raw means, so the line can never be based
+                # on volume `pricing.cost_usd` would not see.
+                if observation is not None and not billable_token_volume(
+                    observation.usage()
+                ):
+                    zero_volume_samples = observation.samples
+                    observation = None
                 if observation is None:
                     usage = STATIC_TOKEN_ENVELOPE[kind]
                     basis, samples = STATIC_BASIS, 0
-                    notes.append(
-                        f"no successful api {kind} call for phase {phase!r} on "
-                        f"{provider}/{model} in the last {OBSERVATION_WINDOW_DAYS} "
-                        f"days — priced from the {STATIC_BASIS}"
-                    )
+                    if zero_volume_samples:
+                        notes.append(
+                            f"{ZERO_VOLUME_HISTORY}: {zero_volume_samples} "
+                            f"successful api {kind} call(s) for phase {phase!r} on "
+                            f"{provider}/{model} in the last "
+                            f"{OBSERVATION_WINDOW_DAYS} days recorded no billable "
+                            "tokens (prompt, output, cached and cache-creation "
+                            "all 0) — that history says a call happened, not what "
+                            "it costs, so this line is priced from the "
+                            f"{STATIC_BASIS} instead"
+                        )
+                    else:
+                        notes.append(
+                            f"no successful api {kind} call for phase {phase!r} on "
+                            f"{provider}/{model} in the last {OBSERVATION_WINDOW_DAYS} "
+                            f"days — priced from the {STATIC_BASIS}"
+                        )
                 else:
                     usage = observation.usage()
                     basis = (
