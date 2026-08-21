@@ -359,6 +359,56 @@ async def test_execute_phase_still_reuses_the_cross_job_cache_by_default(monkeyp
 
 
 # ═════════════════════════════════════════════════════════════════════════
+# ... and the SEAM between the two blocks above: the head calls
+# `_execute_one_phase`, which is what calls `_execute_phase`
+#
+# Neither block covers that hop. The `run()` tests stub `_execute_one_phase`
+# out wholesale and read the flag off its kwargs; the `_execute_phase` tests
+# hand the flag in by hand. Delete the one line that forwards it through the
+# wrapper and all five still pass — while a real forced refresh silently
+# decays to the parameter default and is served the SOURCE job's extract.
+# ═════════════════════════════════════════════════════════════════════════
+
+
+async def test_execute_one_phase_forwards_the_force_to_execute_phase(monkeypatch):
+    """The head phase does not reach `_execute_phase` directly — it goes
+    through this wrapper, which must carry `force_fresh_extract` down."""
+    seen: list[dict] = []
+
+    async def _capture(**kw):
+        seen.append(kw)
+        return ("# extract", 5, 7, "prompt-hash", None)
+
+    monkeypatch.setattr(pipeline, "_execute_phase", _capture)
+    monkeypatch.setattr(pipeline.events_bus, "publish", AsyncMock())
+
+    job_id = uuid.uuid4()
+    await pipeline._execute_one_phase(
+        job_id=job_id,
+        resource_id=f"job:{job_id}",
+        log=pipeline.logger,
+        phase_name="extract",
+        phase_order=0,
+        total_phases_hint=1,
+        subject=_SUBJECT,
+        provider="gemini",
+        model="gemini-3.5-flash",
+        pdf_path=Path("/fake/book.pdf"),
+        file_phases=set(),
+        section_data={"id": uuid.uuid4(), "title": "L1", "number": "1.1"},
+        lesson_context=None,
+        prior_outputs={},
+        difficulty=None,
+        force_fresh_extract=True,
+    )
+
+    assert seen, "`_execute_phase` was never called"
+    assert seen[0]["force_fresh_extract"] is True, (
+        "the wrapper dropped the head's forced refresh — the extract phase "
+        "would consult the cross-job cache and be served V1's extract")
+
+
+# ═════════════════════════════════════════════════════════════════════════
 # end-to-end over a real revision job
 # ═════════════════════════════════════════════════════════════════════════
 
