@@ -514,16 +514,70 @@ def _siblings(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_preflight_passes_when_the_lesson_page_is_already_known(
+async def test_a_known_lesson_page_does_not_excuse_a_missing_language_mapping(
     monkeypatch, _no_notion_client, _siblings
 ):
+    """`toc_entries.notion_lesson_page_id` is ONE language-blind column, owned by
+    whichever lineage archived that lesson first.
+
+    The publisher stopped treating it as the parent across languages: it resolves
+    the Lesson Topic beneath THIS target's own `{lang}:{subject}|{grade}` subject
+    page and refuses non-retryably when that mapping is missing. So a pointer
+    stamped by the `uz` lineage says nothing about whether the `ru` one has a
+    home, and waving it through here would let the operator pay for a revision
+    that can only park.
+    """
     from app.config import settings
     from app.services import regeneration_discovery as discovery
 
-    monkeypatch.setattr(settings, "notion_subject_pages", {}, raising=False)
-    source = _source(notion_lesson_page_id="abc123")
+    monkeypatch.setattr(
+        settings, "notion_subject_pages", {f"{SUBJECT}|7": "page-uz"}, raising=False
+    )
+    source = _source(output_language="ru", notion_lesson_page_id="uz-lesson-page")
+
+    (failure,) = await discovery.preflight_notion_destinations(None, [source])
+
+    assert failure.reason == discovery.NO_SUBJECT_PAGE_REASON
+    assert failure.output_language == "ru"
+    assert f"ru:{SUBJECT}|7" in failure.detail
+
+
+@pytest.mark.asyncio
+async def test_preflight_passes_a_known_lesson_page_with_its_own_language_mapping(
+    monkeypatch, _no_notion_client, _siblings
+):
+    """The pointer is not what makes it pass — the subject tree the publisher
+    will actually resolve under, `ru:{subject}|{grade}`, is configured."""
+    from app.config import settings
+    from app.services import regeneration_discovery as discovery
+
+    monkeypatch.setattr(
+        settings,
+        "notion_subject_pages",
+        {f"{SUBJECT}|7": "page-uz", f"ru:{SUBJECT}|7": "page-ru"},
+        raising=False,
+    )
+    source = _source(output_language="ru", notion_lesson_page_id="uz-lesson-page")
 
     assert await discovery.preflight_notion_destinations(None, [source]) == []
+
+
+@pytest.mark.asyncio
+async def test_a_known_lesson_page_does_not_excuse_a_missing_grade(
+    monkeypatch, _no_notion_client, _siblings
+):
+    """The grade is half the destination key, so a gradeless book is still the
+    distinct fix even when the lesson already has a page."""
+    from app.config import settings
+    from app.services import regeneration_discovery as discovery
+
+    monkeypatch.setattr(
+        settings, "notion_subject_pages", {f"{SUBJECT}|7": "page-uz"}, raising=False
+    )
+    (failure,) = await discovery.preflight_notion_destinations(
+        None, [_source(grade=None, notion_lesson_page_id="uz-lesson-page")]
+    )
+    assert failure.reason == discovery.MISSING_GRADE_REASON
 
 
 @pytest.mark.asyncio

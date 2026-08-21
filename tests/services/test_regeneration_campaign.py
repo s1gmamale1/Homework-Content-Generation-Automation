@@ -72,6 +72,29 @@ db_only = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _notion_destinations(monkeypatch):
+    """A configured Notion destination for the seeded book, in both languages.
+
+    Preflight requires the TARGET LANGUAGE's own `{lang}:{subject}|{grade}`
+    subject page for every lesson — a stamped `notion_lesson_page_id` does not
+    excuse it, because that column is language-blind and the publisher no longer
+    follows it across languages. So a lifecycle test that launches needs a real
+    mapping, and the tests about a MISSING destination set their own.
+
+    Pinned here rather than inherited from the ambient `NOTION_SUBJECT_PAGES`,
+    which would make this file's verdicts depend on an operator's live config.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(
+        settings,
+        "notion_subject_pages",
+        {f"{_SUBJECT}|5": "page-uz-5", f"ru:{_SUBJECT}|5": "page-ru-5"},
+        raising=False,
+    )
+
+
 # ═════════════════════════════════════════════════════════════════════════
 # pure: the interface, the guards, the arithmetic and the rollup
 # ═════════════════════════════════════════════════════════════════════════
@@ -639,9 +662,12 @@ async def test_launch_creates_only_canary_jobs():
 
 
 @db_only
-async def test_launch_preflights_every_destination_before_any_spend():
-    """A lesson with no Lesson Topic page and no subject mapping blocks the
-    WHOLE launch — including the canary — before a job exists."""
+async def test_launch_preflights_every_destination_before_any_spend(monkeypatch):
+    """A lesson with no subject mapping blocks the WHOLE launch — including the
+    canary — before a job exists."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "notion_subject_pages", {}, raising=False)
     ids = await _seed(lessons=3, notion=False)
     try:
         service = _service()
@@ -654,6 +680,66 @@ async def test_launch_preflights_every_destination_before_any_spend():
         assert (await _campaign(campaign.id)).status == "draft"
     finally:
         await _purge(ids)
+
+
+async def test_preflight_refuses_a_lesson_whose_pointer_belongs_to_another_language(
+    monkeypatch,
+):
+    """The campaign preflights THROUGH `discovery`, so the destination rule it
+    enforces is the publisher's own — including for a lesson that already
+    carries a `notion_lesson_page_id`.
+
+    That column is one language-blind pointer, owned by whichever lineage
+    archived the lesson first. The publisher resolves the Lesson Topic beneath
+    the target's OWN subject tree and refuses non-retryably when that tree is
+    unmapped, so a campaign that let the pointer stand in for the mapping would
+    pay to generate an `ru` revision that can then only park.
+
+    Runs without Postgres on purpose: the ordering guarantee ("before any spend")
+    is the db_only test above; what this pins is the VERDICT the launch gate
+    computes, which a fake session is enough to reach.
+    """
+    from app.config import settings
+    from app.repositories import toc_entries as toc_repo
+    from app.services import regeneration_discovery as discovery
+
+    monkeypatch.setattr(
+        settings, "notion_subject_pages", {f"{_SUBJECT}|5": "page-uz-5"},
+        raising=False,
+    )
+
+    async def _no_siblings(session, *, subject, grade):
+        return []
+
+    monkeypatch.setattr(toc_repo, "titles_for_subject_grade", _no_siblings)
+
+    toc_entry_id, source_job_id = uuid.uuid4(), uuid.uuid4()
+    source = discovery.EligibleRegenerationSource(
+        source_job_id=source_job_id, toc_entry_id=toc_entry_id,
+        book_id=uuid.uuid4(), subject=_SUBJECT, grade="5", output_language="ru",
+        source_publication_version=1, next_expected_version=2,
+        source_is_revision=False, book_filename="regen_campaign.pdf",
+        section_number="1", section_title="Lesson 0", chapter_title="I bob",
+        page_start=4, notion_lesson_page_id="uz-owned-lesson-page", order_index=0,
+    )
+
+    async def _candidates(session, *, toc_entry_ids, output_languages):
+        return [discovery.SourceCandidate(
+            toc_entry_id=toc_entry_id, output_language="ru",
+            source=source, reasons=(),
+        )]
+
+    monkeypatch.setattr(discovery, "list_source_candidates", _candidates)
+    target = SimpleNamespace(
+        terminal_at=None, toc_entry_id=toc_entry_id,
+        output_language="ru", source_job_id=source_job_id,
+    )
+
+    (failure,) = await _service()._preflight(None, [target])
+
+    assert failure.reason == discovery.NO_SUBJECT_PAGE_REASON
+    assert failure.toc_entry_id == toc_entry_id
+    assert f"ru:{_SUBJECT}|5" in failure.detail
 
 
 @db_only

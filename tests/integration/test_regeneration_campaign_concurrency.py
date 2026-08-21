@@ -43,6 +43,25 @@ _CONTRACT = ResolvedLaunchContract(
 )
 
 
+@pytest.fixture(autouse=True)
+def _notion_destinations(monkeypatch):
+    """A configured Notion destination for the seeded book.
+
+    `launch_canary` preflights every destination first, and preflight requires
+    the target language's own `{lang}:{subject}|{grade}` subject page for EVERY
+    lesson — the seeded `notion_lesson_page_id` is a language-blind pointer and
+    does not excuse it. These tests are about row locks and convergence, so the
+    mapping is pinned here (not inherited from the ambient
+    `NOTION_SUBJECT_PAGES`) to keep the launch reaching the code under test.
+    """
+    from app.config import settings
+
+    monkeypatch.setattr(
+        settings, "notion_subject_pages", {f"{_SUBJECT}|5": "page-uz-5"},
+        raising=False,
+    )
+
+
 async def _seed(*, lessons: int = 1, languages=("uz",)):
     from app.db import SessionLocal
     from app.models.book import Book

@@ -414,13 +414,20 @@ async def get_book(
 def _regeneration_block(error: str, message: str, targets) -> HTTPException:
     """A structured 409 for a source-removal blocked by regeneration history.
 
-    Every regeneration foreign key is RESTRICT because a target row records a
-    publication version that is consumed forever — letting a delete cascade it
-    away would silently free that version for reuse. RESTRICT alone would reach
+    A target row records a publication version that is consumed forever, so
+    `regeneration_targets.campaign_id` / `toc_entry_id` and
+    `homework_jobs.revision_of_job_id` / `regeneration_target_id` are all ON
+    DELETE RESTRICT rather than cascading that history away. Those would reach
     the operator as a raw `ForeignKeyViolation` (a 500, or a book flipped to
     `failed` with the old TOC still in place), so the routes refuse first and
-    say WHAT blocks them. The repositories keep the restrictive behavior
-    underneath as the real backstop.
+    say WHAT blocks them.
+
+    The routes' own guards — not the keys — are what make the refusal complete.
+    `regeneration_targets.source_job_id` is the one deliberate exception at ON
+    DELETE SET NULL (spec §8.3, so a documented child-first purge can retire a
+    source and leave the target as a reporting row), which means the database
+    alone would let a source job go and silently null the link. Each call site
+    below therefore queries the history itself before deleting anything.
 
     Structured detail (never prose the FE must parse), listing capped at 20 like
     the `toc_retry_blocked_by_jobs` guard; `count` stays the uncapped total.

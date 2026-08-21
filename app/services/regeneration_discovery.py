@@ -9,8 +9,9 @@ any money is spent:
 * :func:`resolve_default_source` — the single lesson-and-language question:
   which job is the immediate source of the next revision;
 * :func:`preflight_notion_destinations` — can each of those lessons actually be
-  published, i.e. is there a Lesson Topic page already, or a subject/grade/
-  language mapping from which one can be created.
+  published, i.e. does this lesson's OWN subject/grade/language mapping resolve
+  to the Notion tree the publisher will file it under. An already-stamped
+  Lesson Topic pointer is not an answer to that question: it is language-blind.
 
 Two authorities are imported, never re-implemented:
 
@@ -405,11 +406,19 @@ async def preflight_notion_destinations(
 ) -> list[NotionPreflightFailure]:
     """Every lesson in ``sources`` that has nowhere to publish, in one list.
 
-    A lesson passes when EITHER it already has a Lesson Topic page
-    (``toc_entries.notion_lesson_page_id`` — the archiver adopts it) OR its
-    ``{lang}:{subject}|{grade}`` destination resolves through
-    ``notion_archive._resolve_subject_page_id``, from which the parent page can
-    be created.
+    A lesson passes when its ``{lang}:{subject}|{grade}`` destination resolves
+    through ``notion_archive._resolve_subject_page_id`` — the subject tree the
+    publisher will file it under, and from which the Lesson Topic is created.
+
+    An already-stamped ``toc_entries.notion_lesson_page_id`` does NOT excuse
+    that lookup. The column is a single language-blind pointer owned by
+    whichever lineage archived the lesson first, and the publisher stopped
+    treating it as a parent across languages: it resolves the Lesson Topic
+    beneath THIS target's own subject page and honours the pointer only once
+    that tree is shown to contain it. So a ``uz``-stamped pointer says nothing
+    about whether the ``ru`` lineage has a home — and since a missing mapping is
+    a NON-retryable publisher refusal, waving it through here would let the
+    campaign spend on a revision that can only park.
 
     Read-only and complete: it never short-circuits on the first failure (the
     operator fixes the configuration once, before the canary spends money), it
@@ -424,9 +433,6 @@ async def preflight_notion_destinations(
     siblings_cache: dict[tuple[str, Optional[str]], list] = {}
 
     for source in sources:
-        if source.notion_lesson_page_id:
-            continue  # the destination page already exists — nothing to resolve
-
         key = (source.subject, source.grade)
         if key not in siblings_cache:
             siblings_cache[key] = await toc_repo.titles_for_subject_grade(
