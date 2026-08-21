@@ -268,12 +268,18 @@ design must not assume that today's local `0063` remains available.
 - No eligible lesson: remain on Step 1 with the server's reason.
 - Restored stale lesson: remove it, explain that it is no longer eligible, keep the rest.
 - No worker can execute the contract: block Step 3 and suggest a compatible content model.
-- Missing PDF with extraction enabled: block before campaign creation when local availability can be
-  known; otherwise show a retryable generation error without consuming a publication version.
+- Missing PDF with extraction enabled: show a pre-spend warning when the head's
+  copy is absent, because R13 workers may already have or pull a local cache and
+  the head cannot prove fleet-wide absence. A real worker fetch/extract failure
+  remains retryable and does not consume a publication version.
 - Missing Notion subject mapping: block before spend.
 - Notion disabled or uncredentialed on the head: block destination check and
   campaign creation with a plain configuration message; generation cannot be
-  approved for automatic publication without a verified publisher.
+  approved for automatic publication without a verified publisher. This
+  intentionally replaces the existing preview behavior that allowed a draft
+  campaign while Notion was off; `/estimate` remains available. Request-schema
+  validation still runs first, so a malformed create remains a 422 rather than
+  leaking readiness state.
 - Ambiguous Lesson Topic: block before spend and show the candidates.
 - Existing campaign-version collision: block before spend.
 - Campaign created but canary launch failed: navigate to that campaign and offer **Retry canary**.

@@ -729,14 +729,16 @@ adopt it. The response reports `checked_target_count == len(sources)`.
 
 - [ ] **Step 5: Make the publisher consume frozen decisions without breaking legacy targets**
 
-Keep `PublicationInputs.legacy_lesson_page_id` and add optional reviewed fields:
+Keep `PublicationInputs.legacy_lesson_page_id` and append optional reviewed
+fields after the current required `phase_md` field so every existing keyword
+constructor remains valid:
 
 ```python
-notion_container_policy: Optional[Literal["reuse", "create"]]
-reviewed_container_page_id: Optional[str]
-notion_parent_policy: Optional[Literal["reuse", "create"]]
-reviewed_lesson_page_id: Optional[str]
-reviewed_lesson_title: Optional[str]
+notion_container_policy: Optional[Literal["reuse", "create"]] = None
+reviewed_container_page_id: Optional[str] = None
+notion_parent_policy: Optional[Literal["reuse", "create"]] = None
+reviewed_lesson_page_id: Optional[str] = None
+reviewed_lesson_title: Optional[str] = None
 ```
 
 `_prepare` copies the five new target columns. A historical target whose
@@ -784,6 +786,18 @@ marker rules remain the final authority below it. Preserve the current pointer
 backfill: when `legacy_lesson_page_id` was absent, stamp the resolved/created
 Lesson Topic for both `reuse` and `create`; `_stamp_lesson_page` already writes
 only when the TOC pointer is null and therefore never overwrites a valid pointer.
+
+`ReviewedDestinationChanged` occurs in `_deliver`, after `_prepare` has reserved
+the exact campaign version. Catch it immediately before the generic delivery
+exception and call `_resolve_failure(..., retryable=False)`. The target parks in
+manual-action-required state, the report says the already-reserved version
+remains consumed, and automatic backoff does not burn attempts on an authority
+change. The operator may restore the reviewed membership and explicitly retry
+the same target/version; if that decision cannot be restored, they abandon the
+target and start a new campaign at a new version. Add tests for moved container,
+moved Lesson Topic and newly ambiguous create policy asserting: one attempt,
+null next-attempt timestamp, preserved publication version and actionable
+reason.
 
 - [ ] **Step 6: Run resolver and publisher suites plus repo-wide regression**
 
@@ -863,24 +877,15 @@ export interface DestinationOverrideDraft {
   notionLessonPageId: string;
 }
 
-export interface GuidedRegenerationDraft {
+export interface GuidedRegenerationDraft extends RegenerationScopeState {
   schemaVersion: 1;
   step: RegenerationWizardStep;
-  subject: string | null;
-  grade: string | null;
-  bookId: string | null;
-  language: RegenerationOutputLanguage;
-  selectedTocEntryIds: string[];
   mode: RegenerationMode;
-  selectedPhases: string[];
-  excludedPhases: string[];
   refreshExtraction: boolean;
-  acknowledged: boolean;
   provider: string;
   model: string | null;
   publicationVersion: number;
   publicationVersionMode: "automatic" | "manual";
-  canarySize: number;
   destinationOverrides: DestinationOverrideDraft[];
 }
 ```
@@ -889,7 +894,10 @@ Use explicit field-by-field parsing; do not cast parsed JSON to the interface.
 `loadRegenerationDraft(storage)` returns `{draft, warning}` and never throws.
 `saveRegenerationDraft` catches quota/private-mode failures and returns a
 warning. Derived estimates/plans/destination results have no field in this
-type. While `publicationVersionMode === "automatic"`, compute the displayed
+type. Reusing `RegenerationScopeState`'s existing `subjectFilter` and
+`gradeFilter` names keeps `regenerationNarrowScope` and
+`regenerationToggleLesson` as the one authority for which lesson/phase fields a
+scope change clears. While `publicationVersionMode === "automatic"`, compute the displayed
 version as `max(3, ...selectedSources.map(s => s.next_expected_version))`;
 editing the version flips the mode to `manual` and persists the exact choice.
 
@@ -931,14 +939,20 @@ git commit -m "feat(web): persist regeneration draft and load full library"
 **Files:**
 - Modify: `app/schemas/regeneration.py`
 - Modify: `app/api/v1/regeneration.py`
+- Modify: `app/main.py`
 - Modify: `app/services/regeneration_campaign.py`
 - Modify: `tests/schemas/test_regeneration_schemas.py`
 - Modify: `tests/api/test_regeneration_api.py`
+- Modify: `tests/api/test_regeneration_feature_flag.py`
 - Modify: `tests/api/test_regeneration_reports.py`
 - Modify: `tests/integration/test_regeneration_campaign_concurrency.py`
 - Modify: `tests/integration/test_regeneration_e2e.py`
 - Modify: `web/src/lib/api.ts`
+- Modify: `web/src/lib/types.ts`
 - Modify: `web/src/lib/regeneration-api.test.ts`
+- Modify: `web/src/lib/regeneration-state.test.ts`
+- Modify: `web/src/components/regeneration/regeneration-wizard.tsx`
+- Modify: `web/src/routes/regeneration.tsx`
 
 **Interfaces:**
 - Consumes: Tasks 2–4 backend services and Task 5 frontend draft types.
@@ -983,10 +997,20 @@ scan accounting, destination HTTP occurring with no active DB transaction, and
 legacy campaign report labeling. Add a launch test proving remote
 revalidation runs before the campaign/target `FOR UPDATE` phase.
 
+In `tests/api/test_regeneration_feature_flag.py`, replace
+`test_pricing_and_creation_are_not_gated_on_notion` with three explicit
+invariants: DB-only `/estimate` remains available while Notion is off; a valid
+destination check or valid campaign-create body returns structured 409
+`notion_destination_unavailable`; malformed `{}` create remains Pydantic 422
+because readiness is checked inside the validated handler, never as a route
+dependency. Update `app/main.py`'s startup warning to say estimation remains
+available but destination check, campaign creation, canary start and publication
+are blocked until Notion is configured.
+
 - [ ] **Step 2: Run API/schema tests and record RED**
 
 ```bash
-uv run pytest -q tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py -k 'publication_version or destination or worker'
+uv run pytest -q tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_feature_flag.py tests/api/test_regeneration_reports.py -k 'publication_version or destination or worker or notion'
 ```
 
 - [ ] **Step 3: Add strict request and response models**
@@ -1063,6 +1087,10 @@ it call Task 4's `resolve_destinations` in a worker thread. If Notion is off or
 uncredentialed, return structured `notion_destination_unavailable`; do not
 degrade to an unverified campaign. The response always reports
 `checked_target_count`, `target_count`, per-target results and the digest.
+Enforce readiness inside the already-Pydantic-validated destination/create
+handlers or service call, not with `Depends(require_publication_available)`, so
+malformed bodies remain 422 and the readiness state is not disclosed first.
+`/estimate` does not invoke this gate.
 
 - [ ] **Step 5: Re-resolve outside transactions, then freeze inside a short create transaction**
 
@@ -1109,8 +1137,13 @@ publisher path until migrated.
 The current router-level `_reconcile(session)` call must not leave its injected
 session transaction open while service creation performs Notion I/O. Replace it
 for create/canary with a short `SessionLocal` reconciliation helper that commits
-and closes before calling the three-phase service; open the response/report
-session only after the remote phase returns.
+and closes before calling the three-phase service. Keep the shared
+`_campaign_action` behavior unchanged for approve/reject/cancel; add an
+`already_reconciled: bool = False` parameter and have only the canary route run
+the closed-session helper first and call `_campaign_action(...,
+already_reconciled=True)`. With that flag, the injected response session is not
+touched until after the remote service action returns. Open the create
+response/report transaction only after its remote phase returns.
 
 - [ ] **Step 6: Revalidate canary readiness outside row locks**
 
@@ -1154,7 +1187,7 @@ export interface RegenerationEstimateRequest {
   canary_size: number;
 }
 
-export interface RegenerationCreateRequest extends RegenerationEstimateRequest {
+export interface RegenerationCampaignDraft extends RegenerationEstimateRequest {
   destination_overrides: RegenerationDestinationOverride[];
   approved_destination_digest: string;
   estimated_cost_low_usd: number | null;
@@ -1166,17 +1199,115 @@ export interface RegenerationDestinationCheckRequest {
   selection: RegenerationSelection;
   destination_overrides: RegenerationDestinationOverride[];
 }
+
+export interface RegenerationDestinationCandidate {
+  page_id: string;
+  title: string;
+  notion_page_url: string;
+}
+
+export interface RegenerationDestinationResolution {
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  lesson_title: string;
+  status: "reuse" | "create" | "ambiguous" | "blocked";
+  container_policy: "reuse" | "create" | null;
+  container_page_id: string | null;
+  lesson_policy: "reuse" | "create" | null;
+  lesson_page_id: string | null;
+  notion_page_url: string | null;
+  candidates: RegenerationDestinationCandidate[];
+  reason: string | null;
+}
+
+export interface RegenerationDestinationCheckResponse {
+  ok: boolean;
+  target_count: number;
+  checked_target_count: number;
+  destination_digest: string;
+  destinations: RegenerationDestinationResolution[];
+}
 ```
 
 `approved_destination_digest` and overrides are absent from estimate requests.
 `api.checkRegenerationDestinations` owns the explicit remote request; the create
-type requires the returned digest. Do not represent these with one loose
-optional type.
+method keeps the codebase's existing `RegenerationCampaignDraft` name and
+requires the returned digest. Do not introduce a parallel
+`RegenerationCreateRequest` alias or represent these with one loose optional
+type.
 
-- [ ] **Step 9: Run backend, real-DB and frontend contract suites**
+- [ ] **Step 9: Keep the existing dense screen functional across the strict API cut**
+
+Before the guided redesign in Task 7, minimally wire the new contract into the
+current screen so Task 6 is independently green and usable. Extend the current
+`RegenerationDraftState` with `publicationVersion` (default 3) and
+`destinationOverrides`; keep the server-derived destination response/digest in
+route state, never in the draft. Add a plain version input and **Check Notion
+destinations** action to the current final review section. Render every result,
+allow candidate selection, and disable current campaign creation until the
+check is complete and current.
+
+Change `campaignDraft` to accept the reviewed result explicitly:
+
+```typescript
+function apiOnlyContract(draft: RegenerationDraftState): RegenerationLaunchContract {
+  return {
+    provider: draft.provider,
+    model: draft.model,
+    transport: "api",
+    extract_transport: "api",
+    extract_provider: null,
+    extract_model: null,
+    judge_transport: "api",
+    judge_provider: null,
+    judge_model: null,
+    solver_transport: "api",
+    solver_provider: null,
+    solver_model: null,
+    session_limit_strategy: "inherit",
+  };
+}
+
+function campaignDraft(
+  draft: RegenerationDraftState,
+  estimateLow: number | null,
+  estimateHigh: number | null,
+  destinations: RegenerationDestinationCheckResponse,
+): RegenerationCampaignDraft {
+  return {
+    publication_version: draft.publicationVersion,
+    destination_overrides: draft.destinationOverrides.map(toApiOverride),
+    approved_destination_digest: destinations.destination_digest,
+    selection: {
+      book_ids: draft.bookId ? [draft.bookId] : [],
+      toc_entry_ids: draft.selectedTocEntryIds,
+      output_languages: [draft.language],
+    },
+    contract: apiOnlyContract(draft),
+    selected_phases: draft.selectedPhases,
+    excluded_affected_phases: draft.excludedPhases,
+    refresh_extraction: draft.refreshExtraction,
+    exclusion_acknowledged: draft.acknowledged,
+    canary_size: clampCanarySize(draft.canarySize, draft.selectedTocEntryIds.length),
+    estimated_cost_low_usd: estimateLow,
+    estimated_cost_high_usd: estimateHigh,
+    app_git_revision: null,
+    actor: "",
+    notes: {},
+  };
+}
+```
+
+`regenerationEstimateBody` builds its own `RegenerationEstimateRequest` and
+therefore never needs a fake digest. Invalidate the destination response only
+when lesson IDs, language, version or overrides change. This bridge is
+deliberately dense but fully safe; Task 7 replaces its presentation while
+reusing the working mutation/API seam.
+
+- [ ] **Step 10: Run backend, real-DB and frontend contract suites**
 
 ```bash
-uv run pytest -q tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py
+uv run pytest -q tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_feature_flag.py tests/api/test_regeneration_reports.py
 RUN_DB_INTEGRATION=1 REGEN_REQUIRE_DB=1 uv run pytest -q tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py
 uv run pytest -q
 cd web
@@ -1184,10 +1315,10 @@ npm test
 npm run build
 ```
 
-- [ ] **Step 10: Commit the reviewed task**
+- [ ] **Step 11: Commit the reviewed task**
 
 ```bash
-git add app/schemas/regeneration.py app/api/v1/regeneration.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_reports.py tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py web/src/lib/api.ts web/src/lib/regeneration-api.test.ts
+git add app/schemas/regeneration.py app/api/v1/regeneration.py app/main.py app/services/regeneration_campaign.py tests/schemas/test_regeneration_schemas.py tests/api/test_regeneration_api.py tests/api/test_regeneration_feature_flag.py tests/api/test_regeneration_reports.py tests/integration/test_regeneration_campaign_concurrency.py tests/integration/test_regeneration_e2e.py web/src/lib/api.ts web/src/lib/types.ts web/src/lib/regeneration-api.test.ts web/src/lib/regeneration-state.test.ts web/src/components/regeneration/regeneration-wizard.tsx web/src/routes/regeneration.tsx
 git commit -m "feat(regeneration): expose exact campaign readiness review"
 ```
 
@@ -1249,16 +1380,10 @@ npm test -- --test-name-pattern='guided|review|canary|draft'
 loaded book list by subject/grade, fetches eligible rows for one selected book,
 and shows only the DB-known-pointer hint; it makes no Notion call and does not
 claim an exact destination. Ambiguous candidate buttons render in `ReviewStep`
-after the explicit destination check. Add a named adapter
-from the persistent `subject`/`grade` fields to the existing helper contract:
-
-```typescript
-function wizardScope(draft: GuidedRegenerationDraft): RegenerationScopeState {
-  return { subjectFilter: draft.subject ?? "", gradeFilter: draft.grade ?? "" };
-}
-```
-
-`ContentStep` uses:
+after the explicit destination check. Pass the draft directly through the
+existing generic `regenerationNarrowScope` and `regenerationToggleLesson`
+helpers; `GuidedRegenerationDraft` extends their complete nine-field scope
+contract. `ContentStep` uses:
 
 ```typescript
 export function effectiveSelectedPhases(
@@ -1303,7 +1428,7 @@ type CreateCanaryResult = {
 };
 
 async function createAndStartCanary(
-  request: RegenerationCreateRequest,
+  request: RegenerationCampaignDraft,
   onCampaignCreated: (campaign: RegenerationCampaignDetail) => void,
 ): Promise<CreateCanaryResult> {
   const campaign = await api.createRegenerationCampaign(request);
