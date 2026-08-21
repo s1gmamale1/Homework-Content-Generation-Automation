@@ -25,6 +25,10 @@ What the file is actually holding down:
 * **the abandon-intent contract.** A successful remote write lands `published`
   even under a cancellation; a failed one under the same intent lands terminal
   `abandoned` with the reserved version preserved.
+* **a version page's identity is its LANGUAGE's subject tree.** The shared
+  `toc_entries.notion_lesson_page_id` names whichever Lesson Topic was archived
+  first and carries no language of its own, so it may route a publication only
+  once it is proven to sit under the target language's own container.
 """
 from __future__ import annotations
 
@@ -54,6 +58,8 @@ from tests.services.test_notion_versioned_homework import FakeNotion
 _SUBJECT = "math-algebra"
 _CANONICAL = ("extract", *flow_for(_SUBJECT))
 _SUBJECT_PAGE = "subject-page-uz-math-5"
+_SUBJECT_PAGE_RU = "subject-page-ru-math-5"
+_CONTAINER = pub.notion_archive.CONTAINER_TITLE
 
 
 def _now() -> datetime:
@@ -377,6 +383,18 @@ def _install(monkeypatch, h: _Harness) -> None:
     monkeypatch.setattr(agent_mod, "_spawn", _forbidden("agent._spawn"))
 
 
+def _speak_russian(h: _Harness) -> None:
+    """Turn the harness into a `ru` lineage of the SAME lesson: the target, its
+    revision job and the destination all move to Russian, and the ru subject
+    page exists but is empty."""
+    h.output_language = "ru"
+    h.target.output_language = "ru"
+    h.job.output_language = "ru"
+    h.subject_page_id = _SUBJECT_PAGE_RU
+    h.notion.titles[_SUBJECT_PAGE_RU] = "Subject RU"
+    h.notion.blocks[_SUBJECT_PAGE_RU] = []
+
+
 def _raise(exc: BaseException):
     def _hook(_real, **_kwargs):
         raise exc
@@ -450,21 +468,80 @@ async def test_publishes_v2_under_a_newly_created_lesson_topic(h):
     assert h.off_loop(), "no Notion call may run on the event loop"
 
 
-async def test_reuses_a_stamped_lesson_topic_and_never_enumerates_the_subject(h):
+async def test_reuses_a_stamped_lesson_topic_inside_its_own_language_tree(h):
     """The stamped `notion_lesson_page_id` is shared with the legacy archive and
     the teacher deck; reusing it is what stops a title-suffix change from
-    re-keying a lesson onto a fresh page."""
-    lesson_id = h.notion.add_page("container", "1 Lesson one")
+    re-keying a lesson onto a fresh page.
+
+    It is honoured only once the page is shown to sit under THIS language's
+    `Generated Homeworks` container — the column carries no language, so
+    membership of the target language's tree is the proof. The stamped page is
+    titled with a suffix `resolve_lesson_title` no longer produces, so adoption
+    here can only have come from the pointer.
+    """
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson_id = h.notion.add_page(container, "1 Lesson one · p.7")
     h.section.notion_lesson_page_id = lesson_id
     h.claim()
 
     assert await h.publisher().run_once() is True
     assert h.lesson_stamps == [], "already stamped — nothing to persist"
-    assert not any(call[0] == "get_child_pages" and call[1] == _SUBJECT_PAGE
-                   for call in h.notion.calls), "the parent was never resolved"
-    assert h.notion.child_titles(_SUBJECT_PAGE) == []
+    assert h.child_ids(_SUBJECT_PAGE) == [container], "no second container"
+    assert h.notion.child_titles(container) == ["1 Lesson one · p.7"], (
+        "the stamped Lesson Topic is adopted, never re-keyed onto a page named "
+        "by the current title rule")
     assert version_page_title(2) in h.notion.child_titles(lesson_id)
     assert h.write("published")["notion_page_id"]
+
+
+async def test_a_lesson_pointer_from_another_language_is_never_the_parent(h):
+    """`toc_entries.notion_lesson_page_id` is ONE column for every language, so
+    whichever lineage archived first owns it.
+
+    A `ru` publication that trusted it would file `Homework V2` under the `uz`
+    Lesson Topic — beside the `uz` V2, which is a `VersionPageCollision` that
+    parks un-retryably, and beside the `uz` V1 even when there is no collision
+    to trip over. The pointer is a hint; the language's own subject tree is the
+    identity.
+    """
+    uz_container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    uz_lesson = h.notion.add_page(uz_container, "1 Lesson one")
+    h.section.notion_lesson_page_id = uz_lesson     # stamped by the uz lineage
+    _speak_russian(h)
+    h.claim(output_language="ru")
+
+    assert await h.publisher().run_once() is True
+    page_id = h.write("published")["notion_page_id"]
+
+    assert h.notion.child_titles(uz_lesson) == [], (
+        "the uz Lesson Topic must gain nothing from a ru publication")
+    ru_container = h.child_ids(h.subject_page_id)[0]
+    ru_lesson = h.child_ids(ru_container)[0]
+    assert page_id in h.child_ids(ru_lesson), (
+        "the ru V2 belongs under the ru subject page's own Lesson Topic")
+    assert decode_revision_marker(
+        h.notion.blocks[page_id]).output_language == "ru"
+    assert h.lesson_stamps == [], (
+        "the shared pointer is fill-once and belongs to the uz lineage")
+    assert h.section.notion_lesson_page_id == uz_lesson, (
+        "a foreign pointer is ignored for routing — never repointed, never "
+        "cleared")
+
+
+async def test_with_no_pointer_an_existing_lesson_topic_is_adopted_and_stamped(h):
+    """The ordinary un-backfilled row: the legacy archive built the tree but
+    never stamped the column. Resolution must ADOPT that Lesson Topic — V2 is a
+    sibling of V1, not a parallel tree — and only then fill the pointer."""
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson_id = h.notion.add_page(container, "1 Lesson one")
+    h.notion.add_page(lesson_id, "Homework")
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert h.child_ids(_SUBJECT_PAGE) == [container], "no second container"
+    assert h.child_ids(container) == [lesson_id], "no second Lesson Topic"
+    assert h.notion.child_titles(lesson_id) == ["Homework", version_page_title(2)]
+    assert h.lesson_stamps == [(h.toc_entry_id, lesson_id)]
 
 
 async def test_v3_is_published_when_the_lineage_already_consumed_v2(h):
@@ -479,12 +556,7 @@ async def test_v3_is_published_when_the_lineage_already_consumed_v2(h):
 async def test_a_russian_publication_files_under_its_own_subject_page(h):
     """Versions are per (lesson, language): a `ru` V2 is independent of a `uz`
     V2, and must never be filed into the uz page."""
-    h.output_language = "ru"
-    h.target.output_language = "ru"
-    h.job.output_language = "ru"
-    h.subject_page_id = "subject-page-ru-math-5"
-    h.notion.titles[h.subject_page_id] = "Subject RU"
-    h.notion.blocks[h.subject_page_id] = []
+    _speak_russian(h)
     h.claim(output_language="ru")
 
     assert await h.publisher().run_once() is True

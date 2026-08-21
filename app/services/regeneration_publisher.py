@@ -5,7 +5,7 @@ versioned Notion sibling pages. It is deliberately narrow — it publishes
 regeneration targets and nothing else, and it never touches V1 or the legacy
 archive's columns.
 
-Five rules run through the whole module.
+Six rules run through the whole module.
 
 **The claim is durable, and it is the unit of work.** `claim_next_publication`
 moves one target to ``publishing``, stamps a UUID lease and increments the
@@ -36,6 +36,18 @@ remote write that FAILED under an abandon intent lands terminal ``abandoned``
 with the reserved version preserved, which is what lets the campaign roll up.
 The intent is re-read inside the fenced resolution transaction, never trusted
 from the claim snapshot.
+
+**A version page's identity is its LANGUAGE's subject tree.** A lineage is
+`(lesson, output_language)`, and each language files under its own configured
+Notion subject page — but `toc_entries.notion_lesson_page_id` is a single
+language-blind column that whichever lineage archived first happens to own.
+Following it would file an `ru` revision under the `uz` Lesson Topic, where it
+either collides with that language's `Homework V{n}` or, worse, quietly lands
+beside the wrong V1. So the Lesson Topic is ALWAYS resolved beneath this
+target's own `subject_page_id`, and the stored pointer is honoured only once it
+is shown to be a child of that tree's `Generated Homeworks` container. Within
+one language it is still authoritative — that is what keeps a lesson whose
+disambiguating title suffix has since changed on the page it already has.
 
 **Lock order is parent then child, always.** Campaign-level actions take
 campaign ``FOR UPDATE`` then target ``FOR UPDATE``; the publication-gate trigger
@@ -100,6 +112,11 @@ class PublicationInputs:
     Frozen and flat on purpose: the publisher closes its DB session before the
     first Notion call, and an ORM row carried across that boundary turns a
     remote-I/O path into surprise database access on a closed session.
+
+    ``legacy_lesson_page_id`` is named for what it is: the shared, language-blind
+    `toc_entries.notion_lesson_page_id`. It is a HINT, never the parent — see
+    `_resolve_lesson_parent`. The name is the guard; a field called
+    `lesson_page_id` invites the next reader to pass it straight to the writer.
     """
 
     target_id: UUID
@@ -110,7 +127,7 @@ class PublicationInputs:
     publication_version: int
     subject_page_id: str
     lesson_title: str
-    lesson_page_id: Optional[str]
+    legacy_lesson_page_id: Optional[str]
     stored_version_page_id: Optional[str]
     revision_job_id: UUID
     phase_md: Mapping[str, str]
@@ -422,7 +439,7 @@ class RegenerationPublisher:
                 publication_version=version,
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
-                lesson_page_id=section.notion_lesson_page_id,
+                legacy_lesson_page_id=section.notion_lesson_page_id,
                 stored_version_page_id=target.notion_page_id,
                 revision_job_id=job.id,
                 phase_md=phase_md,
@@ -435,31 +452,48 @@ class RegenerationPublisher:
     async def _deliver(
         self, claim: targets_repo.ClaimedRegenerationTarget, inputs: PublicationInputs
     ) -> str:
-        lesson_page_id = inputs.lesson_page_id
-        if lesson_page_id is None:
-            # One thread call for the whole parent resolution. A crash between
-            # this and the stamp below is safe: the SAME collision-aware title
-            # is recomputed next time and `find_or_create` adopts the page it
-            # made rather than minting a second one.
-            lesson_page_id = await asyncio.to_thread(
-                self._resolve_lesson_parent, inputs
-            )
+        # One thread call for the whole parent resolution, and it runs on EVERY
+        # delivery — a stored pointer cannot be taken as the parent without
+        # first proving it belongs to this target's language tree. A crash
+        # between this and the stamp below is safe: the same resolution is
+        # recomputed next time and adopts the page it made rather than minting a
+        # second one.
+        lesson_page_id = await asyncio.to_thread(
+            self._resolve_lesson_parent, inputs
+        )
+        if inputs.legacy_lesson_page_id is None:
             await self._stamp_lesson_page(claim, lesson_page_id)
         return await asyncio.to_thread(
             self._write_version_page, inputs, lesson_page_id
         )
 
     def _resolve_lesson_parent(self, inputs: PublicationInputs) -> str:
-        """Subject → `Generated Homeworks` → `<lesson title>`, synchronously.
+        """This LANGUAGE's subject page → `Generated Homeworks` →
+        `<lesson title>`, synchronously.
 
         Adopts the container and Lesson Topic the legacy archive and the teacher
         deck already share — a revision is a sibling INSIDE that lesson, not a
         parallel tree.
+
+        The stored `legacy_lesson_page_id` short-circuits the title lookup only
+        when it is a child of THIS language's container. That one membership
+        read is what makes the pointer safe to keep using: one TOC row can carry
+        a `uz` and an `ru` lineage while the column names whichever Lesson Topic
+        was archived first, so trusting it unconditionally files one language's
+        revision in the other's tree. Proven membership keeps its real value —
+        a lesson whose disambiguating title suffix has since changed stays on
+        the page it already has instead of being re-keyed onto a fresh one —
+        without letting it carry a target across languages.
         """
         client = self._client_factory()
         container_id, _ = notion_archive.find_or_create(
             client, inputs.subject_page_id, notion_archive.CONTAINER_TITLE
         )
+        hint = inputs.legacy_lesson_page_id
+        if hint is not None and any(
+            page.get("id") == hint for page in client.get_child_pages(container_id)
+        ):
+            return hint
         lesson_id, _ = notion_archive.find_or_create(
             client, container_id, inputs.lesson_title
         )

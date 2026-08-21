@@ -854,33 +854,31 @@ async def test_uz_and_ru_are_independent_lineages_with_their_own_version_2(fakes
         await _purge_world(seeded)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "KNOWN GAP, owner app/services/regeneration_publisher.py + "
-        "app/services/notion_versioned_homework.py (NOT this lane's files). "
-        "`toc_entries.notion_lesson_page_id` is ONE language-agnostic pointer "
-        "— `_prepare` reads it and `_stamp_lesson_page` writes it — and "
-        "`version_page_title` puts no language in the title, so once either "
-        "language publishes `Homework V2` under the shared Lesson Topic the "
-        "other language's V2 raises VersionPageCollision and parks "
-        "un-retryably. Reproduced both with and without a pre-stamped pointer. "
-        "The same shared pointer is legacy `notion_archive` behaviour "
-        "(`lesson_id = lesson_page_id or find_or_create(...)`), so this may be "
-        "an accepted product limitation rather than a regeneration regression "
-        "— it is recorded here, not patched. Remove this marker when fixed."
-    ),
-)
 async def test_uz_and_ru_publish_to_separate_notion_pages(fakes):
     """Item 8's page-identity promise: UZ V2 and RU V2 are valid independent
-    publications, so both must reach `published` on pages of their own."""
+    publications, so both must reach `published` — each on a page of its own,
+    beside its OWN language's V1, under its OWN language's subject page.
+
+    Deliberately the harsh shape: the TOC row's single `notion_lesson_page_id`
+    is already stamped with the UZ Lesson Topic (V1 was archived), which is
+    exactly the language-blind pointer that would route the RU revision into the
+    UZ tree and collide there on `Homework V2`.
+    """
     seeded = await _seed_world(languages=("uz", "ru"))
+    # Seeded under the title the archive really files by —
+    # `"{section_number} {section_title}"` — so what is proven below is adoption
+    # of each language's EXISTING Lesson Topic, not the minting of a parallel one.
+    lesson_title = "1 Kvadrat tenglamalar"
     seeded.notion = _seed_notion_v1(
-        fakes.notion, subject_page=SUBJECT_PAGE_UZ,
-        lesson_title="Kvadrat tenglamalar")
-    _seed_notion_v1(
-        fakes.notion, subject_page=SUBJECT_PAGE_RU,
-        lesson_title="Kvadrat tenglamalar")
+        fakes.notion, subject_page=SUBJECT_PAGE_UZ, lesson_title=lesson_title)
+    ru = _seed_notion_v1(
+        fakes.notion, subject_page=SUBJECT_PAGE_RU, lesson_title=lesson_title)
+    await _stamp_lesson_page(seeded.toc_entry_id, seeded.notion.lesson)
+    trees = {"uz": seeded.notion, "ru": ru}
+    v1_snapshots = {
+        language: copy.deepcopy(fakes.notion.blocks[node.homework_v1])
+        for language, node in trees.items()
+    }
     try:
         campaign_id = await _create_campaign(
             seeded, languages=("uz", "ru"), canary_size=2)
@@ -897,11 +895,37 @@ async def test_uz_and_ru_publish_to_separate_notion_pages(fakes):
             assert refreshed.status == "published", (
                 f"{language} V2 did not publish: "
                 f"{refreshed.publication_last_error}")
+            assert refreshed.publication_version == 2, (
+                f"{language} reserves its OWN version 2, independently of the "
+                f"other lineage (got {refreshed.publication_version})")
             pages[language] = refreshed.notion_page_id
         assert pages["uz"] != pages["ru"], (
             "UZ V2 and RU V2 are separate publications and need separate pages")
+
+        for language, node in trees.items():
+            assert fakes.notion.child_titles(node.lesson) == [
+                "Homework", "Homework V2"], (
+                f"the {language} V2 belongs beside the {language} V1, and "
+                f"nothing else may land under that Lesson Topic")
+            assert fakes.notion.parents[pages[language]] == node.lesson
+            assert fakes.notion.child_titles(node.container) == [lesson_title], (
+                f"the {language} tree grew no second Lesson Topic")
+            assert fakes.notion.blocks[node.homework_v1] == v1_snapshots[language], (
+                f"the {language} V1 `Homework` page was modified")
+
+        # The shared legacy pointer is a fill-once hint, not identity: it still
+        # names the UZ Lesson Topic it was stamped with.
+        assert await _lesson_page_id(seeded.toc_entry_id) == seeded.notion.lesson
     finally:
         await _purge_world(seeded)
+
+
+async def _lesson_page_id(toc_entry_id):
+    from app.db import SessionLocal
+    from app.repositories import toc_entries as toc_repo
+
+    async with SessionLocal() as session:
+        return (await toc_repo.get(session, toc_entry_id)).notion_lesson_page_id
 
 
 async def test_v1_and_every_earlier_version_page_are_never_touched(world, fakes):
