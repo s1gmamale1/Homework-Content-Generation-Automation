@@ -3,6 +3,7 @@ import { CampaignReport } from "@/components/regeneration/campaign-report";
 import { CanaryReview } from "@/components/regeneration/canary-review";
 import {
   type RegenerationDraftState,
+  RegenerationProblem,
   RegenerationWizard,
   defaultRegenerationDraft,
 } from "@/components/regeneration/regeneration-wizard";
@@ -13,9 +14,11 @@ import {
   api,
   clampCanarySize,
   mergeReleasedFailures,
+  regenerationDetailView,
   regenerationEligibleQuery,
   regenerationErrorView,
   regenerationListPollMs,
+  regenerationMutationView,
   regenerationPollDecision,
   regenerationRetryAudit,
 } from "@/lib/api";
@@ -55,6 +58,21 @@ import { cn } from "@/lib/utils";
  * lessons a release could not start) and the `previous_publication_*` audit a
  * publication retry clears. Both would otherwise be erased by the very
  * refetch that follows the mutation.
+ *
+ * FAILURE IS A FIRST-CLASS STATE HERE. Each of the four things this page can
+ * be doing — nothing selected, loading, failed, loaded — renders as itself. A
+ * failed campaign list is not an empty one, a campaign that has not arrived is
+ * not an unselected one, and a refusal belongs to the campaign or the lesson
+ * whose own mutation variables produced it, never to whatever happens to be on
+ * screen when it lands.
+ *
+ * ACCEPTED, DELIBERATE: `actor` is posted blank and `app_git_revision` null.
+ * The backend stores both for audit, but this product exposes no operator
+ * identity and no build SHA anywhere in its frontend contract — there is no
+ * per-user login, only a shared bearer token, and the bundle carries no commit
+ * stamp. Inventing either here would write a meaningless value into a frozen,
+ * immutable campaign row. Both stay in one place, on `campaignDraft`, so they
+ * are one edit away if the contract ever grows them.
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
@@ -62,6 +80,8 @@ import { useMemo, useState } from "react";
 import { toast } from "sonner";
 
 const CAMPAIGNS_KEY = ["regeneration", "campaigns"] as const;
+/** The PREFIX, so one invalidation covers whichever book is loaded. */
+const ELIGIBLE_KEY = ["regeneration", "eligible"] as const;
 const campaignKey = (id: string) => ["regeneration", "campaign", id] as const;
 
 /** The phase-plan probe. `/phase-plan` refuses an empty selection outright, so
@@ -169,7 +189,7 @@ export function RegenerationPage() {
 
   const eligibleQuery = regenerationEligibleQuery(draft.bookId);
   const eligible = useQuery({
-    queryKey: ["regeneration", "eligible", draft.bookId],
+    queryKey: [...ELIGIBLE_KEY, draft.bookId],
     queryFn: () => api.listRegenerationEligible(eligibleQuery.filters),
     enabled: eligibleQuery.enabled,
   });
@@ -248,6 +268,11 @@ export function RegenerationPage() {
       ),
     onSuccess: (fresh) => {
       adopt(fresh);
+      // Freezing a campaign takes an ACTIVE lineage lock on every lesson in
+      // it, so those lessons are no longer eligible. Leaving the cached list
+      // alone lets the operator tick one again and meet an
+      // `active_lineage_conflict` that the screen already knew about.
+      qc.invalidateQueries({ queryKey: ELIGIBLE_KEY });
       setSelectedId(fresh.id);
       toast.success("Campaign frozen. Nothing has been spent or published yet.");
     },
@@ -351,13 +376,49 @@ export function RegenerationPage() {
     },
   });
 
-  const selected = detail.data ?? null;
+  const view = (error: unknown) => (error ? regenerationErrorView(error) : null);
+
+  /** "Nothing is selected", "it has not arrived yet", "the read failed" and
+   *  "here it is" are four different screens; only the first is an invitation
+   *  to pick a campaign. */
+  const detailView = regenerationDetailView({
+    selectedId,
+    data: detail.data,
+    error: detail.error,
+  });
+  const selected = detailView.detail;
   const poll = regenerationPollDecision(selected);
 
-  const view = (error: unknown) => (error ? regenerationErrorView(error) : null);
-  const campaignActionError = view(
-    canaryMut.error ?? approveMut.error ?? rejectMut.error ?? detail.error,
+  /**
+   * Every campaign/target mutation is read through its own VARIABLES.
+   *
+   * A mutation object outlives the selection: approve campaign A, get a 409,
+   * click campaign B — and B rendered A's refusal and A's pending spinner,
+   * because neither lives on the campaign. `variables` records which campaign
+   * or lesson the operator actually acted on, so it is what decides who the
+   * result belongs to. Nothing here calls `reset()`: that would fix the
+   * attribution by deleting the evidence, and it has to be driven from the
+   * selection handler, which is the same place this page deliberately keeps
+   * state a refetch would erase.
+   */
+  const ownsCampaign = (id: string) => id === selectedId;
+  const ownsCampaignVars = (vars: { campaignId: string }) => vars.campaignId === selectedId;
+  const canaryView = regenerationMutationView(canaryMut, ownsCampaign);
+  const approveView = regenerationMutationView(approveMut, ownsCampaign);
+  const rejectView = regenerationMutationView(rejectMut, ownsCampaignVars);
+  const cancelView = regenerationMutationView(cancelMut, ownsCampaignVars);
+  const targetView = regenerationMutationView(
+    targetMut,
+    (vars: { target: RegenerationTargetReport }) => vars.target.campaign_id === selectedId,
   );
+
+  // The canary panel owns the three campaign-level gate actions.
+  const campaignActionError = canaryView.error ?? approveView.error ?? rejectView.error;
+  // A target refusal is about ONE lesson, so it renders on that lesson's row.
+  const targetError =
+    targetView.error && targetMut.variables
+      ? { targetId: targetMut.variables.target.id, view: targetView.error }
+      : null;
 
   return (
     <div className="relative">
@@ -403,6 +464,7 @@ export function RegenerationPage() {
               estimateLoading={estimate.isFetching}
               estimateError={view(estimate.error)}
               manifest={manifest.data}
+              manifestError={view(manifest.error)}
               state={draft}
               onChange={setDraft}
               onCreate={() => createMut.mutate()}
@@ -417,7 +479,13 @@ export function RegenerationPage() {
               selectedId={selectedId}
               onSelect={setSelectedId}
               isLoading={campaigns.isLoading}
+              error={campaigns.error}
             />
+
+            {detailView.error && <RegenerationProblem view={detailView.error} />}
+            {detailView.message && (
+              <p className={cn(CARD, "text-xs text-white/40")}>{detailView.message}</p>
+            )}
 
             {selected && (
               <>
@@ -427,9 +495,9 @@ export function RegenerationPage() {
                   onLaunchCanary={() => canaryMut.mutate(selected.id)}
                   onApprove={() => approveMut.mutate(selected.id)}
                   onReject={(reason) => rejectMut.mutate({ campaignId: selected.id, reason })}
-                  launching={canaryMut.isPending}
-                  approving={approveMut.isPending}
-                  rejecting={rejectMut.isPending}
+                  launching={canaryView.pending}
+                  approving={approveView.pending}
+                  rejecting={rejectView.pending}
                   actionError={campaignActionError}
                 />
                 <CampaignReport
@@ -444,16 +512,11 @@ export function RegenerationPage() {
                   onCancelCampaign={(reason) =>
                     cancelMut.mutate({ campaignId: selected.id, reason })
                   }
-                  cancelling={cancelMut.isPending}
-                  actionError={view(targetMut.error ?? cancelMut.error)}
+                  cancelling={cancelView.pending}
+                  actionError={cancelView.error}
+                  targetError={targetError}
                 />
               </>
-            )}
-
-            {!selected && (
-              <p className={cn(CARD, "text-xs text-white/40")}>
-                Pick a campaign to read its canary and its report, or freeze a new one on the left.
-              </p>
             )}
           </div>
         </div>

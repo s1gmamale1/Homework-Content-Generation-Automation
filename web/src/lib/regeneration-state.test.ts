@@ -14,10 +14,15 @@
 import assert from "node:assert";
 import { readFileSync } from "node:fs";
 import {
+  ApiError,
   REGENERATION_APPROVE_NOTE,
   REGENERATION_CANCEL_CONFIRMATION,
+  REGENERATION_DETAIL_IDLE,
+  REGENERATION_DETAIL_LOADING,
   REGENERATION_LAUNCH_LABEL,
   REGENERATION_LAUNCH_SPEND_NOTE,
+  REGENERATION_LIST_EMPTY,
+  REGENERATION_LIST_LOADING,
   REGENERATION_LIST_POLL_MS,
   REGENERATION_NO_SPEND_NOTE,
   REGENERATION_POLL_MS,
@@ -30,9 +35,14 @@ import {
   regenerationBookFacets,
   regenerationBookOptions,
   regenerationBucketViews,
+  regenerationCampaignListView,
   regenerationCampaignStatusLabel,
+  regenerationDetailView,
   regenerationEligibleQuery,
+  regenerationErrorView,
+  regenerationKeyedLines,
   regenerationListPollMs,
+  regenerationMutationView,
   regenerationNarrowScope,
   regenerationPollDecision,
   regenerationPublicationStateLabel,
@@ -42,6 +52,7 @@ import {
   regenerationSourceRow,
   regenerationStrandedRelease,
   regenerationTargetActions,
+  regenerationToggleLesson,
 } from "./api";
 import {
   IS_REGENERATION_ENABLED,
@@ -1648,9 +1659,12 @@ const STRANDED_TARGET = apiTarget({
 }
 
 {
-  // The stranded condition wins over target-level work too: a partial release
-  // is the realistic shape of this failure, and a lesson that will never start
-  // must not stay hidden behind the lessons that did.
+  // A PARTIAL release is the realistic shape of this failure, and the two
+  // halves need different things: the lesson that started still moves on its
+  // own, so the report must keep refreshing, while the stranded lesson needs a
+  // human. Stopping the poll here froze the moving lesson's report; hiding the
+  // stranded lesson behind it lost the recovery. Both are reported. The full
+  // mixture — publication work, parked lessons, the note itself — is section 24.
   const decision = regenerationPollDecision(
     apiDetail({
       status: "bulk_running",
@@ -1658,7 +1672,7 @@ const STRANDED_TARGET = apiTarget({
       targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: "generating" })],
     }),
   );
-  assert.strictEqual(decision.shouldPoll, false);
+  assert.strictEqual(decision.shouldPoll, true);
   assert.match(decision.reason, /releas/i);
 }
 
@@ -2179,5 +2193,542 @@ function apiBook(over: Partial<Book> = {}): Book {
     'TargetActionOut.campaign_status must admit the backend\'s "unknown"',
   );
 }
+
+/* ────────────────────────────────────────────────────────────────────
+ * 24. Honest failure states (re-review I-1, I-2, I-3 and the minors)
+ *
+ * Every branch below is a lie the shell told before this section existed: a
+ * failed campaign list read as "no campaigns yet", a campaign that had not
+ * loaded yet read as "nothing selected", and one campaign's refusal was
+ * rendered against a different campaign entirely.
+ * ──────────────────────────────────────────────────────────────────── */
+
+/* ── I-1: the campaign list distinguishes error, loading and empty ──── */
+{
+  const loading = regenerationCampaignListView({
+    campaigns: undefined,
+    isLoading: true,
+    error: null,
+  });
+  assert.strictEqual(loading.mode, "loading");
+  assert.strictEqual(loading.message, REGENERATION_LIST_LOADING);
+  assert.strictEqual(loading.error, null);
+
+  // Genuinely empty: the server answered, with nothing in it.
+  const empty = regenerationCampaignListView({ campaigns: [], isLoading: false, error: null });
+  assert.strictEqual(empty.mode, "empty");
+  assert.strictEqual(empty.message, REGENERATION_LIST_EMPTY);
+  assert.strictEqual(empty.error, null);
+
+  // A FAILED list is not an empty list. This is the whole finding: a 500 used
+  // to render as "No regeneration campaigns yet."
+  const boom = new ApiError(500, "the rollup blew up", {
+    error: "server_error",
+    message: "the rollup blew up",
+  });
+  const failed = regenerationCampaignListView({
+    campaigns: undefined,
+    isLoading: false,
+    error: boom,
+  });
+  assert.strictEqual(failed.mode, "error");
+  assert.strictEqual(failed.message, null, "a failed list must not claim there are no campaigns");
+  assert.ok(failed.error !== null);
+  assert.strictEqual(failed.error?.message, "the rollup blew up");
+
+  // The feature-off 404 must be readable from the PRIMARY list — the campaigns
+  // query is unconditional, so no book has to be picked to see it.
+  const off = regenerationCampaignListView({
+    campaigns: undefined,
+    isLoading: false,
+    error: new ApiError(404, "Not Found", "Not Found"),
+  });
+  assert.strictEqual(off.mode, "error");
+  assert.strictEqual(off.message, null);
+  assert.match(off.error?.title ?? "", /switched off/i);
+  assert.match(off.error?.message ?? "", /REGENERATION_ENABLED/);
+  assert.ok(!/404/.test(off.error?.message ?? ""), "no bare status code for an operator");
+
+  // Rows the cache still holds stay readable BESIDE the error.
+  const stale = regenerationCampaignListView({
+    campaigns: [apiDetail()],
+    isLoading: false,
+    error: boom,
+  });
+  assert.strictEqual(stale.mode, "error");
+  assert.strictEqual(stale.campaigns.length, 1, "a failed refresh must not hide known campaigns");
+
+  // A background refresh over existing rows is neither empty nor loading prose.
+  const refreshing = regenerationCampaignListView({
+    campaigns: [apiDetail()],
+    isLoading: true,
+    error: null,
+  });
+  assert.strictEqual(refreshing.mode, "list");
+  assert.strictEqual(refreshing.message, null);
+}
+
+/* ── minor 3: 404 prose — switched off vs genuinely missing ────────── */
+{
+  // FastAPI's flag-off guard raises the literal string "Not Found".
+  assert.match(
+    regenerationErrorView(new ApiError(404, "Not Found", "Not Found")).title,
+    /switched off/i,
+  );
+
+  // A campaign that was deleted raises its own sentence, and it must survive.
+  const missing = "regeneration campaign 6f1c1d4e-9a2b-4c3d-8e5f-0a1b2c3d4e5f not found";
+  const gone = regenerationErrorView(new ApiError(404, missing, missing));
+  assert.ok(
+    !/switched off/i.test(gone.title),
+    "a deleted campaign must not be reported as a disabled feature",
+  );
+  assert.strictEqual(gone.status, 404);
+  assert.strictEqual(gone.message, missing, "the server's own not-found sentence must render");
+
+  const missingTarget = "regeneration target 11112222-3333-4444-5555-666677778888 not found";
+  const goneTarget = regenerationErrorView(new ApiError(404, missingTarget, missingTarget));
+  assert.ok(!/switched off/i.test(goneTarget.title));
+  assert.strictEqual(goneTarget.message, missingTarget);
+}
+
+/* ── I-2: the detail pane never says "pick one" while one is loading ── */
+{
+  const idle = regenerationDetailView({ selectedId: null, data: undefined, error: null });
+  assert.strictEqual(idle.mode, "idle");
+  assert.strictEqual(idle.message, REGENERATION_DETAIL_IDLE);
+  assert.strictEqual(idle.detail, null);
+
+  // Selected, first load in flight: a loading state, NOT the idle prose.
+  const first = regenerationDetailView({ selectedId: CAMPAIGN_ID, data: undefined, error: null });
+  assert.strictEqual(first.mode, "loading");
+  assert.strictEqual(first.message, REGENERATION_DETAIL_LOADING);
+  assert.notStrictEqual(
+    first.message,
+    REGENERATION_DETAIL_IDLE,
+    'a campaign that is loading must never be reported as "pick a campaign"',
+  );
+
+  // Selected, first load failed: the refusal, not the idle prose.
+  const failed = regenerationDetailView({
+    selectedId: CAMPAIGN_ID,
+    data: undefined,
+    error: new ApiError(409, "moved on", {
+      error: "illegal_campaign_state",
+      message: "moved on",
+    }),
+  });
+  assert.strictEqual(failed.mode, "error");
+  assert.strictEqual(failed.message, null);
+  assert.strictEqual(failed.detail, null);
+  assert.ok(failed.error !== null);
+  assert.strictEqual(failed.error?.message, "moved on");
+
+  const ready = regenerationDetailView({
+    selectedId: CAMPAIGN_ID,
+    data: apiDetail(),
+    error: null,
+  });
+  assert.strictEqual(ready.mode, "ready");
+  assert.strictEqual(ready.detail?.id, CAMPAIGN_ID);
+  assert.strictEqual(ready.error, null);
+
+  // Previous data plus a failed refresh: keep the report AND state the failure.
+  const refreshFailed = regenerationDetailView({
+    selectedId: CAMPAIGN_ID,
+    data: apiDetail(),
+    error: new ApiError(500, "boom"),
+  });
+  assert.strictEqual(refreshFailed.mode, "ready");
+  assert.ok(refreshFailed.detail !== null, "cached data stays readable through a failed refresh");
+  assert.ok(refreshFailed.error !== null, "and the failed refresh is still reported");
+
+  // Cached data for ANOTHER campaign is not this campaign's report.
+  const other = regenerationDetailView({
+    selectedId: "aaaa1111-2222-3333-4444-555566667777",
+    data: apiDetail(),
+    error: null,
+  });
+  assert.strictEqual(other.mode, "loading");
+  assert.strictEqual(other.detail, null, "one campaign's report must never render under another");
+}
+
+/* ── I-3: a mutation error belongs to the campaign/target that caused it ── */
+{
+  const OTHER_CAMPAIGN = "aaaa1111-2222-3333-4444-555566667777";
+  const refusal = new ApiError(409, "not from here", {
+    error: "illegal_campaign_state",
+    message: "not from here",
+  });
+
+  // launchCanary / approve are called with the campaign id itself.
+  const ownsCampaign = (id: string) => id === CAMPAIGN_ID;
+  const mine = regenerationMutationView(
+    { error: refusal, variables: CAMPAIGN_ID, isPending: false },
+    ownsCampaign,
+  );
+  assert.ok(mine.error !== null, "the campaign that failed must show its own refusal");
+  assert.strictEqual(mine.error?.message, "not from here");
+  const theirs = regenerationMutationView(
+    { error: refusal, variables: OTHER_CAMPAIGN, isPending: false },
+    ownsCampaign,
+  );
+  assert.strictEqual(theirs.error, null, "campaign B must not show campaign A's refusal");
+
+  // reject / cancel carry {campaignId, reason}.
+  const ownsReason = (v: { campaignId: string }) => v.campaignId === CAMPAIGN_ID;
+  assert.ok(
+    regenerationMutationView(
+      { error: refusal, variables: { campaignId: CAMPAIGN_ID, reason: "wrong tone" } },
+      ownsReason,
+    ).error !== null,
+  );
+  assert.strictEqual(
+    regenerationMutationView(
+      { error: refusal, variables: { campaignId: OTHER_CAMPAIGN, reason: "wrong tone" } },
+      ownsReason,
+    ).error,
+    null,
+  );
+
+  // Target actions carry {kind, target, reason} — the preflight/illegal-state
+  // refusal belongs to ONE lesson row.
+  const failing = apiTarget({ id: "t-failing" });
+  const targetVars = { kind: "retry-publication" as const, target: failing, reason: "" };
+  assert.ok(
+    regenerationMutationView(
+      { error: refusal, variables: targetVars },
+      (v) => v.target.id === "t-failing",
+    ).error !== null,
+  );
+  assert.strictEqual(
+    regenerationMutationView(
+      { error: refusal, variables: targetVars },
+      (v) => v.target.id === "t-other",
+    ).error,
+    null,
+    "a target refusal must not render on a different lesson",
+  );
+  // And it does not leak onto a different campaign's report either.
+  assert.strictEqual(
+    regenerationMutationView(
+      { error: refusal, variables: targetVars },
+      (v) => v.target.campaign_id === OTHER_CAMPAIGN,
+    ).error,
+    null,
+  );
+
+  // Pending is scoped the same way: campaign B must not render "Approving…"
+  // because campaign A is mid-flight.
+  assert.strictEqual(
+    regenerationMutationView(
+      { error: null, variables: OTHER_CAMPAIGN, isPending: true },
+      ownsCampaign,
+    ).pending,
+    false,
+  );
+  assert.strictEqual(
+    regenerationMutationView({ error: null, variables: CAMPAIGN_ID, isPending: true }, ownsCampaign)
+      .pending,
+    true,
+  );
+
+  // A mutation that never ran owns nothing at all.
+  assert.deepStrictEqual(
+    regenerationMutationView(
+      { error: refusal, variables: undefined, isPending: false },
+      () => true,
+    ),
+    { pending: false, error: null },
+  );
+}
+
+/* ── minor 1: a stranded release beside real work keeps polling ─────── */
+{
+  // Stranded ALONE: nothing self-moving is left, so stop and say what fixes it.
+  const alone = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [STRANDED_TARGET],
+    }),
+  );
+  assert.strictEqual(alone.shouldPoll, false);
+  assert.strictEqual(alone.intervalMs, false);
+  assert.ok(alone.strandedNote !== null);
+
+  // Stranded BESIDE a lesson that really is regenerating: the moving lesson
+  // still moves, so the report must keep refreshing — and must say both things.
+  const mixed = regenerationPollDecision(
+    apiDetail({
+      status: "bulk_running",
+      approved_at: "2026-08-20T10:00:00Z",
+      targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: "generating" })],
+    }),
+  );
+  assert.strictEqual(mixed.shouldPoll, true, "real in-flight work must keep the report refreshing");
+  assert.strictEqual(mixed.intervalMs, REGENERATION_POLL_MS);
+  assert.ok(
+    mixed.activity.some((a) => /regenerating/i.test(a)),
+    "the lesson that is moving must be named as activity",
+  );
+  assert.match(mixed.reason, /approved but never/i, "the stranded lesson must still be mentioned");
+  assert.ok(mixed.strandedNote !== null);
+  assert.match(mixed.strandedNote ?? "", /Retry the release/);
+  assert.ok(
+    !/still releasing revision jobs/.test(mixed.reason),
+    "a campaign with a stranded lesson is not 'still releasing'",
+  );
+
+  // Same for publication work, which the publisher moves without an operator.
+  assert.strictEqual(
+    regenerationPollDecision(
+      apiDetail({
+        status: "bulk_running",
+        approved_at: "2026-08-20T10:00:00Z",
+        targets: [
+          STRANDED_TARGET,
+          apiTarget({
+            id: "pub",
+            status: "publishing",
+            bucket: "in_flight",
+            publication_state: "publishing",
+            revision_job_id: "cafe0000-0000-4000-8000-000000000001",
+          }),
+        ],
+      }),
+    ).shouldPoll,
+    true,
+  );
+
+  // A lesson parked on a human is NOT self-moving work, so the stranded stop
+  // still wins there.
+  assert.strictEqual(
+    regenerationPollDecision(
+      apiDetail({
+        status: "bulk_running",
+        approved_at: "2026-08-20T10:00:00Z",
+        targets: [
+          STRANDED_TARGET,
+          apiTarget({
+            id: "parked",
+            status: "generation_failed",
+            bucket: "generation_failed",
+            action_required: true,
+          }),
+        ],
+      }),
+    ).shouldPoll,
+    false,
+  );
+
+  // No stranded lesson, no note.
+  assert.strictEqual(regenerationPollDecision(apiDetail({ status: "draft" })).strandedNote, null);
+}
+
+/* ── minor 2: the 10s list tick stops for a stranded bulk campaign ──── */
+{
+  const strandedSummary = apiDetail({
+    status: "bulk_running",
+    approved_at: "2026-08-20T10:00:00Z",
+    targets: [STRANDED_TARGET],
+  });
+  assert.strictEqual(
+    regenerationListPollMs([strandedSummary]),
+    false,
+    "an approved bulk campaign with only unreleased lessons cannot be fixed by a ticker",
+  );
+
+  for (const active of ["generating", "publication_pending", "publishing"] as const) {
+    assert.strictEqual(
+      regenerationListPollMs([
+        apiDetail({
+          status: "bulk_running",
+          approved_at: "2026-08-20T10:00:00Z",
+          targets: [STRANDED_TARGET, apiTarget({ id: "moving", status: active })],
+        }),
+      ]),
+      REGENERATION_LIST_POLL_MS,
+      `${active} work must keep the list ticking`,
+    );
+  }
+
+  // Never approved: not stranded, and the release may still be landing.
+  assert.strictEqual(
+    regenerationListPollMs([
+      apiDetail({ status: "bulk_running", approved_at: null, targets: [STRANDED_TARGET] }),
+    ]),
+    REGENERATION_LIST_POLL_MS,
+  );
+  // The canary phase is untouched by this rule.
+  assert.strictEqual(
+    regenerationListPollMs([apiDetail({ status: "canary_running" })]),
+    REGENERATION_LIST_POLL_MS,
+  );
+}
+
+/* ── minor 7: list keys survive duplicate text ─────────────────────── */
+{
+  const rows = regenerationKeyedLines(["Kirish", "Kirish", "Boshqa"]);
+  assert.strictEqual(rows.length, 3, "a duplicate line must not be dropped");
+  assert.strictEqual(new Set(rows.map((r) => r.key)).size, 3, "duplicate text, distinct keys");
+  assert.deepStrictEqual(
+    rows.map((r) => r.text),
+    ["Kirish", "Kirish", "Boshqa"],
+  );
+  // Stable for the same input, so React does not remount every refresh.
+  assert.deepStrictEqual(regenerationKeyedLines(["a", "b"]), regenerationKeyedLines(["a", "b"]));
+  assert.deepStrictEqual(regenerationKeyedLines(undefined), []);
+  assert.deepStrictEqual(regenerationKeyedLines([]), []);
+}
+
+/* ── minor 6: deselecting a lesson re-clamps the STORED canary size ─── */
+{
+  const scope = {
+    subjectFilter: null,
+    gradeFilter: null,
+    bookId: "book-1",
+    language: "uz" as const,
+    selectedTocEntryIds: ["a", "b", "c"],
+    selectedPhases: ["flashcards"],
+    excludedPhases: ["reflection"],
+    acknowledged: true,
+    canarySize: 3,
+    refreshExtraction: true,
+  };
+
+  const shrunk = regenerationToggleLesson(scope, "c");
+  assert.deepStrictEqual(shrunk.selectedTocEntryIds, ["a", "b"]);
+  assert.strictEqual(shrunk.canarySize, 2, "the stored canary must shrink with the selection");
+  // Everything the operator composed elsewhere survives.
+  assert.strictEqual(shrunk.refreshExtraction, true);
+  assert.deepStrictEqual(shrunk.selectedPhases, ["flashcards"]);
+  assert.deepStrictEqual(shrunk.excludedPhases, ["reflection"]);
+  assert.strictEqual(shrunk.acknowledged, true);
+  assert.strictEqual(shrunk.bookId, "book-1");
+
+  // Re-selecting does not re-inflate a canary the operator sized down.
+  const grown = regenerationToggleLesson(shrunk, "c");
+  assert.deepStrictEqual(grown.selectedTocEntryIds, ["a", "b", "c"]);
+  assert.strictEqual(grown.canarySize, 2);
+
+  // Emptying the selection floors at 1 — the server refuses canary_size < 1.
+  const none = regenerationToggleLesson(regenerationToggleLesson(shrunk, "b"), "a");
+  assert.deepStrictEqual(none.selectedTocEntryIds, []);
+  assert.strictEqual(none.canarySize, 1);
+
+  // Pure: the caller's state object is never mutated.
+  assert.deepStrictEqual(scope.selectedTocEntryIds, ["a", "b", "c"]);
+  assert.strictEqual(scope.canarySize, 3);
+}
+
+/* ────────────────────────────────────────────────────────────────────
+ * 25. Structural guards for the honest-failure wiring
+ * ──────────────────────────────────────────────────────────────────── */
+
+// I-1 — the list decides through the tested view and owns no prose.
+assert.ok(
+  listSrc.includes("regenerationCampaignListView"),
+  "campaign-list must decide loading/empty/error through the tested view",
+);
+assert.ok(
+  !listSrc.includes("No regeneration campaigns yet"),
+  "the empty-state sentence belongs to the tested view, not to JSX",
+);
+assert.ok(
+  listSrc.includes("RegenerationProblem"),
+  "a failed campaign list must render through the shared error block",
+);
+assert.ok(
+  /error=\{campaigns\.error\}/.test(routeSrc),
+  "the route must hand the campaign list its query error",
+);
+
+// I-2 — the idle prose is gated on the SELECTION, never on missing data.
+assert.ok(
+  routeSrc.includes("regenerationDetailView"),
+  "the route must decide the detail pane through the tested view",
+);
+assert.ok(!/\{!selected &&/.test(routeSrc), 'the idle prose must not be gated on "no data yet"');
+assert.ok(
+  !routeSrc.includes("Pick a campaign"),
+  "the idle prose belongs to the tested view, not to JSX",
+);
+
+// I-3 — no mutation error is chained across campaigns or targets any more.
+assert.ok(
+  routeSrc.includes("regenerationMutationView"),
+  "campaign and target mutations must be scoped by their own variables",
+);
+for (const chained of [
+  /canaryMut\.error/,
+  /approveMut\.error/,
+  /rejectMut\.error/,
+  /cancelMut\.error/,
+  /targetMut\.error/,
+  /canaryMut\.isPending/,
+  /approveMut\.isPending/,
+  /rejectMut\.isPending/,
+  /cancelMut\.isPending/,
+]) {
+  assert.ok(
+    !chained.test(routeSrc),
+    `the route reads ${chained.source} directly; it must go through the scoped view`,
+  );
+}
+assert.ok(
+  reportSrc.includes("targetError"),
+  "a target refusal must render on the lesson row whose variables produced it",
+);
+
+// minor 4 — a frozen lineage disappears from the eligible list.
+assert.ok(
+  /invalidateQueries\(\{\s*queryKey:\s*ELIGIBLE_KEY\s*\}\)/.test(routeSrc),
+  "creating a campaign must invalidate the eligible lineages it just froze",
+);
+
+// minor 5 — a failed model manifest is a visible problem, not a dead end.
+assert.ok(
+  wizardSrc.includes("manifestError"),
+  "the model step must surface a failed model manifest",
+);
+assert.ok(/manifestError=\{/.test(routeSrc), "the route must hand the wizard the manifest error");
+
+// minor 6 — the lesson checkbox goes through the clamping helper.
+assert.ok(
+  wizardSrc.includes("regenerationToggleLesson"),
+  "deselecting a lesson must re-clamp the stored canary size",
+);
+
+// minor 7 — no FREE-TEXT list may be keyed on its own text. Phase names are
+// excluded on purpose: `canonical_phases` / `auto_included_phases` are the
+// planner's identifiers for one subject's flow and cannot repeat, so
+// `key={phase}` is a real id. Validation details, estimate notes and rollup
+// warnings carry no id at all and genuinely do repeat.
+for (const rel of WIRED_FILES) {
+  const src = source(rel);
+  for (const bad of [/key=\{line\}/, /key=\{note\}/, /key=\{warning\}/]) {
+    assert.ok(
+      !bad.test(src),
+      `${rel} keys a list on its own text (${bad.source}); duplicate text drops a row`,
+    );
+  }
+}
+for (const rel of [
+  "../components/regeneration/campaign-report.tsx",
+  "../components/regeneration/regeneration-wizard.tsx",
+]) {
+  assert.ok(
+    source(rel).includes("regenerationKeyedLines"),
+    `${rel} must key text-only lists through the tested helper`,
+  );
+}
+
+// The accepted residuals stay accepted, and stay documented: this product
+// exposes no operator identity and no build SHA in its frontend contract.
+assert.ok(
+  /actor: ""/.test(routeSrc) && /app_git_revision: null/.test(routeSrc),
+  "the blank actor and null revision are deliberate; they must stay visible in one place",
+);
 
 console.log("OK");

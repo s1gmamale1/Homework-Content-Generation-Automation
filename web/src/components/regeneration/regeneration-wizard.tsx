@@ -9,9 +9,11 @@ import {
   phaseSelectionFromPlan,
   regenerationBookFacets,
   regenerationBookOptions,
+  regenerationKeyedLines,
   regenerationLanguageLabel,
   regenerationNarrowScope,
   regenerationSourceRow,
+  regenerationToggleLesson,
 } from "@/lib/api";
 import {
   exclusionWarning,
@@ -140,7 +142,18 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Problem({ view }: { view: RegenerationErrorView }) {
+/**
+ * The one error block for the whole regeneration area — the route, the list,
+ * the canary and the report all render through this.
+ *
+ * It lived as four near-identical local copies, which is how three of them
+ * ended up keying `details` on the line text: a validation payload that names
+ * the same field twice, or a preflight that blocks two lessons with the same
+ * title, silently lost a row. `regenerationKeyedLines` is the tested fix, and
+ * having one component is what makes it one fix.
+ */
+export function RegenerationProblem({ view }: { view: RegenerationErrorView }) {
+  const details = regenerationKeyedLines(view.details);
   return (
     <div className="space-y-1 rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
       <div className="flex items-start gap-2 font-semibold">
@@ -148,10 +161,10 @@ function Problem({ view }: { view: RegenerationErrorView }) {
         <span>{view.title}</span>
       </div>
       <p className="max-w-[75ch]">{view.message}</p>
-      {view.details.length > 0 && (
+      {details.length > 0 && (
         <ul className="space-y-0.5 pl-5 [list-style:disc]">
-          {view.details.map((line) => (
-            <li key={line}>{line}</li>
+          {details.map((row) => (
+            <li key={row.key}>{row.text}</li>
           ))}
         </ul>
       )}
@@ -175,6 +188,7 @@ export function RegenerationWizard({
   estimateLoading,
   estimateError,
   manifest,
+  manifestError,
   state,
   onChange,
   onCreate,
@@ -204,6 +218,10 @@ export function RegenerationWizard({
   estimateLoading: boolean;
   estimateError: RegenerationErrorView | null;
   manifest: ProviderModelManifest | undefined;
+  /** `GET /agent/models` failed. Without it there is no provider list and no
+   *  model list, and the server refuses a campaign with no content model — so
+   *  this is a blocked wizard, not a step with nothing in it. */
+  manifestError: RegenerationErrorView | null;
   state: RegenerationDraftState;
   onChange: (next: RegenerationDraftState) => void;
   onCreate: () => void;
@@ -267,7 +285,9 @@ export function RegenerationWizard({
           : needsAcknowledgement && !state.acknowledged
             ? "Acknowledge the consistency warning before creating this campaign."
             : !state.model
-              ? "Pick the model this campaign will be frozen to."
+              ? manifestError
+                ? "The model list could not be loaded, so there is no model to freeze this campaign to."
+                : "Pick the model this campaign will be frozen to."
               : null;
 
   const canarySize = clampCanarySize(state.canarySize, targetCount);
@@ -279,7 +299,7 @@ export function RegenerationWizard({
         title="Pick the textbook"
         hint="Lessons are listed one book at a time. Narrowing by subject and grade first is what makes two lessons called the same thing tellable apart — and it keeps this screen from asking the server for every lesson lineage in the database."
       >
-        {booksError && <Problem view={booksError} />}
+        {booksError && <RegenerationProblem view={booksError} />}
         {booksLoading && books === undefined && (
           <p className="text-xs text-white/40">Loading textbooks…</p>
         )}
@@ -390,11 +410,7 @@ export function RegenerationWizard({
                     type="checkbox"
                     className="mt-0.5 size-4 accent-[#7c5cff]"
                     checked={state.selectedTocEntryIds.includes(source.toc_entry_id)}
-                    onChange={() =>
-                      patch({
-                        selectedTocEntryIds: toggle(state.selectedTocEntryIds, source.toc_entry_id),
-                      })
-                    }
+                    onChange={() => onChange(regenerationToggleLesson(state, source.toc_entry_id))}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{row.headline}</span>
@@ -461,7 +477,7 @@ export function RegenerationWizard({
             </span>
           )}
         </div>
-        {planError && <Problem view={planError} />}
+        {planError && <RegenerationProblem view={planError} />}
       </Step>
 
       <Step index={4} title="Review what the dependency graph pulls in">
@@ -595,6 +611,7 @@ export function RegenerationWizard({
         title="Choose the model this campaign is frozen to"
         hint="Resolved once, when the campaign is created, and copied onto every revision. Regeneration runs over the api transport only."
       >
+        {manifestError && <RegenerationProblem view={manifestError} />}
         <div className="flex flex-wrap gap-1">
           {apiProviders.map((provider) => (
             <Chip
@@ -612,7 +629,9 @@ export function RegenerationWizard({
               {model}
             </Chip>
           ))}
-          {models.length === 0 && (
+          {/* An empty chip row has two very different causes, and only one of
+              them is the operator's to fix. */}
+          {models.length === 0 && !manifestError && (
             <span className="text-xs text-white/40">No model is offered for this provider.</span>
           )}
         </div>
@@ -620,7 +639,7 @@ export function RegenerationWizard({
 
       <Step index={8} title="Review the estimate">
         {estimateLoading && <p className="text-xs text-white/40">Pricing this draft…</p>}
-        {estimateError && <Problem view={estimateError} />}
+        {estimateError && <RegenerationProblem view={estimateError} />}
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
           <Stat label="Lesson count" value={String(estimate?.target_count ?? targetCount)} />
           <Stat label="Rebuilt phases" value={String(totals?.regenerated_phase_count ?? 0)} />
@@ -663,8 +682,8 @@ export function RegenerationWizard({
         )}
         {(totals?.zero_volume_history_notes.length ?? 0) > 0 && (
           <ul className="space-y-0.5 text-xs leading-5 text-amber-100/75">
-            {totals?.zero_volume_history_notes.map((note) => (
-              <li key={note}>{note}</li>
+            {regenerationKeyedLines(totals?.zero_volume_history_notes).map((row) => (
+              <li key={row.key}>{row.text}</li>
             ))}
           </ul>
         )}
@@ -674,8 +693,8 @@ export function RegenerationWizard({
               How this estimate was built
             </summary>
             <ul className="mt-1 space-y-0.5 text-xs leading-5 text-white/45">
-              {totals?.notes.map((note) => (
-                <li key={note}>{note}</li>
+              {regenerationKeyedLines(totals?.notes).map((row) => (
+                <li key={row.key}>{row.text}</li>
               ))}
             </ul>
           </details>
@@ -724,7 +743,7 @@ export function RegenerationWizard({
         <p className="max-w-[75ch] text-xs leading-5 text-white/45">{REGENERATION_NO_SPEND_NOTE}</p>
       </Step>
 
-      {createError && <Problem view={createError} />}
+      {createError && <RegenerationProblem view={createError} />}
 
       <div className={cn(CARD, "flex flex-wrap items-center justify-between gap-3")}>
         <p

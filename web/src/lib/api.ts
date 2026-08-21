@@ -1126,6 +1126,9 @@ export interface RegenerationStrandedRelease {
   detail: string;
   actionLabel: string;
   pendingLabel: string;
+  /** One sentence naming the stranded lessons and the recovery, for a report
+   *  that is STILL refreshing because other lessons are genuinely moving. */
+  pollNote: string;
   /** What `regenerationPollDecision` says when it stops for this. */
   pollReason: string;
 }
@@ -1180,6 +1183,11 @@ export function regenerationStrandedRelease(
       "successfully still publishes to Notion automatically.",
     actionLabel: REGENERATION_RELEASE_RETRY_LABEL,
     pendingLabel: "Retrying the release…",
+    pollNote: [
+      `${lessonCountLabel(count)} ${were} approved but never got a revision job;`,
+      `refreshing cannot start ${plural(count, "it", "them")} —`,
+      `use "${REGENERATION_RELEASE_RETRY_LABEL}" on this campaign.`,
+    ].join(" "),
     pollReason: [
       `${lessonCountLabel(count)} ${were} approved but never got a revision job.`,
       `Nothing starts ${plural(count, "it", "them")} on its own and refreshing cannot fix it,`,
@@ -1455,6 +1463,36 @@ export interface RegenerationScopeChange {
  * never composed. Re-picking the same value changes nothing at all — a no-op
  * click must not wipe somebody's work.
  */
+/**
+ * Tick or untick one lesson, and keep the STORED canary size honest.
+ *
+ * `canary_size` is posted from state, and the server's refusal is a bare
+ * `ge=1`/`le=target_count` validation payload rather than anything an operator
+ * can act on — so a canary of 3 left behind by deselecting down to 2 lessons
+ * has to be corrected here, at the event that shrank it. Doing it in an effect
+ * instead would write state during render and risk a loop; doing it only at
+ * the POST boundary leaves the number on screen disagreeing with the number
+ * that gets sent.
+ *
+ * Only the lesson list and the canary move. A lesson selection says nothing
+ * about the phase plan, the exclusion acknowledgement or the extract refresh,
+ * so all three survive untouched — unlike `regenerationNarrowScope`, where a
+ * new book really can mean a new subject's flow.
+ */
+export function regenerationToggleLesson<T extends RegenerationScopeState>(
+  state: T,
+  tocEntryId: string,
+): T {
+  const selectedTocEntryIds = state.selectedTocEntryIds.includes(tocEntryId)
+    ? state.selectedTocEntryIds.filter((v) => v !== tocEntryId)
+    : [...state.selectedTocEntryIds, tocEntryId];
+  return {
+    ...state,
+    selectedTocEntryIds,
+    canarySize: clampCanarySize(state.canarySize, selectedTocEntryIds.length),
+  };
+}
+
 export function regenerationNarrowScope<T extends RegenerationScopeState>(
   state: T,
   change: RegenerationScopeChange,
@@ -1565,6 +1603,9 @@ export interface RegenerationPollDecision {
   intervalMs: number | false;
   /** What is moving right now, in operator words. Empty when nothing is. */
   activity: string[];
+  /** Non-null whenever this campaign has lessons that were approved but never
+   *  got a revision job — whether or not the report is still refreshing. */
+  strandedNote: string | null;
   /** Why we are, or are not, refreshing. */
   reason: string;
 }
@@ -1600,12 +1641,26 @@ export function regenerationPollDecision(
   detail: RegenerationCampaignDetail | null | undefined,
 ): RegenerationPollDecision {
   if (!detail) {
-    return { shouldPoll: false, intervalMs: false, activity: [], reason: "No campaign is open." };
+    return {
+      shouldPoll: false,
+      intervalMs: false,
+      activity: [],
+      strandedNote: null,
+      reason: "No campaign is open.",
+    };
   }
+  // Approval and the bulk release are two transactions, so an approval can be
+  // recorded with nothing released. Nothing on the server repairs that, and
+  // refreshing certainly cannot — but it is a property of SOME lessons, not of
+  // the campaign, so it is carried alongside every decision below rather than
+  // short-circuiting them.
+  const stranded = regenerationStrandedRelease(detail);
+  const strandedNote = stranded?.pollNote ?? null;
   const stopped = (reason: string): RegenerationPollDecision => ({
     shouldPoll: false,
     intervalMs: false,
     activity: [],
+    strandedNote,
     reason,
   });
 
@@ -1614,12 +1669,6 @@ export function regenerationPollDecision(
       `This campaign is ${regenerationCampaignStatusLabel(detail.status).toLowerCase()}; the report does not change on its own any more.`,
     );
   }
-
-  // Approval and the bulk release are two transactions, so an approval can be
-  // recorded with nothing released. Polling that forever would never fix it;
-  // re-running the release does, and it creates nothing twice.
-  const stranded = regenerationStrandedRelease(detail);
-  if (stranded !== null) return stopped(stranded.pollReason);
 
   const targets = detail.targets;
   const tally = (predicate: (t: RegenerationTargetReport) => boolean): number =>
@@ -1638,16 +1687,30 @@ export function regenerationPollDecision(
   if (autoRetry > 0) {
     activity.push(`${lessonCountLabel(autoRetry)} waiting on an automatic publish retry`);
   }
-  if (REGENERATION_RELEASING_STATUSES.has(detail.status)) {
+  // Everything pushed above is SELF-MOVING: generation and publication proceed
+  // without an operator. A stranded lesson never will, so it is deliberately
+  // not counted here — it decides whether the poll stops, not whether it runs.
+  if (stranded !== null && activity.length === 0) return stopped(stranded.pollReason);
+
+  // Only trustworthy when no lesson is stranded: `bulk_running` is derived from
+  // target statuses and `planned` counts as in flight, so a campaign whose
+  // release never landed claims to be releasing forever.
+  if (stranded === null && REGENERATION_RELEASING_STATUSES.has(detail.status)) {
     activity.push("the campaign is still releasing revision jobs");
   }
 
   if (activity.length > 0) {
+    const moving = `Refreshing while ${activity.join(", ")}.`;
     return {
       shouldPoll: true,
       intervalMs: REGENERATION_POLL_MS,
       activity,
-      reason: `Refreshing while ${activity.join(", ")}.`,
+      strandedNote,
+      // A PARTIAL release is the realistic shape of this failure: the lessons
+      // that started still need refreshing, and the ones that never started
+      // still need a human. Reporting only the first froze a live report;
+      // reporting only the second hid the recovery.
+      reason: strandedNote ? `${moving} ${strandedNote}` : moving,
     };
   }
 
@@ -1675,12 +1738,46 @@ export function regenerationPollDecision(
   return stopped("Nothing is in flight for this campaign.");
 }
 
+/** Target statuses that move WITHOUT an operator. The list route deliberately
+ *  does not roll up per campaign, so `status_counts` is all the evidence a
+ *  summary carries — there is no `revision_job_id` at this level. */
+const REGENERATION_SELF_MOVING_TARGET_STATUSES = [
+  "generating",
+  "publication_pending",
+  "publishing",
+];
+
+/**
+ * The summary-level shadow of `regenerationStrandedRelease`.
+ *
+ * An approved `bulk_running` campaign whose only non-terminal lessons are
+ * `planned` is the shape of a release that never landed, and the detail screen
+ * already refuses to poll it. Without this the LIST kept ticking every 10s
+ * forever behind the same `bulk_running` status the detail screen had already
+ * declared stuck.
+ *
+ * ACCEPTED IMPRECISION: a campaign approved seconds ago, whose revision jobs
+ * exist but are all still waiting on the launch stagger, is `planned` too and
+ * looks identical here. It stops the list tick early for that campaign; opening
+ * it is what shows the truth, because the DETAIL poll can see `revision_job_id`
+ * and keeps refreshing. Erring this way costs one manual refresh; erring the
+ * other way polls a dead campaign for as long as the tab is open.
+ */
+function summaryStrandedRelease(c: RegenerationCampaignSummary): boolean {
+  if (c.status !== "bulk_running") return false;
+  if (c.approved_at === null) return false;
+  if (c.rejected_at !== null || c.cancel_requested_at !== null) return false;
+  if ((c.status_counts.planned ?? 0) <= 0) return false;
+  return REGENERATION_SELF_MOVING_TARGET_STATUSES.every((s) => (c.status_counts[s] ?? 0) === 0);
+}
+
 /** The list ticks only while a campaign is actually working. */
 export function regenerationListPollMs(
   campaigns: RegenerationCampaignSummary[] | undefined,
 ): number | false {
   const busy = (campaigns ?? []).some(
-    (c) => !c.is_terminal && REGENERATION_RELEASING_STATUSES.has(c.status),
+    (c) =>
+      !c.is_terminal && REGENERATION_RELEASING_STATUSES.has(c.status) && !summaryStrandedRelease(c),
   );
   return busy ? REGENERATION_LIST_POLL_MS : false;
 }
@@ -1926,6 +2023,171 @@ export function regenerationJudgeCounts(
     .sort((a, b) => a.status.localeCompare(b.status));
 }
 
+/* ── load states: error, loading and empty are three different things ──── */
+
+export const REGENERATION_LIST_LOADING = "Loading campaigns…";
+export const REGENERATION_LIST_EMPTY = "No regeneration campaigns yet.";
+export const REGENERATION_DETAIL_LOADING = "Loading this campaign…";
+export const REGENERATION_DETAIL_IDLE =
+  "Pick a campaign to read its canary and its report, or freeze a new one on the left.";
+
+export interface RegenerationCampaignListView {
+  mode: "error" | "loading" | "empty" | "list";
+  /** Non-null whenever the last read failed, even if stale rows still render. */
+  error: RegenerationErrorView | null;
+  /** The single line that replaces the rows, or null when rows render. */
+  message: string | null;
+  /** Whatever the cache still holds — a failed refresh hides nothing. */
+  campaigns: RegenerationCampaignSummary[];
+}
+
+/**
+ * A failed campaign list is NOT an empty one.
+ *
+ * `GET /campaigns` is the only regeneration query this page runs
+ * unconditionally, which makes it the one place the server-side flag can be
+ * observed without picking a book first: with `REGENERATION_ENABLED=false`
+ * every route answers 404, and that 404 has to reach the screen as prose. It
+ * used to arrive as `campaigns.data === undefined`, which the list rendered as
+ * "No regeneration campaigns yet." — a claim about the data made from a
+ * request that never returned any.
+ *
+ * `error` wins over both other states, and it never suppresses rows the cache
+ * still holds: a failed refresh over a known list must not blank the list.
+ */
+export function regenerationCampaignListView(input: {
+  campaigns: RegenerationCampaignSummary[] | undefined;
+  isLoading: boolean;
+  error: unknown;
+}): RegenerationCampaignListView {
+  const campaigns = input.campaigns ?? [];
+  if (input.error) {
+    return { mode: "error", error: regenerationErrorView(input.error), message: null, campaigns };
+  }
+  if (input.isLoading && campaigns.length === 0) {
+    return { mode: "loading", error: null, message: REGENERATION_LIST_LOADING, campaigns };
+  }
+  if (campaigns.length === 0) {
+    return { mode: "empty", error: null, message: REGENERATION_LIST_EMPTY, campaigns };
+  }
+  return { mode: "list", error: null, message: null, campaigns };
+}
+
+export interface RegenerationDetailView {
+  mode: "idle" | "loading" | "error" | "ready";
+  /** Only ever the report for the campaign that is actually selected. */
+  detail: RegenerationCampaignDetail | null;
+  /** The read that failed — including a refresh that failed over good data. */
+  error: RegenerationErrorView | null;
+  message: string | null;
+}
+
+/**
+ * "Nothing is selected" and "the selection has not arrived yet" are different.
+ *
+ * The pane used to be driven by `detail.data ?? null`, so the first render
+ * after clicking a campaign — and every failed read of one — told the operator
+ * to pick a campaign they had just picked. `idle` is now a statement about the
+ * SELECTION and nothing else; everything after it is a statement about the
+ * request.
+ *
+ * TanStack keys this query per campaign, so `data` is a previous SUCCESS for
+ * this id, not a leftover from another one — but the id is checked anyway,
+ * because rendering one campaign's report under another campaign's heading is
+ * the worst failure on this screen. Cached data plus a failed refresh stays
+ * `ready` WITH the error: blanking a readable report to show a refresh failure
+ * loses more than it explains.
+ */
+export function regenerationDetailView(input: {
+  selectedId: string | null;
+  data: RegenerationCampaignDetail | null | undefined;
+  error: unknown;
+}): RegenerationDetailView {
+  if (input.selectedId === null) {
+    return { mode: "idle", detail: null, error: null, message: REGENERATION_DETAIL_IDLE };
+  }
+  const detail = input.data ?? null;
+  if (detail !== null && detail.id === input.selectedId) {
+    return {
+      mode: "ready",
+      detail,
+      error: input.error ? regenerationErrorView(input.error) : null,
+      message: null,
+    };
+  }
+  if (input.error) {
+    return {
+      mode: "error",
+      detail: null,
+      error: regenerationErrorView(input.error),
+      message: null,
+    };
+  }
+  return { mode: "loading", detail: null, error: null, message: REGENERATION_DETAIL_LOADING };
+}
+
+export interface RegenerationMutationView {
+  pending: boolean;
+  error: RegenerationErrorView | null;
+}
+
+/**
+ * A mutation result, scoped to the thing that produced it.
+ *
+ * TanStack keeps `error`, `variables` and `isPending` on the mutation itself,
+ * not on the campaign — so a refused approve on campaign A stayed on screen
+ * when the operator moved to campaign B, and B rendered A's
+ * `illegal_campaign_state` as though B were the stale one. `variables` is the
+ * server-independent record of WHICH campaign or target the operator acted on,
+ * so it is what decides ownership here.
+ *
+ * `reset()` on selection would fix the same bug by throwing the error away —
+ * but it also throws away `variables`, which is the evidence of WHO the error
+ * belonged to, and it would have to fire from the selection handler that also
+ * owns the route's deliberately mutation-only audit state
+ * (`released_failures`, `previous_publication_*`). Filtering keeps the record:
+ * campaign A's refusal is still attributed to A on the way back, until a later
+ * call on the same mutation legitimately replaces it.
+ *
+ * `pending` is filtered the same way, so campaign B never renders "Approving…"
+ * because campaign A is mid-flight. A mutation that has never run carries
+ * `variables === undefined` and therefore owns nothing.
+ */
+export function regenerationMutationView<V>(
+  state: { error?: unknown; variables?: V; isPending?: boolean },
+  owns: (vars: V) => boolean,
+): RegenerationMutationView {
+  const vars = state.variables;
+  const owned = vars !== undefined && owns(vars);
+  return {
+    pending: owned && state.isPending === true,
+    error: owned && state.error ? regenerationErrorView(state.error) : null,
+  };
+}
+
+export interface RegenerationKeyedLine {
+  key: string;
+  text: string;
+}
+
+/**
+ * Render keys for the lists that have no server id — validation details,
+ * estimate notes, rollup warnings.
+ *
+ * Their text is the only thing they carry, and it is genuinely repeatable: two
+ * lessons called "Kirish", the same zero-volume note for two phases, the same
+ * validation message for two fields. Keying on the text collapses those into
+ * one row, which silently under-reports the very problem being rendered.
+ *
+ * The position is folded into the key here rather than in JSX, so the callers
+ * never touch a bare array index and the collision is provable without a DOM.
+ */
+export function regenerationKeyedLines(
+  lines: readonly string[] | null | undefined,
+): RegenerationKeyedLine[] {
+  return (lines ?? []).map((text, index) => ({ key: `${index}:${text}`, text }));
+}
+
 /* ── errors ───────────────────────────────────────────────────────────── */
 
 export interface RegenerationErrorView {
@@ -1996,15 +2258,35 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
   const message = detail ? text(detail, "message") || fallback : fallback;
 
   if (status === 404 && !code) {
+    // TWO different 404s share this status. The flag guard raises the literal
+    // `HTTPException(404, "Not Found")`, so `detail` is exactly that string;
+    // `_translate_campaign_error` raises `HTTPException(404, str(exc))`, whose
+    // detail is the service's own sentence naming the row. Reporting the second
+    // as the first sends an operator to a deployment flag over a deleted row,
+    // so the match is on the exact string and nothing looser.
+    const rawDetail = err instanceof ApiError ? err.detail : undefined;
+    if (typeof rawDetail === "string" && rawDetail === "Not Found") {
+      return {
+        title: "Regeneration is switched off on the server",
+        message:
+          "This build shows the regeneration screens, but the server is running with " +
+          "REGENERATION_ENABLED=false, so every regeneration route answers as if it does not " +
+          "exist. The backend flag is the real gate; turning it on is a deployment decision, " +
+          "not a UI one.",
+        details: [],
+        hint: null,
+        code: null,
+        status,
+      };
+    }
     return {
-      title: "Regeneration is switched off on the server",
-      message:
-        "This build shows the regeneration screens, but the server is running with " +
-        "REGENERATION_ENABLED=false, so every regeneration route answers as if it does not " +
-        "exist. The backend flag is the real gate; turning it on is a deployment decision, not " +
-        "a UI one.",
+      title: "That campaign or lesson is not there any more",
+      message: message || "The server could not find what this screen asked for.",
       details: [],
-      hint: null,
+      hint:
+        "It may have been deleted, or this screen may still be holding an id from an earlier " +
+        "session. Nothing was changed by this request; go back to the campaign list and pick " +
+        "one that is still there.",
       code: null,
       status,
     };

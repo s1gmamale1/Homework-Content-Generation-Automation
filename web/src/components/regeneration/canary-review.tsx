@@ -1,3 +1,4 @@
+import { RegenerationProblem } from "@/components/regeneration/regeneration-wizard";
 import {
   REGENERATION_APPROVE_NOTE,
   REGENERATION_LAUNCH_LABEL,
@@ -37,7 +38,6 @@ import { cn } from "@/lib/utils";
  * so nothing to decline.
  */
 import {
-  CircleAlert,
   CircleCheck,
   CircleDollarSign,
   Copy,
@@ -49,26 +49,6 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
-
-function Problem({ view }: { view: RegenerationErrorView }) {
-  return (
-    <div className="space-y-1 rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
-      <div className="flex items-start gap-2 font-semibold">
-        <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{view.title}</span>
-      </div>
-      <p className="max-w-[75ch]">{view.message}</p>
-      {view.details.length > 0 && (
-        <ul className="space-y-0.5 pl-5 [list-style:disc]">
-          {view.details.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      )}
-      {view.hint && <p className="max-w-[75ch] text-rose-100/70">{view.hint}</p>}
-    </div>
-  );
-}
 
 export function CanaryReview({
   detail,
@@ -296,7 +276,7 @@ export function CanaryReview({
         </section>
       )}
 
-      {actionError && <Problem view={actionError} />}
+      {actionError && <RegenerationProblem view={actionError} />}
 
       {atGate && (
         <section className={cn(CARD, "space-y-3")}>

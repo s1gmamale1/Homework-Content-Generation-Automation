@@ -1,4 +1,5 @@
-import { regenerationCampaignStatusLabel } from "@/lib/api";
+import { RegenerationProblem } from "@/components/regeneration/regeneration-wizard";
+import { regenerationCampaignListView, regenerationCampaignStatusLabel } from "@/lib/api";
 import { formatUsd, lessonCountLabel } from "@/lib/regeneration-state";
 import type { RegenerationCampaignStatus, RegenerationCampaignSummary } from "@/lib/types";
 import { CARD, FRAME_OFF, FRAME_ON, PRESSABLE } from "@/lib/ui";
@@ -43,30 +44,40 @@ export function CampaignList({
   selectedId,
   onSelect,
   isLoading = false,
+  error = null,
 }: {
   campaigns: RegenerationCampaignSummary[];
   selectedId: string | null;
   onSelect: (id: string) => void;
   isLoading?: boolean;
+  /** The raw `campaigns` query error. This list is the only regeneration query
+   *  that runs unconditionally, so it is where a server-side `REGENERATION_
+   *  ENABLED=false` becomes visible — no book has to be picked first. */
+  error?: unknown;
 }) {
+  // Which of loading / empty / failed is true is a decision, not a render
+  // detail: a failed read used to fall through to "no campaigns yet".
+  const view = regenerationCampaignListView({ campaigns, isLoading, error });
+  // A failed read knows nothing about the count — unless the cache still holds
+  // rows, in which case that number is still the last thing the server said.
+  const total =
+    view.mode === "error" && view.campaigns.length === 0
+      ? "unknown"
+      : `${view.campaigns.length} total`;
   return (
     <section className={cn(CARD, "space-y-2")}>
       <header className="flex items-center justify-between">
         <h2 className="text-sm font-semibold text-white">Campaigns</h2>
         <span className="font-mono text-[0.65rem] uppercase tracking-[0.14em] text-white/35">
-          {campaigns.length} total
+          {total}
         </span>
       </header>
 
-      {isLoading && campaigns.length === 0 && (
-        <p className="text-xs text-white/40">Loading campaigns…</p>
-      )}
-      {!isLoading && campaigns.length === 0 && (
-        <p className="text-xs text-white/40">No regeneration campaigns yet.</p>
-      )}
+      {view.error && <RegenerationProblem view={view.error} />}
+      {view.message && <p className="text-xs text-white/40">{view.message}</p>}
 
       <ul className="space-y-1">
-        {campaigns.map((c) => (
+        {view.campaigns.map((c) => (
           <li key={c.id}>
             <button
               type="button"

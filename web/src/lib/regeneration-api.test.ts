@@ -447,7 +447,8 @@ const CREATE_ONLY_KEYS = [
  * 15. Structured errors survive as `detail` and render as prose
  * ════════════════════════════════════════════════════════════════════ */
 
-// 404 — the feature flag is off server-side. `detail` is a bare string here.
+// 404 — the feature flag is off server-side. `detail` is a bare string here,
+// and it is the router's flag guard: `HTTPException(404, "Not Found")`.
 {
   const err = await failed(() => api.listRegenerationEligible(), 404, { detail: "Not Found" });
   assert.strictEqual(err.status, 404);
@@ -455,6 +456,34 @@ const CREATE_ONLY_KEYS = [
   const view = regenerationErrorView(err);
   assert.match(view.title, /switched off|not available/i);
   assert.ok(!/404/.test(view.message), "the operator must not be shown a bare status code");
+}
+
+// 404 — a campaign or target that genuinely no longer exists. The SAME status
+// with a DIFFERENT string detail: `_translate_campaign_error` raises
+// `HTTPException(404, str(exc))`, i.e. the service's own sentence. Reporting
+// that as "regeneration is switched off" sends an operator to the deployment
+// flag over a row that was simply deleted.
+{
+  const missing = `regeneration campaign ${CAMPAIGN_ID} not found`;
+  const err = await failed(() => api.getRegenerationCampaign(CAMPAIGN_ID), 404, {
+    detail: missing,
+  });
+  const view = regenerationErrorView(err);
+  assert.ok(
+    !/switched off/i.test(view.title),
+    `a deleted campaign must not read as a disabled feature: ${view.title}`,
+  );
+  assert.strictEqual(view.message, missing, "the server's own sentence must survive");
+  assert.strictEqual(view.status, 404);
+}
+{
+  const missing = `regeneration target ${TARGET_ID} not found`;
+  const err = await failed(() => api.retryRegenerationPublication(TARGET_ID), 404, {
+    detail: missing,
+  });
+  const view = regenerationErrorView(err);
+  assert.ok(!/switched off/i.test(view.title));
+  assert.strictEqual(view.message, missing);
 }
 
 // 409 preflight_blocked — every blocked lesson, in one response.

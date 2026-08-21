@@ -1,9 +1,11 @@
+import { RegenerationProblem } from "@/components/regeneration/regeneration-wizard";
 import {
   REGENERATION_CANCEL_CONFIRMATION,
   type RegenerationActionKind,
   type RegenerationErrorView,
   api,
   regenerationBucketViews,
+  regenerationKeyedLines,
   regenerationNextVersion,
   regenerationPublicationStateLabel,
   regenerationReasonError,
@@ -39,7 +41,7 @@ import { cn } from "@/lib/utils";
  * The route holds both and passes them in; rendering only what a refetch
  * returns would silently destroy both.
  */
-import { Ban, CircleAlert, Download, ExternalLink, RotateCcw, TriangleAlert } from "lucide-react";
+import { Ban, Download, ExternalLink, RotateCcw, TriangleAlert } from "lucide-react";
 import { useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -52,31 +54,12 @@ const BUCKET_TONE: Record<RegenerationBucket, string> = {
   in_flight: "border-white/[0.12] bg-white/[0.04] text-white/70",
 };
 
-function Problem({ view }: { view: RegenerationErrorView }) {
-  return (
-    <div className="space-y-1 rounded-xl border border-rose-300/25 bg-rose-300/[0.07] p-3 text-xs leading-5 text-rose-100/90">
-      <div className="flex items-start gap-2 font-semibold">
-        <CircleAlert className="mt-0.5 size-4 shrink-0" />
-        <span>{view.title}</span>
-      </div>
-      <p className="max-w-[75ch]">{view.message}</p>
-      {view.details.length > 0 && (
-        <ul className="space-y-0.5 pl-5 [list-style:disc]">
-          {view.details.map((line) => (
-            <li key={line}>{line}</li>
-          ))}
-        </ul>
-      )}
-      {view.hint && <p className="max-w-[75ch] text-rose-100/70">{view.hint}</p>}
-    </div>
-  );
-}
-
 function TargetRow({
   target,
   pendingKind,
   campaignTerminal,
   retryAudit,
+  actionError,
   onAction,
 }: {
   target: RegenerationTargetReport;
@@ -85,6 +68,10 @@ function TargetRow({
   /** What the last retry from this session cleared. Mutation-only: it is gone
    *  from the server the moment the retry succeeds. */
   retryAudit: string | null;
+  /** Non-null ONLY when the failed target mutation named THIS lesson in its
+   *  variables. A refusal rendered campaign-wide reads as though every row
+   *  failed, and survived a change of selection attached to the wrong one. */
+  actionError: RegenerationErrorView | null;
   onAction: (
     kind: RegenerationActionKind,
     target: RegenerationTargetReport,
@@ -156,6 +143,7 @@ function TargetRow({
         </p>
       )}
       {retryAudit && <p className="max-w-[80ch] text-xs leading-5 text-white/45">{retryAudit}</p>}
+      {actionError && <RegenerationProblem view={actionError} />}
       {target.source_note && (
         <p className="max-w-[80ch] text-xs leading-5 text-white/40">{target.source_note}</p>
       )}
@@ -281,6 +269,7 @@ export function CampaignReport({
   onCancelCampaign,
   cancelling,
   actionError,
+  targetError,
 }: {
   detail: RegenerationCampaignDetail;
   /** The report's own list MERGED with the ones only a mutation reported, so
@@ -295,7 +284,10 @@ export function CampaignReport({
   ) => void;
   onCancelCampaign: (reason: string) => void;
   cancelling: boolean;
+  /** The CAMPAIGN-level refusal — today only cancel. */
   actionError: RegenerationErrorView | null;
+  /** The per-target refusal, carrying the id its own mutation variables named. */
+  targetError: { targetId: string; view: RegenerationErrorView } | null;
 }) {
   const [confirmingCancel, setConfirmingCancel] = useState(false);
   const [cancelReason, setCancelReason] = useState("");
@@ -316,12 +308,12 @@ export function CampaignReport({
         </p>
       </header>
 
-      {detail.warnings.map((warning) => (
+      {regenerationKeyedLines(detail.warnings).map((row) => (
         <p
-          key={warning}
+          key={row.key}
           className="max-w-[80ch] rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-100/90"
         >
-          {warning}
+          {row.text}
         </p>
       ))}
       {detail.rollup_error && (
@@ -353,7 +345,7 @@ export function CampaignReport({
         </div>
       )}
 
-      {actionError && <Problem view={actionError} />}
+      {actionError && <RegenerationProblem view={actionError} />}
 
       <div className="space-y-3">
         {buckets.map((bucket) => (
@@ -384,6 +376,7 @@ export function CampaignReport({
                     pendingKind={pendingByTarget[target.id] ?? null}
                     campaignTerminal={detail.is_terminal}
                     retryAudit={retryAuditByTarget[target.id] ?? null}
+                    actionError={targetError?.targetId === target.id ? targetError.view : null}
                     onAction={onAction}
                   />
                 ))}
