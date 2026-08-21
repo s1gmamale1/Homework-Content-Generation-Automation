@@ -20,15 +20,29 @@ the wizard have no version and no reviewed decision, and back-filling one would
 invent a publication that never happened. Making them mandatory on NEW
 service-created campaigns is a later task's job, in the service layer.
 
-`ck_regeneration_targets_notion_parent_decision` is written with
-`IS NOT DISTINCT FROM` and an explicit `IS NOT NULL` guard, and that is
-load-bearing rather than stylistic. SQL is three-valued and a CHECK constraint
-is SATISFIED by UNKNOWN, so the same rule spelled with bare
-`notion_container_policy = 'reuse'` comparisons evaluates to NULL — and is
-therefore ACCEPTED — for precisely the half-filled shapes it exists to refuse:
-a `reuse` lesson policy with no container policy beside it, or every policy NULL
-with a reviewed title set. Total comparisons turn those NULLs into FALSE. Same
-trap, same fix as `ck_homework_jobs_revision_session_limit_strategy` in 0063.
+In `ck_regeneration_targets_notion_parent_decision` the load-bearing part is
+that every DECIDING comparison is `IS NOT DISTINCT FROM` rather than `=`. SQL
+is three-valued and a CHECK constraint is SATISFIED by UNKNOWN, so the same
+rule spelled with bare `notion_container_policy = 'reuse'` comparisons
+evaluates to NULL — and is therefore ACCEPTED — for precisely the half-filled
+shapes it exists to refuse: a `reuse` lesson policy with no container policy
+beside it, or every policy NULL with a reviewed title set. Total comparisons
+turn those NULLs into FALSE. Same trap, same fix as
+`ck_homework_jobs_revision_session_limit_strategy` in 0063.
+
+The leading `notion_parent_policy IS NOT NULL AND notion_parent_policy IN
+('reuse','create')` is NOT what closes that hole. It is redundant
+defence-in-depth, kept because it names the legal policy set where a reader
+looks for it: the `notion_parent_policy IS NOT DISTINCT FROM` branches further
+down already force that column into {'reuse','create'} and already yield FALSE
+— not UNKNOWN — when it is NULL, so the prefix can never turn a would-be-TRUE
+row FALSE. Swept exhaustively over 1,764 combinations (policies in
+{NULL,'reuse','create','adopt','','Reuse',' reuse'} x page ids in
+{NULL,'p1',''} x titles in {NULL,'T','','   '}), in Python and again in
+PostgreSQL against this exact rule text: 22 rows accepted with the clause, the
+same 22 without it, zero UNKNOWN results either way. Its own `IS NOT NULL`
+exists only so that its `IN` cannot evaluate to UNKNOWN; it neither widens nor
+narrows the rule.
 
 `ck_regeneration_campaigns_publication_version` needs no such care: `NULL IS
 NULL` is TRUE, so its first disjunct already decides the NULL case.

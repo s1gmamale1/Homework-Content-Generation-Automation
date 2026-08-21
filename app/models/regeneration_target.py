@@ -311,15 +311,23 @@ class RegenerationTarget(Base, UUIDPK, Timestamps):
         # database rule rather than a convention every future caller must
         # remember.
         #
-        # `IS NOT DISTINCT FROM` and the leading `IS NOT NULL` are load-bearing,
-        # not style. SQL is three-valued and a CHECK constraint is SATISFIED by
-        # UNKNOWN: written with bare `notion_container_policy = 'reuse'`, this
-        # predicate evaluates to NULL — and PostgreSQL therefore ACCEPTS the row
-        # — for exactly the shapes it exists to refuse, e.g. a `reuse` lesson
-        # policy with no container policy beside it, or every policy NULL with a
-        # reviewed title set. Making each comparison total turns those NULLs
-        # into FALSE. Same trap, same fix as
-        # `ck_homework_jobs_revision_session_limit_strategy`.
+        # `IS NOT DISTINCT FROM` on every DECIDING comparison is the
+        # load-bearing part, not style. SQL is three-valued and a CHECK
+        # constraint is SATISFIED by UNKNOWN: written with bare
+        # `notion_container_policy = 'reuse'`, this predicate evaluates to NULL
+        # — and PostgreSQL therefore ACCEPTS the row — for exactly the shapes it
+        # exists to refuse, e.g. a `reuse` lesson policy with no container
+        # policy beside it, or every policy NULL with a reviewed title set.
+        # Making each comparison total turns those NULLs into FALSE. Same trap,
+        # same fix as `ck_homework_jobs_revision_session_limit_strategy`.
+        #
+        # The leading `notion_parent_policy IS NOT NULL AND ... IN (...)` is
+        # redundant defence-in-depth, kept because it names the legal policy set
+        # where a reader looks for it. The `notion_parent_policy IS NOT DISTINCT
+        # FROM` branches below already force that column into the same set and
+        # already yield FALSE for NULL, so an exhaustive sweep of the predicate
+        # accepts exactly the same rows with the prefix and without it. Its own
+        # `IS NOT NULL` is there only so that its `IN` cannot go UNKNOWN.
         CheckConstraint(
             NOTION_DESTINATION_RULE,
             name="ck_regeneration_targets_notion_parent_decision",

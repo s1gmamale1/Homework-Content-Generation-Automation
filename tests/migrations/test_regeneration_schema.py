@@ -525,9 +525,14 @@ async def test_0064_adds_campaign_version_and_reviewed_destination_and_reverts()
         # `a IS NOT DISTINCT FROM b` back as `NOT (a IS DISTINCT FROM b)`, so
         # the assertion is on the operator, not on the spelling.
         assert "IS DISTINCT FROM" in destination_rule, destination_rule
-        # The one partial comparison that IS allowed — `IN ('reuse','create')`,
-        # stored as `= ANY (ARRAY[...])` — sits behind this explicit guard, the
-        # same pairing 0063 uses for the revision session-limit strategy.
+        # The one partial comparison left in the rule — `IN ('reuse','create')`,
+        # stored as `= ANY (ARRAY[...])` — sits behind an explicit `IS NOT
+        # NULL`, the same pairing 0063 uses for the revision session-limit
+        # strategy. That pairing is redundant defence-in-depth rather than what
+        # closes the UNKNOWN hole: the `IS NOT DISTINCT FROM` branches asserted
+        # above already force the same policy set and already reject NULL. It is
+        # pinned anyway because dropping the guard while keeping the `IN` would
+        # put a partial comparison back into the predicate for no gain.
         assert "notion_parent_policy IS NOT NULL" in destination_rule, destination_rule
         for policy in ("notion_parent_policy", "notion_container_policy"):
             for literal in ("'reuse'::text", "'create'::text"):
