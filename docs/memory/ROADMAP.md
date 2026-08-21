@@ -225,6 +225,16 @@
 
 > One line per shipped/closed item — full detail in the cited worklog + git. Nothing here is open.
 
+- **Versioned selective homework regeneration — ✅ CODE COMPLETE LOCALLY 2026-08-21 (worklog [0182]),
+  flag-off and NOT deployed/merged.** Selectively re-runs finished lessons with today's prompts and
+  publishes each as an additive, language-scoped sibling `Homework V2`/`V3`; V1 and every earlier
+  version are preserved untouched, revisions are complete immutable snapshots, canary is the sole
+  human gate, and every target language's own subject mapping is preflighted before any spend.
+  Migration 0063; provenance stamped from explicit request > `APP_GIT_REVISION` > `GIT_SHA` > 409.
+  Verified offline only (1018 regeneration / 3593 full backend / 18-of-18 FE + build / 336-of-336 scratch-DB
+  integration at head 0063). **Branch is local and unpushed; `REGENERATION_ENABLED` and
+  `REGENERATION_PUBLISHER_ENABLED` stay `false`; no paid model call or live Notion write has been
+  made, so the real-generation acceptance gate is still owed** — see the follow-ups in WISHLIST.
 - **Fleet scale blockers — wave 1 + wave 2 — ✅ CLOSED 2026-08-13 (worklog [0177]).** The fleet
   was fighting itself: one `pg_advisory_xact_lock` per api call serialised every host (fixed via
   a per-slot unique-index claim, migration 0061, ~15–27×); claim ordering by the *per-book*

@@ -2879,3 +2879,128 @@ best row wins (online beats offline, then freshest heartbeat) so Drain/Undrain s
 target the live worker's pc_id. Also fixes duplicate/grey dead cards in the grid.
 tsc + build clean, dist synced, live-verified: same registry snapshot renders
 35/35 machines vs 36/83 raw rows. API untouched.
+
+## 0182 — Versioned selective homework regeneration (2026-08-21)
+
+Branch `feat/regen-wave5-acceptance` (the assembled lane; `feat/versioned-homework-
+regeneration-preview` and the `feat/regen-wave1..5-*` slices are its ancestors), cut off
+the execution base at `a955cfeb`; current `origin/Nggaev-v2` is `631d163d`. **Code complete locally, both feature flags off, nothing
+pushed, merged or deployed.**
+
+**Behavior.** A campaign selectively re-runs already-finished lessons with the **currently
+deployed** prompts (`prompts/_general/` — no prompt-set picker exists, by design) and
+publishes each result as an **additive sibling page** under the same Lesson Topic:
+`Homework` is logical V1 and is never renamed, cleared, rewritten or deleted, and neither
+is any earlier `V2`/`V3`. Version numbers start at 2 and are counted **per lesson AND per
+output language** — UZ V2 and RU V2 are independent publications. The operator picks
+phases; everything downstream in `flows.PHASE_DEPS` is auto-included (selecting
+`flashcards` regenerates **10 of 11** phases — the preview route shows the real expansion
+before any spend), and every other phase is **copied** from the source job with a row-level
+link back to its origin, so a revision is always a **complete immutable snapshot** — a
+partial revision can never publish. Dropping an auto-included downstream phase back to
+"copied" requires an explicit `exclusion_acknowledged: true`, frozen into the campaign
+record. Extraction is **off by default** (`refresh_extraction: false` → the extract is
+copied free with the existing zero-cost cache marker); turning it on pulls in every content
+phase. `GET /eligible`, `POST /phase-plan` and `POST /estimate` create nothing and spend
+nothing. The **canary is the only human gate**: after it is approved once, the remaining
+successful revisions publish automatically via a head-owned serial publisher loop; a
+rejected canary stops the campaign. Judge and solver rules are **existing behavior,
+unchanged** — soft judge statuses stay advisory, hard failures still fail. Publication
+retries (`retry-publication`) re-drive the Notion write only and make **no model call**.
+
+**Schema — migration 0063** (`0063_regeneration_campaigns`, down_revision
+`0062_cap_pause_provenance`; sole Alembic head). New `regeneration_campaigns` (immutable
+`selection_spec`/`requested_phases`/`excluded_phases`/`launch_contract` JSONB, canary size,
+cost band, `app_git_revision`, full status/audit timestamps) and `regeneration_targets`
+(per campaign × TOC row × output language, `phase_plan`, publication version/page/attempts).
+Load-bearing constraints: `uq_regeneration_targets_campaign_toc_language`; the partial
+unique `uq_regeneration_targets_active_lineage` (`WHERE terminal_at IS NULL`) allowing **at
+most one non-terminal target per lesson+language across all campaigns**; the partial unique
+`uq_regeneration_targets_publication_version` (a version is consumed forever, per lesson +
+language); a `status ↔ terminal_at` agreement check that is what makes the lineage index
+correct; a published-completeness check; and a `BEFORE INSERT OR UPDATE` publication-gate
+trigger. `homework_jobs` gains `revision_of_job_id` + `regeneration_target_id` (paired
+check, unique target, `RESTRICT` FKs) plus a revision-only `session_limit_strategy`
+(`'inherit'` refused, with an explicit `IS NOT NULL` conjunct because SQL's three-valued
+CHECK would otherwise accept NULL). `phase_outputs` gains
+`copied_from_phase_output_id` (`RESTRICT`). One FK is deliberately **not** RESTRICT:
+`fk_regeneration_targets_source_job_id` is `ON DELETE SET NULL`.
+
+**Safety / isolation.** `ck_homework_jobs_revision_no_batch` forbids a revision from ever
+being a Fleet batch member, so batch rollups, adoption, resume and dedup queries are
+untouched by regeneration. Ordinary archival is isolated from versioned publication.
+Regeneration history makes the source lesson/book **undeletable** (409s derived from the
+history queries, not from FK shape alone), and re-extract is likewise gated. Both flags
+default `false`; the publisher loop requires **both** (`main.py` starts it only under
+`regeneration_enabled and regeneration_publisher_enabled`), so the publisher flag alone
+starts nothing and logs no start line. Documented rollback honesty: flags off strands any
+non-terminal target under the active-lineage unique, because the retry/abandon routes 404
+with the feature off — the safe enable order is schema → `REGENERATION_ENABLED` →
+`REGENERATION_PUBLISHER_ENABLED` → SPA rebuild, UI last so no Approve button can appear
+while approval could only answer `409 publisher_disabled`.
+
+**Cross-language page-parent correction.** `toc_entries.notion_lesson_page_id` is a single
+**language-blind** column owned by whichever lineage archived the lesson first. The
+publisher originally used it as the parent whenever set, which wrote the second language's
+`Homework V{n}` under the *first* language's Lesson Topic — an un-retryable
+`VersionPageCollision` when that version page already existed, and a silent write beside
+the wrong V1 when it did not. Now the Lesson Topic is resolved on **every** delivery
+beneath that target's own `subject_page_id`, and the stored pointer only short-circuits the
+title lookup **after one `get_child_pages` proves it is a child of that tree's `Generated
+Homeworks` container** — a validated same-tree hint, never cross-language authority. The
+`Homework V{n}` title is unchanged (no language suffix); separation is the tree, not the
+title.
+
+**Mapping preflight.** `preflight_notion_destinations` used to pass any source whose
+`notion_lesson_page_id` was set ("the page already exists"). That reading died with the
+language-tree fix: an `ru` target sitting on a `uz`-stamped pointer with no
+`ru:{subject}|{grade}` mapping sailed through preflight, had its revision generated **and
+paid for**, then parked with nowhere to publish — the exact outcome preflight exists to
+prevent. Every source now validates **its own target language's mapping (and grade),
+pointer or not**, before any spend. The read-only contract is unchanged: no Notion client,
+no remote call, no write; failures aggregate with a disambiguated lesson title.
+
+**Provenance / build wiring.** `app_git_revision` is written **once**, at campaign
+creation, into an immutable 64-char audit column, resolved in descending authority:
+explicit non-blank request field > `APP_GIT_REVISION` from the environment (baked into the
+GHCR image — CI passes `--build-arg APP_GIT_REVISION=${{ github.sha }}`, the runtime stage
+declares `ARG` and re-exports it as `ENV`, still no `.git` and no git binary in the image)
+> this process's own `code_version.GIT_SHA` > a structured **409
+`app_git_revision_unavailable`** naming the four operator remedies. One `_normalize_revision`
+for all three sources (trim; whitespace-only is ABSENT so an unset build arg cannot shadow a
+real checkout or store `""`; cap at 64 = a full SHA-256 object name). Resolution is the
+route's **first** statement — ahead of the crash-repair sweep and the service — so a refusal
+leaves no side effect, while auth, the feature 404 and request validation still precede it.
+`/estimate` is untouched (it is not the audit boundary). The SPA posts
+`app_git_revision: null` on purpose so the server's own identity wins. **No flag makes an
+unresolvable revision resolvable** — a hand-built image with neither the baked value nor a
+`.git` cannot create campaigns at all.
+
+**Tests / review state.** All verification is offline and fake-boundary. All regeneration
+tests including the Task 11 fake E2Es: **1018 passed**. Full offline backend: **3593 passed / 735
+skipped**. Frontend: **18/18 test files** plus a clean production build. Full integration on
+a **brand-new local scratch database** migrated to sole Alembic head 0063: **336/336**. The
+E2E lane (`tests/integration/test_regeneration_e2e.py` +
+`test_regeneration_failure_e2e.py`) runs against real PostgreSQL with exactly two faked
+outermost boundaries — the provider (which still writes the `agent_usages` row a real call
+would, so campaign cost sums from real accounting rows) and Notion (the same in-memory
+`FakeNotion` as the publisher unit tests); every other `agent` spawn entry point and
+`NotionClientWrapper` itself are tripwires. Both files carry a module-level
+`skipif(RUN_DB_INTEGRATION != "1")`, so a default suite run reporting them *skipped* is not
+a result — the controller gate ran them deliberately with zero xfail and zero skip. Docs
+shipped with the code: new `docs/runbooks/versioned-homework-regeneration.md` plus de-staled
+`README.md`, `docs/HOW_IT_WORKS.md`, `docs/CODE_MAP.md`, `docs/DATABASE.md`,
+`docs/DEPLOY.md`, `.env.example`.
+
+**Explicitly NOT done, and owed.** **No paid model call and no live Notion write has been
+made by this feature at any point** — not by the component suites, not by the E2E lane, not
+by the controller gate. CLAUDE.md's real-generation acceptance gate is therefore
+**unsatisfied and still owed**: a bounded, separately authorized sample campaign against
+real models and real Notion is required before this can be called operationally accepted; a
+green fake-boundary lane does not substitute for it, and neither does a branch review. The
+branch was **not pushed, not merged, no PR opened or updated, not deployed**; migration 0063
+was **not applied to any production or head database**; `REGENERATION_ENABLED` and
+`REGENERATION_PUBLISHER_ENABLED` both remain **`false`**, as does the build-time
+`VITE_REGENERATION_ENABLED`. Enabling either flag, running a sample or production campaign,
+deploying a prompt change, making a paid model call, or writing to live Notion is each a
+separate operator decision.
