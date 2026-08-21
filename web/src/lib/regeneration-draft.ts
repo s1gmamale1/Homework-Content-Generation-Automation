@@ -415,12 +415,31 @@ export function pruneRegenerationDraft(
       // BOTH halves of that pair still hold: the lesson is still ticked after
       // pruning (which has already dropped every lesson that stopped being
       // eligible, so eligibility needs no second test), and its language is
-      // still the draft's. Either half alone leaks a stale page into the
-      // estimate — an untargeted lesson keeps its eligibility, and a language
-      // switch keeps the lesson id — and the server revalidates the chosen
-      // page against the reviewed language container, so a mismatch is a
-      // refusal, not a nuance. A book change needs no test of its own: it
-      // clears the selection, so nothing survives the first half.
+      // still the draft's. An untargeted lesson keeps its eligibility, which
+      // is why the first half reads the SELECTION and not `eligible`.
+      //
+      // The language half is not redundant with the first, and the reason is
+      // the re-tick. `regenerationNarrowScope` clears `selectedTocEntryIds` on
+      // a book change AND on a language change, but it is generic over
+      // `RegenerationScopeState`, which declares no `destinationOverrides` —
+      // so it cannot clear these. For a book change that is the end of it: the
+      // lessons belonged to the old book and cannot come back. A language
+      // change is different, because one book carries every language — the
+      // operator re-ticks the SAME `tocEntryId` under the new language, the id
+      // is legitimately back in the selection, and the override stranded by
+      // the previous language rides along naming a page in the previous
+      // language's container. Only the equality test catches that, so deleting
+      // it because "narrowing already cleared the selection" reintroduces the
+      // bug this filter was fixed for.
+      //
+      // NOT enforced end-to-end yet, in the same sense `publicationVersion`
+      // above is not: `_Strict` is `extra="forbid"` and neither
+      // `EstimateRequest` nor `CreateCampaignRequest` declares an override
+      // field on this branch, so an override cannot reach the server today.
+      // Once the contract grows the field the server revalidates the chosen
+      // page against the reviewed language container, which is what will make
+      // a stale override a refusal; this filter is the browser's half of that
+      // same rule, kept honest ahead of it.
       destinationOverrides: draft.destinationOverrides.filter(
         (override) =>
           selectedTocEntryIdSet.has(override.tocEntryId) &&
