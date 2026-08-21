@@ -139,6 +139,7 @@ input and the active step:
 - extraction choice;
 - provider/model override;
 - campaign publication version;
+- explicit Lesson Topic choices made to resolve ambiguous Notion matches;
 - canary size; and
 - active wizard step.
 
@@ -206,6 +207,14 @@ The review preflight must therefore resolve the actual destination, read-only, b
    already-known destination.
 6. Multiple plausible matches are an ambiguity, not permission to create another page. Campaign
    creation is blocked until the operator selects the correct existing page or abandons that target.
+
+The estimate request carries any operator-selected destination overrides as structured
+`(toc_entry_id, output_language, notion_lesson_page_id)` inputs. The server validates that every
+chosen page is one of the safe candidates returned for that exact lineage and is still a child of
+the reviewed language/subject/grade container. An override is operator input, so it is included in
+the browser draft; candidate lists and resolved statuses remain server-derived and are re-fetched.
+Changing the book, language or selected lessons prunes overrides that no longer belong to the
+selection.
 
 The resolved parent page ID (or explicit create-new decision) is frozen on the regeneration target so
 publication uses exactly what the operator reviewed. The publisher revalidates parent membership
