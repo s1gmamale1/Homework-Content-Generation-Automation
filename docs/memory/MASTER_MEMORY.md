@@ -3011,10 +3011,10 @@ separate operator decision.
 `refresh_extraction=true` now bypasses the cross-job extract cache through
 `run → _execute_one_phase → _execute_phase`; ordinary and copy-extract jobs keep the
 existing cache. Publication readiness has one side-effect-free authority shared by
-startup, `run_once`, approval and publication retry: both the publisher flag and a
-constructor-valid Notion credential are required before any target is released or version
-reserved. Estimate, create, canary generation and generation retry remain available with
-publication dark.
+startup, `run_once`, approval and publication retry: the publisher flag,
+`NOTION_ENABLED`, and a constructor-valid Notion credential are all required before any
+target is released or version reserved. Estimate, create, canary generation and generation
+retry remain available with publication dark.
 
 Canary rollup and approval now share one verdict over the actual canary rows. A failed,
 planned or wholly-abandoned canary wave retracts to `attention_required` and cannot be
