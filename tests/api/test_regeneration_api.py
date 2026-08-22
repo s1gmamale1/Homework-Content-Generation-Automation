@@ -1553,7 +1553,17 @@ def test_campaign_detail_404s_for_an_unknown_campaign(monkeypatch):
 
 def test_campaign_list_paginates_and_filters(monkeypatch):
     campaign = _campaign(status="bulk_running")
-    listed = AsyncMock(return_value=([campaign], {campaign.id: {"published": 2}}, 1))
+    identity = {
+        campaign.id: {
+            "subjects": ["biology"],
+            "grades": ["9"],
+            "lesson_count": 1,
+            "lesson_title": "Photosynthesis",
+        }
+    }
+    listed = AsyncMock(
+        return_value=([campaign], {campaign.id: {"published": 2}}, identity, 1)
+    )
     monkeypatch.setattr(regen_api, "_list_campaigns", listed)
 
     response = client.get(
@@ -1564,6 +1574,10 @@ def test_campaign_list_paginates_and_filters(monkeypatch):
     body = response.json()
     assert body["count"] == 1
     assert body["campaigns"][0]["bucket_counts"]["published"] == 2
+    assert body["campaigns"][0]["subjects"] == ["biology"]
+    assert body["campaigns"][0]["grades"] == ["9"]
+    assert body["campaigns"][0]["lesson_count"] == 1
+    assert body["campaigns"][0]["lesson_title"] == "Photosynthesis"
     assert listed.await_args.kwargs["statuses"] == ["bulk_running"]
     assert listed.await_args.kwargs["limit"] == 10
 

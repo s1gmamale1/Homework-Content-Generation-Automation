@@ -2519,6 +2519,71 @@ function apiBook(over: Partial<Book> = {}): Book {
   assert.strictEqual(refreshing.message, null);
 }
 
+/* ── campaign rows are named by curriculum identity, never phase names ── */
+{
+  const oneLesson = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology"],
+        grades: ["9"],
+        lesson_count: 1,
+        lesson_title: "Photosynthesis",
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual((oneLesson.campaigns[0] as unknown as { identity?: unknown }).identity, {
+    title: "Biology · Grade 9",
+    subtitle: "Photosynthesis",
+  });
+
+  const severalLessons = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology"],
+        grades: ["9"],
+        lesson_count: 3,
+        lesson_title: null,
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual(
+    (severalLessons.campaigns[0] as unknown as { identity?: unknown }).identity,
+    { title: "Biology · Grade 9", subtitle: "3 lessons" },
+  );
+
+  const mixed = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology", "math-algebra"],
+        grades: ["9", "8"],
+        lesson_count: 2,
+        lesson_title: null,
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual((mixed.campaigns[0] as unknown as { identity?: unknown }).identity, {
+    title: "Mixed subjects · Grades 8 & 9",
+    subtitle: "2 lessons",
+  });
+
+  const legacy = regenerationCampaignListView({
+    campaigns: [apiDetail({ target_count: 2 })],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual(
+    (legacy.campaigns[0] as unknown as { identity?: unknown }).identity,
+    { title: "Campaign details unavailable", subtitle: "2 targets" },
+    "legacy metadata must not fall back to a phase list",
+  );
+}
+
 /* ── minor 3: 404 prose — switched off vs genuinely missing ────────── */
 {
   // FastAPI's flag-off guard raises the literal string "Not Found".

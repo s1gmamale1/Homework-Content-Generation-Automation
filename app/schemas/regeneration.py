@@ -1195,6 +1195,15 @@ class CampaignSummaryOut(BaseModel):
     exclusion_acknowledged: bool
     requested_phases: list[str]
     excluded_phases: list[str]
+    # Human identity for the campaign picker. Subject and grade are plural
+    # because one bounded campaign may intentionally span books; a single
+    # lesson keeps its title, while a multi-lesson campaign keeps only a count
+    # so the list payload cannot grow with every target. Empty is the honest
+    # legacy/detail fallback when the caller did not load the list projection.
+    subjects: list[str] = Field(default_factory=list)
+    grades: list[str] = Field(default_factory=list)
+    lesson_count: int = 0
+    lesson_title: Optional[str] = None
     publication_version: Optional[int]
     publication_version_label: str
     app_git_revision: Optional[str]
@@ -1212,9 +1221,14 @@ class CampaignSummaryOut(BaseModel):
 
     @classmethod
     def from_row(
-        cls, campaign, *, status_counts: Mapping[str, int]
+        cls,
+        campaign,
+        *,
+        status_counts: Mapping[str, int],
+        identity: Optional[Mapping[str, Any]] = None,
     ) -> "CampaignSummaryOut":
         counts = dict(status_counts)
+        identity = identity or {}
         return cls(
             id=campaign.id,
             status=campaign.status,
@@ -1230,6 +1244,10 @@ class CampaignSummaryOut(BaseModel):
             exclusion_acknowledged=bool(campaign.exclusion_acknowledged),
             requested_phases=list(campaign.requested_phases or []),
             excluded_phases=list(campaign.excluded_phases or []),
+            subjects=list(identity.get("subjects", ())),
+            grades=list(identity.get("grades", ())),
+            lesson_count=int(identity.get("lesson_count", 0)),
+            lesson_title=identity.get("lesson_title"),
             publication_version=getattr(campaign, "publication_version", None),
             publication_version_label=(
                 f"Homework V{campaign.publication_version}"

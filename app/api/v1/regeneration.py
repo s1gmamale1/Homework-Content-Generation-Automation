@@ -56,7 +56,7 @@ import os
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional, Sequence
+from typing import Optional, Sequence, TypedDict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -66,6 +66,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.db import SessionLocal, get_session
 from app.models.agent_usage import AgentUsage
+from app.models.book import Book
 from app.models.homework_job import HomeworkJob
 from app.models.phase_output import PhaseOutput
 from app.models.regeneration_campaign import RegenerationCampaign
@@ -758,13 +759,25 @@ async def _target_report(
     )
 
 
+class _CampaignIdentity(TypedDict):
+    subjects: list[str]
+    grades: list[str]
+    lesson_count: int
+    lesson_title: Optional[str]
+
+
 async def _list_campaigns(
     session: AsyncSession,
     *,
     statuses: Optional[list[str]],
     limit: int,
     offset: int,
-) -> tuple[list[RegenerationCampaign], dict[UUID, dict[str, int]], int]:
+) -> tuple[
+    list[RegenerationCampaign],
+    dict[UUID, dict[str, int]],
+    dict[UUID, _CampaignIdentity],
+    int,
+]:
     stmt = select(RegenerationCampaign)
     count_stmt = select(func.count()).select_from(RegenerationCampaign)
     if statuses:
@@ -780,19 +793,65 @@ async def _list_campaigns(
     total = int(await session.scalar(count_stmt) or 0)
 
     counts: dict[UUID, dict[str, int]] = {c.id: {} for c in campaigns}
+    identities: dict[UUID, _CampaignIdentity] = {
+        c.id: {
+            "subjects": [],
+            "grades": [],
+            "lesson_count": 0,
+            "lesson_title": None,
+        }
+        for c in campaigns
+    }
     if campaigns:
+        campaign_ids = list(counts)
         grouped = await session.execute(
             select(
                 RegenerationTarget.campaign_id,
                 RegenerationTarget.status,
                 func.count(),
             )
-            .where(RegenerationTarget.campaign_id.in_(list(counts)))
+            .where(RegenerationTarget.campaign_id.in_(campaign_ids))
             .group_by(RegenerationTarget.campaign_id, RegenerationTarget.status)
         )
         for campaign_id, target_status, count in grouped.all():
             counts.setdefault(campaign_id, {})[target_status] = int(count)
-    return campaigns, counts, total
+
+        identity_rows = await session.execute(
+            select(
+                RegenerationTarget.campaign_id,
+                RegenerationTarget.toc_entry_id,
+                Book.subject.label("subject"),
+                Book.grade.label("grade"),
+                TOCEntry.section_title.label("lesson_title"),
+            )
+            .join(TOCEntry, TOCEntry.id == RegenerationTarget.toc_entry_id)
+            .join(Book, Book.id == TOCEntry.book_id)
+            .where(RegenerationTarget.campaign_id.in_(campaign_ids))
+            .order_by(
+                RegenerationTarget.campaign_id,
+                Book.subject,
+                Book.grade,
+                TOCEntry.order_index,
+                RegenerationTarget.output_language,
+            )
+        )
+        seen_lessons: dict[UUID, set[UUID]] = {c.id: set() for c in campaigns}
+        for row in identity_rows.all():
+            identity = identities[row.campaign_id]
+            subject = (row.subject or "").strip()
+            grade = (row.grade or "").strip()
+            lesson_title = (row.lesson_title or "").strip()
+            if subject and subject not in identity["subjects"]:
+                identity["subjects"].append(subject)
+            if grade and grade not in identity["grades"]:
+                identity["grades"].append(grade)
+            if row.toc_entry_id not in seen_lessons[row.campaign_id]:
+                seen_lessons[row.campaign_id].add(row.toc_entry_id)
+                identity["lesson_count"] = len(seen_lessons[row.campaign_id])
+                identity["lesson_title"] = (
+                    lesson_title if identity["lesson_count"] == 1 else None
+                )
+    return campaigns, counts, identities, total
 
 
 async def _roll_up_for_report(campaign_id: UUID) -> Optional[str]:
@@ -1256,12 +1315,16 @@ async def list_campaigns(
             f"{sorted(CAMPAIGN_STATUSES)}",
         )
     await _reconcile(session)
-    campaigns, counts, total = await _list_campaigns(
+    campaigns, counts, identities, total = await _list_campaigns(
         session, statuses=list(status_filter) or None, limit=limit, offset=offset
     )
     return out.CampaignListOut(
         campaigns=[
-            out.CampaignSummaryOut.from_row(c, status_counts=counts.get(c.id, {}))
+            out.CampaignSummaryOut.from_row(
+                c,
+                status_counts=counts.get(c.id, {}),
+                identity=identities.get(c.id),
+            )
             for c in campaigns
         ],
         count=total,
