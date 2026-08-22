@@ -220,6 +220,37 @@ test("launch defaults never overwrite a restored explicit model choice", () => {
   );
 });
 
+test("a restored provider-only override survives delayed launch defaults", () => {
+  const selected = {
+    ...defaultGuidedRegenerationDraft(),
+    modelSelectionMode: "override" as const,
+    judgeProvider: "claude",
+    judgeModel: null,
+  };
+  const storage = memoryStorage();
+  assert.strictEqual(saveRegenerationDraft(storage, selected).warning, null);
+  const { draft, warning } = loadRegenerationDraft(storage);
+  assert.strictEqual(warning, null);
+
+  const initialized = initializeDraftModel(draft, {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+  });
+
+  assert.strictEqual(initialized.judgeProvider, "claude");
+  assert.strictEqual(
+    initialized.judgeModel,
+    null,
+    "defaults arriving after the provider click must not complete a different pair",
+  );
+});
+
 /* ════════════════════════════════════════════════════════════════════
  * 2. Round trip — the whole point of persisting anything
  * ════════════════════════════════════════════════════════════════════ */

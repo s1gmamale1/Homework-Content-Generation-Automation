@@ -195,10 +195,12 @@ export function initializeDraftModel(
     model: string | null,
     defaultProvider: string | null,
     defaultModel: string | null,
-  ): [string | null, string | null] =>
-    model !== null || !defaultProvider || !defaultModel
+  ): [string | null, string | null] => {
+    const hasPartialOverride = draft.modelSelectionMode === "override" && Boolean(provider);
+    return model !== null || hasPartialOverride || !defaultProvider || !defaultModel
       ? [provider, model]
       : [defaultProvider, defaultModel];
+  };
   const [provider, model] = pair(
     draft.provider,
     draft.model,
