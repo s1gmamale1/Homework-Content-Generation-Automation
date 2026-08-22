@@ -35,7 +35,11 @@ function BookLine({ entry }: { entry: CoverageEntry }) {
   const className = "block rounded-xl px-3 py-2.5 transition-colors hover:bg-white/[0.04]";
   const content = (
     <>
-      <div className="flex items-center gap-3">
+      {/* flex-wrap: on phone widths the fixed-width pieces (lang chip + bar
+          min-width + count + status chip) exceed the viewport and the card's
+          overflow-hidden clips the chip — wrapping drops the chip to its own
+          line instead (traced on iPhone-width viewer, 2026-07-20). */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         {/* Textbook SOURCE language, always shown: the tabs scope homework
             OUTPUT language, so without this chip a uz textbook generating ru
             homework reads as "the Russian subject" on the Русский tab and a
