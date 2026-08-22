@@ -713,6 +713,7 @@ export function RegenerationPage() {
                 }))
               }
               manifest={manifest.data}
+              launchDefaults={launchDefaults.data}
               manifestError={view(manifest.error)}
               state={draft}
               draftWarning={draftWarning}

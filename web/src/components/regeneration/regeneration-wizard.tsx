@@ -10,6 +10,7 @@ import {
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
 import type {
   Book,
+  LaunchDefaults,
   ProviderModelManifest,
   RegenerationDestinationCheckResponse,
   RegenerationEligibleSource,
@@ -95,6 +96,7 @@ export function RegenerationWizard({
   onCheckDestinations,
   onChooseDestination,
   manifest,
+  launchDefaults,
   manifestError,
   state,
   draftWarning,
@@ -129,6 +131,7 @@ export function RegenerationWizard({
     notionLessonPageId: string,
   ) => void;
   manifest: ProviderModelManifest | undefined;
+  launchDefaults: LaunchDefaults | undefined;
   manifestError: RegenerationErrorView | null;
   state: GuidedRegenerationDraft;
   draftWarning: string | null;
@@ -194,6 +197,7 @@ export function RegenerationWizard({
           canonicalPhases={phaseCatalog}
           plan={plan}
           manifest={manifest}
+          launchDefaults={launchDefaults}
           planLoading={planLoading}
           planErrorView={planError}
           error={
