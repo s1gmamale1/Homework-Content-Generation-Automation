@@ -27,9 +27,9 @@ from app.services.regeneration_planner import build_phase_plan
 SUBJECT = "math-algebra"
 NOW = datetime(2026, 8, 20, 12, 0, 0, tzinfo=timezone.utc)
 
-# Rates read off pricing.PRICE_MAP ($ per 1M tokens), 2026-08-20:
+# Rates read off pricing.PRICE_MAP ($ per 1M tokens), 2026-08-21:
 #   gemini-3.5-flash        input 1.50  output 9.00
-#   gemini-3.6-flash        input 1.50  output 7.50
+#   gemini-3.6-flash        input 0.75  output 3.75 (promo through 2026-12-31)
 #   gemini-3.5-flash-lite   input 0.30  output 2.50
 GEN_MODEL = "gemini-3.5-flash"
 JUDGE_MODEL = "gemini-3.6-flash"
@@ -136,8 +136,8 @@ def _one_target_setup(selected=("reflection",), rows=(), **plan_kwargs):
 # unit costs, hand-derived:
 #   authoring  10,000 prompt × $1.50/M + 1,000 output × $9.00/M = 0.015 + 0.009
 AUTHORING_UNIT = 0.024
-#   judge       8,000 prompt × $1.50/M +   500 output × $7.50/M = 0.012 + 0.00375
-JUDGE_UNIT = 0.01575
+#   judge       8,000 prompt × $0.75/M +   500 output × $3.75/M = 0.006 + 0.001875
+JUDGE_UNIT = 0.007875
 #   solver      6,000 prompt × $0.30/M +   400 output × $2.50/M = 0.0018 + 0.001
 SOLVER_UNIT = 0.0028
 #   extract    40,000 prompt × $0.30/M + 3,000 output × $2.50/M = 0.012 + 0.0075
