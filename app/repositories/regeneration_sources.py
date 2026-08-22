@@ -26,8 +26,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional
 from uuid import UUID
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import and_, case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from app.models.book import Book
 from app.models.homework_job import HomeworkJob
@@ -57,8 +58,8 @@ class LineageCandidate:
     discovery + Notion-preflight passes need, gathered in ONE query.
 
     The Notion fields (``grade``, ``book_filename``, the section columns,
-    ``notion_lesson_page_id``, ``notion_homework_page_id``) are here rather
-    than fetched later because
+    page ids and archive-provenance booleans) are here rather than fetched
+    later because
     preflight must answer "is there a destination for this lesson" for a whole
     selection at once; a per-lesson round trip would turn a 200-lesson campaign
     preflight into 600 queries.
@@ -84,6 +85,12 @@ class LineageCandidate:
     notion_lesson_page_id: Optional[str]
     order_index: int
     notion_homework_page_id: Optional[str] = None
+    # True only when the job stamped as the current legacy Homework archive is
+    # a homework job for this exact TOC + output-language lineage.
+    notion_homework_lineage_verified: bool = False
+    # A published lineage with no exact pointer proof must fail closed instead
+    # of falling through to title-based creation.
+    lineage_previously_published: bool = False
 
 
 async def latest_v1_source_job(
@@ -334,6 +341,34 @@ async def candidate_lineages(
     preflights the lesson twice and then collides on
     ``uq_regeneration_targets_campaign_toc_language``.
     """
+    archived_job = aliased(HomeworkJob, name="archived_homework_job")
+    published_job = aliased(HomeworkJob, name="published_lineage_job")
+    lineage_previously_published = (
+        select(published_job.id)
+        .where(
+            published_job.toc_entry_id == HomeworkJob.toc_entry_id,
+            published_job.output_language == HomeworkJob.output_language,
+            published_job.kind == _HOMEWORK_KIND,
+            published_job.notion_archived_at.is_not(None),
+        )
+        .correlate(HomeworkJob)
+        .exists()
+    )
+    notion_homework_lineage_verified = case(
+        (
+            and_(
+                TOCEntry.notion_homework_page_id.is_not(None),
+                TOCEntry.notion_archived_job_id.is_not(None),
+                archived_job.toc_entry_id == TOCEntry.id,
+                archived_job.output_language == HomeworkJob.output_language,
+                archived_job.kind == _HOMEWORK_KIND,
+                archived_job.notion_archived_at.is_not(None),
+            ),
+            True,
+        ),
+        else_=False,
+    )
+
     stmt = (
         select(
             HomeworkJob.toc_entry_id,
@@ -348,9 +383,15 @@ async def candidate_lineages(
             TOCEntry.notion_lesson_page_id,
             TOCEntry.order_index,
             TOCEntry.notion_homework_page_id,
+            notion_homework_lineage_verified,
+            lineage_previously_published,
         )
         .join(TOCEntry, TOCEntry.id == HomeworkJob.toc_entry_id)
         .join(Book, Book.id == HomeworkJob.book_id)
+        .outerjoin(
+            archived_job,
+            archived_job.id == TOCEntry.notion_archived_job_id,
+        )
         .where(
             HomeworkJob.status == "done",
             HomeworkJob.kind == _HOMEWORK_KIND,
@@ -386,6 +427,8 @@ async def candidate_lineages(
             notion_lesson_page_id=row[9],
             order_index=row[10],
             notion_homework_page_id=row[11],
+            notion_homework_lineage_verified=bool(row[12]),
+            lineage_previously_published=bool(row[13]),
         )
         for row in rows
     ]

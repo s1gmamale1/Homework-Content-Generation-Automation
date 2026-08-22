@@ -462,6 +462,30 @@ async def test_languages_are_independent_lineages(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_legacy_archive_provenance_reaches_the_eligible_source(monkeypatch):
+    from app.services import regeneration_discovery as discovery
+
+    job = _Job()
+    _FakeRepo(
+        candidates=[_candidate(
+            job,
+            notion_homework_page_id="legacy-homework",
+            notion_homework_lineage_verified=True,
+            lineage_previously_published=True,
+        )],
+        v1_jobs={(job.toc_entry_id, "uz"): job},
+        phase_rows={job.id: _complete_rows()},
+    ).install(monkeypatch)
+
+    (source,) = await discovery.list_eligible_sources(
+        None, book_ids=None, toc_entry_ids=None, output_languages=None
+    )
+    assert source.notion_homework_page_id == "legacy-homework"
+    assert source.notion_homework_lineage_verified is True
+    assert source.lineage_previously_published is True
+
+
+@pytest.mark.asyncio
 async def test_phase_rows_are_fetched_in_one_batched_call(monkeypatch):
     """A 200-lesson discovery must not become 200 phase-row queries."""
     from app.services import regeneration_discovery as discovery

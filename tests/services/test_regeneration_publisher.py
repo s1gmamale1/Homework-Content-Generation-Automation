@@ -1329,6 +1329,27 @@ async def test_a_reviewed_reuse_decision_is_executed_exactly_as_approved(h):
     assert h.off_loop()
 
 
+async def test_a_reviewed_lineage_reuse_survives_a_removed_subject_mapping(h):
+    """The immutable, lineage-proven parent wins over mutable configuration.
+
+    Review froze the exact container and Lesson Topic ids.  Removing the
+    subject mapping later must not re-route or refuse that already-proven
+    lineage; publication still rechecks the direct lesson->container edge.
+    """
+    container = h.notion.add_page(_SUBJECT_PAGE, _CONTAINER)
+    lesson = h.notion.add_page(container, "Legacy lesson title")
+    h.review(container_page_id=container, lesson_page_id=lesson,
+             lesson_title="Canonical title now differs")
+    h.subject_page_id = None
+    h.parent_hook = _no_find_or_create
+    h.claim()
+
+    assert await h.publisher().run_once() is True
+    assert version_page_title(2) in h.notion.child_titles(lesson)
+    assert h.write("published")["notion_page_id"] in h.child_ids(lesson)
+    assert h.lesson_stamps == [(h.toc_entry_id, lesson)]
+
+
 async def test_a_reviewed_create_decision_builds_the_approved_tree(h):
     """Both policies `create`: nothing existed at review time and nothing has
     appeared since, so delivery makes the container and the Lesson Topic by the

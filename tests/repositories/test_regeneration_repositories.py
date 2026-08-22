@@ -315,11 +315,11 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
     rows = [
         (
             toc_id, "uz", book_id, "7", "b.pdf", "1", "L1", "C1", 4,
-            None, 3, "hw-uz",
+            None, 3, "hw-uz", True, True,
         ),
         (
             toc_id, "ru", book_id, "7", "b.pdf", "1", "L1", "C1", 4,
-            "pg", 3, "hw-ru",
+            "pg", 3, "hw-ru", False, True,
         ),
     ]
     session = _FakeSession(execute_results=[rows])
@@ -339,9 +339,13 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
     assert got[0].page_start == 4
     assert got[0].notion_lesson_page_id is None
     assert got[0].notion_homework_page_id == "hw-uz"
+    assert got[0].notion_homework_lineage_verified is True
+    assert got[0].lineage_previously_published is True
     assert got[0].order_index == 3
     assert got[1].notion_lesson_page_id == "pg"
     assert got[1].notion_homework_page_id == "hw-ru"
+    assert got[1].notion_homework_lineage_verified is False
+    assert got[1].lineage_previously_published is True
     sql = _sql(session.statements[0])
     assert "DISTINCT" in sql
     # `homework_jobs.subject` is job-varying (a book's subject is editable), so

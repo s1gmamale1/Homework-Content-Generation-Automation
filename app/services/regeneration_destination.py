@@ -57,6 +57,8 @@ class DestinationSource:
     # Lesson Topic pointer; asking Notion for this page's parent recovers that
     # identity without guessing from a title that may since be disambiguated.
     notion_homework_page_id: Optional[str] = None
+    notion_homework_lineage_verified: bool = False
+    lineage_previously_published: bool = False
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,79 @@ def _scan_destinations(
     for source in sources:
         lineage = (source.toc_entry_id, source.output_language)
         override = overrides.get(lineage)
+
+        # The legacy archive stamp is the strongest identity available.  It
+        # binds one concrete Homework child to the job which published this
+        # exact TOC + language lineage, so its two ancestors remain authoritative
+        # even when titles or NOTION_SUBJECT_PAGES have since changed.
+        if override is None and source.notion_homework_lineage_verified:
+            homework_id = (source.notion_homework_page_id or "").strip()
+            if not homework_id:
+                resolutions.append(_blocked(
+                    source,
+                    "the published lineage is verified but its stored V1 "
+                    "Homework page id is missing",
+                ))
+                continue
+            try:
+                lesson_id = client.get_page_parent(homework_id)
+            except APIResponseError as exc:
+                if exc.code != APIErrorCode.ObjectNotFound:
+                    raise
+                lesson_id = None
+            if not lesson_id:
+                resolutions.append(_blocked(
+                    source,
+                    "the stored V1 Homework page for this published lineage "
+                    "is unavailable; refusing to create a replacement Lesson "
+                    "Topic without exact identity",
+                ))
+                continue
+            try:
+                container_id = client.get_page_parent(lesson_id)
+            except APIResponseError as exc:
+                if exc.code != APIErrorCode.ObjectNotFound:
+                    raise
+                container_id = None
+            if not container_id:
+                resolutions.append(_blocked(
+                    source,
+                    "the stored V1 Homework page's Lesson Topic has no readable "
+                    "parent container; refusing to guess a destination",
+                ))
+                continue
+
+            version_exists = any(
+                _normalize(str(page.get("title", "")))
+                == _normalize(expected_version_title)
+                for page in children(lesson_id)
+            )
+            if version_exists:
+                resolutions.append(_blocked(
+                    source,
+                    f"{expected_version_title} already exists under the "
+                    "lineage-proven Lesson Topic",
+                    container_policy="reuse",
+                    container_page_id=container_id,
+                    lesson_policy="reuse",
+                    lesson_page_id=lesson_id,
+                ))
+                continue
+
+            resolutions.append(DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="reuse",
+                container_policy="reuse",
+                container_page_id=container_id,
+                lesson_policy="reuse",
+                lesson_page_id=lesson_id,
+                candidates=(),
+                reason=None,
+            ))
+            continue
+
         subject_page_id = notion_archive._resolve_subject_page_id(
             settings.notion_subject_pages,
             source.subject,
@@ -202,6 +277,14 @@ def _scan_destinations(
                     f"override page {override!r} is not a safe candidate because "
                     f"{notion_archive.CONTAINER_TITLE!r} does not exist",
                     candidates=(),
+                ))
+                continue
+            if source.lineage_previously_published:
+                resolutions.append(_blocked(
+                    source,
+                    "this lineage was previously published, but the configured "
+                    f"subject page has no {notion_archive.CONTAINER_TITLE!r} "
+                    "container; refusing to create a parallel tree",
                 ))
                 continue
             resolutions.append(DestinationResolution(
@@ -246,17 +329,18 @@ def _scan_destinations(
             child_ids = {str(page.get("id")) for page in lesson_children}
             if hint and hint in child_ids:
                 chosen_id = hint
-            else:
-                homework_hint = (source.notion_homework_page_id or "").strip()
-                if homework_hint:
-                    try:
-                        legacy_parent = client.get_page_parent(homework_hint)
-                    except APIResponseError as exc:
-                        if exc.code != APIErrorCode.ObjectNotFound:
-                            raise
-                        legacy_parent = None
-                    if legacy_parent and legacy_parent in child_ids:
-                        chosen_id = legacy_parent
+            elif source.lineage_previously_published:
+                resolutions.append(_blocked(
+                    source,
+                    "this lineage was previously published, but no stored page "
+                    "identity proves the current language destination; select "
+                    "an existing Lesson Topic instead of creating another",
+                    container_policy="reuse",
+                    container_page_id=container_id,
+                    candidates=candidates,
+                    status="ambiguous" if candidates else "blocked",
+                ))
+                continue
             if chosen_id is None and len(candidates) == 1:
                 chosen_id = candidates[0].page_id
             elif chosen_id is None and len(candidates) > 1:

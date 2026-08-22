@@ -171,6 +171,8 @@ class EligibleRegenerationSource:
     # The V1 child page can recover its parent for rows archived before the
     # dedicated Lesson Topic pointer was introduced.
     notion_homework_page_id: Optional[str] = None
+    notion_homework_lineage_verified: bool = False
+    lineage_previously_published: bool = False
 
     @property
     def id(self) -> UUID:  # noqa: A003 — the name `resolve_lesson_title` reads
@@ -367,6 +369,12 @@ async def list_source_candidates(
                     notion_lesson_page_id=lineage.notion_lesson_page_id,
                     order_index=lineage.order_index,
                     notion_homework_page_id=lineage.notion_homework_page_id,
+                    notion_homework_lineage_verified=(
+                        lineage.notion_homework_lineage_verified
+                    ),
+                    lineage_previously_published=(
+                        lineage.lineage_previously_published
+                    ),
                 ),
                 reasons=(),
                 detail="",

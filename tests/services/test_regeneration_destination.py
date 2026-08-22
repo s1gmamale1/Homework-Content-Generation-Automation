@@ -189,6 +189,8 @@ def source(
     section_title: str = "Photosynthesis",
     book_filename: str = "biology7.pdf",
     homework_pointer: Optional[str] = None,
+    homework_lineage_verified: bool = False,
+    lineage_previously_published: bool = False,
 ) -> "dest.DestinationSource":
     return dest.DestinationSource(
         toc_entry_id=toc_entry_id or uuid.uuid4(),
@@ -204,6 +206,8 @@ def source(
         notion_lesson_page_id=pointer,
         lesson_title=title,
         notion_homework_page_id=homework_pointer,
+        notion_homework_lineage_verified=homework_lineage_verified,
+        lineage_previously_published=lineage_previously_published,
     )
 
 
@@ -238,44 +242,85 @@ async def test_valid_stored_pointer_is_reused(resolver, notion):
     assert result.ok is True
 
 
-async def test_v1_homework_parent_is_identity_only_inside_target_container(
-    resolver, notion
+async def test_verified_v1_homework_parent_is_authoritative_without_a_mapping(
+    resolver, notion, monkeypatch
 ):
-    """A pre-backfill lesson can have an exact V1 Homework pointer but no
-    Lesson Topic pointer.  Its V1 parent is stronger identity than a title:
-    title disambiguation may since have added page/id suffixes, as happened in
-    production, without making a second Lesson Topic the right destination."""
-    container = _container(notion)
+    """Proven archive lineage is stronger than mutable mapping or title data."""
+    legacy_subject = notion.seed("workspace", "Legacy biology", "legacy-subject")
+    container = notion.seed(legacy_subject, _CONTAINER, "legacy-container")
     legacy_lesson = notion.seed(container, "7 Photosynthesis", "legacy-lesson")
     legacy_homework = notion.seed(legacy_lesson, "Homework", "legacy-homework")
     matching = source(
         pointer=None,
         homework_pointer=legacy_homework,
         title="7 Photosynthesis · p.41 · deadbeef",
+        homework_lineage_verified=True,
+        lineage_previously_published=True,
     )
-    ru_container = _container(notion, parent=_SUBJECT_RU, page_id="container-ru")
-    foreign = source(
-        pointer=None,
-        homework_pointer=legacy_homework,
-        language="ru",
-        title="7 Photosynthesis · p.41 · cafebabe",
-    )
+    monkeypatch.setattr(dest.settings, "notion_subject_pages", {})
+    result = await resolver.resolve(sources=[matching], overrides=())
 
-    result = await resolver.resolve(sources=[matching, foreign], overrides=())
-
-    adopted, refused_foreign = result.resolutions
+    adopted = _one(result)
     assert adopted.status == "reuse"
     assert adopted.lesson_policy == "reuse"
     assert adopted.lesson_page_id == legacy_lesson
     assert adopted.container_page_id == container
-    assert refused_foreign.status == "create"
-    assert refused_foreign.lesson_policy == "create"
-    assert refused_foreign.lesson_page_id is None
-    assert refused_foreign.container_page_id == ru_container
     assert result.ok is True
 
 
-async def test_a_deleted_v1_homework_pointer_falls_through_to_title_matching(
+async def test_a_published_lineage_without_language_proof_blocks_instead_of_creating(
+    resolver, notion
+):
+    container = _container(notion)
+    legacy_lesson = notion.seed(container, _TITLE, "legacy-lesson")
+    legacy_homework = notion.seed(legacy_lesson, "Homework", "legacy-homework")
+    _container(notion, parent=_SUBJECT_RU, page_id="container-ru")
+
+    result = await resolver.resolve(sources=[source(
+        pointer=None,
+        homework_pointer=legacy_homework,
+        language="ru",
+        homework_lineage_verified=False,
+        lineage_previously_published=True,
+    )])
+
+    blocked = _one(result)
+    assert blocked.status == "blocked"
+    assert "published" in (blocked.reason or "").lower()
+    assert blocked.lesson_page_id is None
+    assert result.ok is False
+
+
+async def test_an_operator_can_select_a_candidate_for_an_unproven_published_lineage(
+    resolver, notion
+):
+    container = _container(notion)
+    lesson = notion.seed(container, _TITLE, "candidate-lesson")
+    item = source(
+        pointer=None,
+        homework_pointer="pointer-owned-by-another-language",
+        homework_lineage_verified=False,
+        lineage_previously_published=True,
+    )
+
+    review = await resolver.resolve(sources=[item])
+    assert _one(review).status == "ambiguous"
+    assert [candidate.page_id for candidate in _one(review).candidates] == [lesson]
+
+    approved = await resolver.resolve(
+        sources=[item],
+        overrides=[dest.DestinationOverride(
+            toc_entry_id=item.toc_entry_id,
+            output_language=item.output_language,
+            notion_lesson_page_id=lesson,
+        )],
+    )
+    assert _one(approved).status == "reuse"
+    assert _one(approved).lesson_page_id == lesson
+    assert approved.ok is True
+
+
+async def test_a_deleted_verified_v1_pointer_blocks_instead_of_title_matching(
     resolver, notion, monkeypatch
 ):
     container = _container(notion)
@@ -296,13 +341,42 @@ async def test_a_deleted_v1_homework_pointer_falls_through_to_title_matching(
     monkeypatch.setattr(notion, "get_page_parent", missing_homework)
 
     result = await resolver.resolve(
-        sources=[source(pointer=None, homework_pointer="deleted-homework")],
+        sources=[source(
+            pointer=None,
+            homework_pointer="deleted-homework",
+            homework_lineage_verified=True,
+            lineage_previously_published=True,
+        )],
         overrides=(),
     )
 
-    assert _one(result).status == "reuse"
-    assert _one(result).lesson_page_id == "lesson-1"
-    assert result.ok is True
+    assert _one(result).status == "blocked"
+    assert "stored v1 homework" in (_one(result).reason or "").lower()
+    assert _one(result).lesson_page_id is None
+    assert result.ok is False
+
+
+async def test_a_verified_lineage_with_an_existing_version_blocks_without_mapping(
+    resolver, notion, monkeypatch
+):
+    container = notion.seed("legacy-subject", _CONTAINER, "legacy-container")
+    lesson = notion.seed(container, "Old title", "legacy-lesson")
+    homework = notion.seed(lesson, "Homework", "legacy-homework")
+    notion.seed(lesson, "Homework V3", "existing-v3")
+    monkeypatch.setattr(dest.settings, "notion_subject_pages", {})
+
+    result = await resolver.resolve(sources=[source(
+        homework_pointer=homework,
+        homework_lineage_verified=True,
+        lineage_previously_published=True,
+    )])
+
+    blocked = _one(result)
+    assert blocked.status == "blocked"
+    assert "Homework V3 already exists" in (blocked.reason or "")
+    assert blocked.container_page_id == container
+    assert blocked.lesson_page_id == lesson
+    assert result.ok is False
 
 
 async def test_two_safe_matches_block_until_operator_selects_one(resolver, notion):
@@ -508,6 +582,20 @@ async def test_a_missing_container_is_created_with_the_lesson(resolver, notion):
     assert _one(result).lesson_page_id is None
     assert _one(result).status == "create"
     assert result.ok is True
+
+
+async def test_a_published_unproven_lineage_never_creates_a_missing_container(
+    resolver, notion
+):
+    result = await resolver.resolve(sources=[source(
+        lineage_previously_published=True,
+    )])
+
+    blocked = _one(result)
+    assert blocked.status == "blocked"
+    assert "parallel tree" in (blocked.reason or "")
+    assert blocked.container_policy is None
+    assert result.ok is False
 
 
 async def test_two_containers_block_the_lineage(resolver, notion):
