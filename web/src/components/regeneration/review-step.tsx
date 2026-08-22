@@ -13,6 +13,7 @@ import { GHOST_BTN, PRIMARY_BTN } from "@/lib/ui";
 export function ReviewStep({
   draft,
   launchDefaults,
+  modelIssue,
   estimate,
   destinations,
   checking,
@@ -26,6 +27,7 @@ export function ReviewStep({
 }: {
   draft: GuidedRegenerationDraft;
   launchDefaults: LaunchDefaults | undefined;
+  modelIssue: string | null;
   estimate: RegenerationEstimateResponse | null;
   destinations: RegenerationDestinationCheckResponse | null;
   checking: boolean;
@@ -45,6 +47,7 @@ export function ReviewStep({
     destinations?.ok && destinations.checked_target_count === destinations.target_count,
   );
   const gate = reviewGate({
+    modelIssue,
     estimateReady: estimate !== null,
     workerOk: estimate?.worker_executability.ok ?? false,
     destinationsOk: destinationReady,

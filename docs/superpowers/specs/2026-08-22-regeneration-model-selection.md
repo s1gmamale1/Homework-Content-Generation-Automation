@@ -49,4 +49,3 @@ No API schema, database migration, worker protocol, or `/settings` mutation is n
   contract paths.
 - Conclusion: no equivalent or partially overlapping implementation exists. Open PRs
   do not touch the affected regeneration frontend paths.
-

@@ -98,6 +98,8 @@ export function RegenerationWizard({
   onChooseDestination,
   manifest,
   launchDefaults,
+  launchDefaultsError,
+  onRetryLaunchDefaults,
   manifestError,
   state,
   draftWarning,
@@ -133,6 +135,8 @@ export function RegenerationWizard({
   ) => void;
   manifest: ProviderModelManifest | undefined;
   launchDefaults: LaunchDefaults | undefined;
+  launchDefaultsError: RegenerationErrorView | null;
+  onRetryLaunchDefaults: () => void;
   manifestError: RegenerationErrorView | null;
   state: GuidedRegenerationDraft;
   draftWarning: string | null;
@@ -144,7 +148,12 @@ export function RegenerationWizard({
   onOpenCampaign: (campaignId: string) => void;
 }) {
   const step = state.step === "canary" ? "review" : state.step;
-  const modelIssue = regenerationModelSelectionIssue(state, launchDefaults, manifest);
+  const modelIssue = regenerationModelSelectionIssue(
+    state,
+    launchDefaults,
+    manifest,
+    launchDefaultsError !== null,
+  );
   const highestReachable =
     state.selectedTocEntryIds.length === 0
       ? "lessons"
@@ -200,12 +209,20 @@ export function RegenerationWizard({
           plan={plan}
           manifest={manifest}
           launchDefaults={launchDefaults}
+          launchDefaultsFailed={launchDefaultsError !== null}
           planLoading={planLoading}
           planErrorView={planError}
           error={
             <>
               {planError && <RegenerationProblem view={planError} />}
               {manifestError && <RegenerationProblem view={manifestError} />}
+              {launchDefaultsError && state.modelSelectionMode === "settings" && (
+                <RegenerationProblem
+                  view={launchDefaultsError}
+                  onRetry={onRetryLaunchDefaults}
+                  retryLabel="Retry Settings defaults"
+                />
+              )}
             </>
           }
           onChange={onChange}
@@ -217,6 +234,7 @@ export function RegenerationWizard({
         <ReviewStep
           draft={state}
           launchDefaults={launchDefaults}
+          modelIssue={modelIssue}
           estimate={estimate}
           destinations={destinations}
           checking={destinationsChecking}

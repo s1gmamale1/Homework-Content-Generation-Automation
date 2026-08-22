@@ -20,6 +20,7 @@ export function ContentStep({
   plan,
   manifest,
   launchDefaults,
+  launchDefaultsFailed,
   planLoading,
   planErrorView,
   error,
@@ -32,6 +33,7 @@ export function ContentStep({
   plan: RegenerationPhasePlan | null;
   manifest: ProviderModelManifest | undefined;
   launchDefaults: LaunchDefaults | undefined;
+  launchDefaultsFailed: boolean;
   planLoading: boolean;
   planErrorView: RegenerationErrorView | null;
   error: React.ReactNode;
@@ -53,7 +55,12 @@ export function ContentStep({
     error: planErrorView,
   });
   const planBlockedReason = regenerationPlanBlockedReason(planStep);
-  const modelIssue = regenerationModelSelectionIssue(draft, launchDefaults, manifest);
+  const modelIssue = regenerationModelSelectionIssue(
+    draft,
+    launchDefaults,
+    manifest,
+    launchDefaultsFailed,
+  );
   const patch = (next: Partial<GuidedRegenerationDraft>) => onChange({ ...draft, ...next });
   const toggle = (values: string[], value: string) =>
     values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -127,6 +134,7 @@ export function ContentStep({
       <RegenerationModelSelection
         draft={draft}
         defaults={launchDefaults}
+        defaultsLoadFailed={launchDefaultsFailed}
         manifest={manifest}
         onChange={onChange}
       />

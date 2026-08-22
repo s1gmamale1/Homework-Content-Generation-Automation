@@ -690,27 +690,51 @@ assert.strictEqual(formatUsd(0.4251), "$0.43");
  * ──────────────────────────────────────────────────────────────────── */
 
 assert.deepStrictEqual(
-  reviewGate({ estimateReady: false, workerOk: false, destinationsOk: false }),
+  reviewGate({
+    modelIssue: null,
+    estimateReady: false,
+    workerOk: false,
+    destinationsOk: false,
+  }),
   {
     ok: false,
     reason: "Wait for the campaign estimate before reviewing destinations.",
   },
 );
 assert.deepStrictEqual(
-  reviewGate({ estimateReady: true, workerOk: false, destinationsOk: false }),
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: false, destinationsOk: false }),
   {
     ok: false,
     reason: "No active worker can run this campaign's frozen model contract.",
   },
 );
-assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: false }), {
-  ok: false,
-  reason: "Check and resolve every Notion destination before starting the canary.",
-});
-assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: true }), {
-  ok: true,
-  reason: null,
-});
+assert.deepStrictEqual(
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: true, destinationsOk: false }),
+  {
+    ok: false,
+    reason: "Check and resolve every Notion destination before starting the canary.",
+  },
+);
+assert.deepStrictEqual(
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: true, destinationsOk: true }),
+  {
+    ok: true,
+    reason: null,
+  },
+);
+assert.deepStrictEqual(
+  reviewGate({
+    modelIssue: "Judge model retired-flash is no longer available for gemini.",
+    estimateReady: true,
+    workerOk: true,
+    destinationsOk: true,
+  }),
+  {
+    ok: false,
+    reason: "Judge model retired-flash is no longer available for gemini.",
+  },
+  "a cached estimate and destination check must not enable paid creation after models change",
+);
 
 assert.deepStrictEqual(nextCreateCanaryAction({ campaignId: null, canaryStarted: false }), {
   kind: "create-and-launch",
@@ -3730,21 +3754,56 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     publicationVersion: 3,
     destinationOverrides: [],
   };
-  const sig = regenerationDraftSignature(base);
-  assert.strictEqual(sig, regenerationDraftSignature({ ...base }), "the signature is stable");
+  const contract = {
+    provider: "gemini",
+    model: "gemini-3.6-flash",
+    transport: "api" as const,
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    judge_transport: "api" as const,
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    solver_transport: "api" as const,
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+    extract_transport: "api" as const,
+    session_limit_strategy: "inherit" as const,
+  };
+  const sig = regenerationDraftSignature(base, contract);
+  assert.strictEqual(
+    sig,
+    regenerationDraftSignature({ ...base }, contract),
+    "the signature is stable",
+  );
   assert.notStrictEqual(
     sig,
-    regenerationDraftSignature({ ...base, selectedTocEntryIds: ["t1", "t2"] }),
+    regenerationDraftSignature({ ...base, selectedTocEntryIds: ["t1", "t2"] }, contract),
     "picking another lesson makes an `active_lineage_conflict` stale",
   );
   assert.notStrictEqual(
     sig,
-    regenerationDraftSignature({ ...base, selectedPhases: ["reflection"] }),
+    regenerationDraftSignature({ ...base, selectedPhases: ["reflection"] }, contract),
     "changing the phase selection makes a phase-shaped 422 stale",
   );
-  assert.notStrictEqual(sig, regenerationDraftSignature({ ...base, model: "gemini-3.5-flash" }));
+  for (const [role, changed] of [
+    ["content", { ...contract, model: "gemini-3.5-flash-lite" }],
+    ["judge", { ...contract, judge_model: "gemini-3.5-flash-lite" }],
+    ["solver", { ...contract, solver_model: "gemini-3.6-flash" }],
+    ["extract", { ...contract, extract_model: "gemini-3.6-flash" }],
+  ] as const) {
+    assert.notStrictEqual(
+      sig,
+      regenerationDraftSignature(base, changed),
+      `changing the effective ${role} contract makes a model refusal stale`,
+    );
+  }
+  assert.notStrictEqual(
+    sig,
+    regenerationDraftSignature(base, null),
+    "an invalid current contract must hide a refusal from the previously valid contract",
+  );
   assert.strictEqual(
-    regenerationDraftSignature({ ...base, canarySize: 1 }),
+    regenerationDraftSignature({ ...base, canarySize: 1 }, contract),
     sig,
     "an unchanged field must not invalidate the error",
   );

@@ -18,17 +18,19 @@ const ROLE_LABELS: Record<RegenerationModelRole, string> = {
 export function RegenerationModelSelection({
   draft,
   defaults,
+  defaultsLoadFailed,
   manifest,
   onChange,
 }: {
   draft: GuidedRegenerationDraft;
   defaults: LaunchDefaults | undefined;
+  defaultsLoadFailed?: boolean;
   manifest: ProviderModelManifest | undefined;
   onChange: (draft: GuidedRegenerationDraft) => void;
 }) {
   const patch = (next: Partial<GuidedRegenerationDraft>) => onChange({ ...draft, ...next });
   const selected = effectiveRegenerationModels(draft, defaults);
-  const issue = regenerationModelSelectionIssue(draft, defaults, manifest);
+  const issue = regenerationModelSelectionIssue(draft, defaults, manifest, defaultsLoadFailed);
 
   return (
     <div className="space-y-3 rounded-2xl border border-white/[0.08] bg-white/[0.025] p-4">

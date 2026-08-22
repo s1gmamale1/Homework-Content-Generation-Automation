@@ -258,4 +258,3 @@ database, generated bundle, dependency lock, or unrelated file entered the branc
 Push `feat/regeneration-model-selection-defaults` and open an owned PR against
 `Nggaev-v2`. The PR body must include the two modes, API-only boundary, persistence,
 test evidence, no-migration statement, and collision-gate result. Do not merge it.
-

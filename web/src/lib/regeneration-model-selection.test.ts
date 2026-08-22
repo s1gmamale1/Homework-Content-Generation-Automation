@@ -91,6 +91,25 @@ test("a missing Settings role blocks spending with an actionable role name", () 
   assert.strictEqual(regenerationLaunchContract(defaultGuidedRegenerationDraft(), defaults), null);
 });
 
+test("a failed Settings-default request is distinguished from an in-flight request", () => {
+  const draft = defaultGuidedRegenerationDraft();
+
+  assert.strictEqual(
+    regenerationModelSelectionIssue(draft, undefined, MANIFEST, true),
+    "Settings defaults could not be loaded. Retry the Settings request below.",
+  );
+  assert.strictEqual(
+    regenerationModelSelectionIssue(
+      { ...draft, modelSelectionMode: "override" },
+      undefined,
+      MANIFEST,
+      true,
+    ),
+    "Content model is not configured.",
+    "a Settings failure must not prevent a complete override from being used",
+  );
+});
+
 test("a retired override model is refused before campaign creation", () => {
   const draft = {
     ...defaultGuidedRegenerationDraft(),

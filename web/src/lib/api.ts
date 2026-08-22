@@ -51,6 +51,7 @@ import type {
   RegenerationEstimateRequest,
   RegenerationEstimateResponse,
   RegenerationIneligibleLineage,
+  RegenerationLaunchContract,
   RegenerationOutputLanguage,
   RegenerationPhasePlan,
   RegenerationPhasePlanRequest,
@@ -1020,25 +1021,28 @@ export function regenerationEstimateBody(
  *  Deliberately covers only the fields the server reads: a cosmetic state
  *  change must not silently discard a refusal the operator has not addressed.
  */
-export function regenerationDraftSignature(draft: {
-  bookId: string | null;
-  language: string;
-  selectedTocEntryIds: string[];
-  selectedPhases: string[];
-  excludedPhases: string[];
-  refreshExtraction: boolean;
-  acknowledged: boolean;
-  canarySize: number;
-  provider: string;
-  model: string | null;
-  mode: "full" | "selective";
-  publicationVersion: number;
-  destinationOverrides: Array<{
-    tocEntryId: string;
-    outputLanguage: string;
-    notionLessonPageId: string;
-  }>;
-}): string {
+export function regenerationDraftSignature(
+  draft: {
+    bookId: string | null;
+    language: string;
+    selectedTocEntryIds: string[];
+    selectedPhases: string[];
+    excludedPhases: string[];
+    refreshExtraction: boolean;
+    acknowledged: boolean;
+    canarySize: number;
+    provider: string;
+    model: string | null;
+    mode: "full" | "selective";
+    publicationVersion: number;
+    destinationOverrides: Array<{
+      tocEntryId: string;
+      outputLanguage: string;
+      notionLessonPageId: string;
+    }>;
+  },
+  contract: RegenerationLaunchContract | null,
+): string {
   return JSON.stringify([
     draft.bookId,
     draft.language,
@@ -1048,8 +1052,7 @@ export function regenerationDraftSignature(draft: {
     draft.refreshExtraction,
     draft.acknowledged,
     draft.canarySize,
-    draft.provider,
-    draft.model,
+    contract,
     draft.mode,
     draft.publicationVersion,
     [...draft.destinationOverrides]

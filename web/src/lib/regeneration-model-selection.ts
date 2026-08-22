@@ -53,9 +53,12 @@ export function regenerationModelSelectionIssue(
   draft: GuidedRegenerationDraft,
   defaults: LaunchDefaults | undefined,
   manifest: ProviderModelManifest | undefined,
+  defaultsLoadFailed = false,
 ): string | null {
   if (draft.modelSelectionMode === "settings" && defaults === undefined) {
-    return "Settings defaults are still loading.";
+    return defaultsLoadFailed
+      ? "Settings defaults could not be loaded. Retry the Settings request below."
+      : "Settings defaults are still loading.";
   }
   const selected = effectiveRegenerationModels(draft, defaults);
   for (const role of ["content", "judge", "solver", "extract"] as const) {

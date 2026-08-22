@@ -41,13 +41,13 @@ import {
 } from "@/lib/regeneration-model-selection";
 import { createAndStartCanary } from "@/lib/regeneration-state";
 import type {
-  LaunchDefaults,
   RegenerationCampaignDetail,
   RegenerationCampaignDraft,
   RegenerationDestinationCheckRequest,
   RegenerationDestinationCheckResponse,
   RegenerationDestinationOverride,
   RegenerationEstimateRequest,
+  RegenerationLaunchContract,
   RegenerationPhasePlanRequest,
   RegenerationTargetReport,
   RegenerationWaveFailure,
@@ -171,9 +171,8 @@ function destinationCheckRequest(
 function estimateRequest(
   draft: RegenerationDraftState,
   canonicalPhases: string[],
-  defaults: LaunchDefaults | undefined,
+  contract: RegenerationLaunchContract | null,
 ): RegenerationEstimateRequest | null {
-  const contract = regenerationLaunchContract(draft, defaults);
   if (!contract) return null;
   return {
     publication_version: draft.publicationVersion,
@@ -193,9 +192,9 @@ function campaignDraft(
   approvedDestinationDigest: string,
   estimateLow: number | null,
   estimateHigh: number | null,
-  defaults: LaunchDefaults | undefined,
+  contract: RegenerationLaunchContract | null,
 ): RegenerationCampaignDraft | null {
-  const estimate = estimateRequest(draft, canonicalPhases, defaults);
+  const estimate = estimateRequest(draft, canonicalPhases, contract);
   if (!estimate) return null;
   return {
     ...estimate,
@@ -389,8 +388,16 @@ export function RegenerationPage() {
     enabled: Boolean(subject) && hasPhaseSelection,
   });
 
-  const modelIssue = regenerationModelSelectionIssue(draft, launchDefaults.data, manifest.data);
-  const estimateBody = estimateRequest(draft, canonicalPhases, launchDefaults.data);
+  const modelIssue = regenerationModelSelectionIssue(
+    draft,
+    launchDefaults.data,
+    manifest.data,
+    launchDefaults.isError,
+  );
+  const launchContract =
+    modelIssue === null ? regenerationLaunchContract(draft, launchDefaults.data) : null;
+  const draftSignature = regenerationDraftSignature(draft, launchContract);
+  const estimateBody = estimateRequest(draft, canonicalPhases, launchContract);
   const canEstimate =
     draft.selectedTocEntryIds.length > 0 &&
     hasPhaseSelection &&
@@ -436,7 +443,7 @@ export function RegenerationPage() {
     // three lessons stays on screen after the operator has deselected them —
     // describing a draft that no longer exists and blaming a selection that is
     // no longer there.
-    onMutate: () => setCreateErrorFor(regenerationDraftSignature(draft)),
+    onMutate: () => setCreateErrorFor(draftSignature),
     mutationFn: (body: RegenerationCampaignDraft) =>
       createAndStartCanary({
         request: body,
@@ -714,6 +721,8 @@ export function RegenerationPage() {
               }
               manifest={manifest.data}
               launchDefaults={launchDefaults.data}
+              launchDefaultsError={view(launchDefaults.error)}
+              onRetryLaunchDefaults={() => launchDefaults.refetch()}
               manifestError={view(manifest.error)}
               state={draft}
               draftWarning={draftWarning}
@@ -729,21 +738,19 @@ export function RegenerationPage() {
                 setDestinationReview(null);
               }}
               onCreateAndStart={() => {
-                if (!currentDestinations) return;
+                if (modelIssue || !launchContract || !currentDestinations) return;
                 const body = campaignDraft(
                   draft,
                   canonicalPhases,
                   currentDestinations.destination_digest,
                   estimate.data?.estimate?.low_usd ?? null,
                   estimate.data?.estimate?.high_usd ?? null,
-                  launchDefaults.data,
+                  launchContract,
                 );
                 if (body) createMut.mutate(body);
               }}
               starting={createMut.isPending}
-              createError={
-                createErrorFor === regenerationDraftSignature(draft) ? view(createMut.error) : null
-              }
+              createError={createErrorFor === draftSignature ? view(createMut.error) : null}
               onOpenCampaign={setSelectedId}
             />
           ) : (

@@ -130,6 +130,8 @@ test("the wizard passes the live Settings defaults into its Content step", () =>
       onChooseDestination: () => undefined,
       manifest,
       launchDefaults: defaults,
+      launchDefaultsError: null,
+      onRetryLaunchDefaults: () => undefined,
       manifestError: null,
       state: { ...defaultGuidedRegenerationDraft(), step: "content" as const },
       draftWarning: null,
@@ -186,6 +188,8 @@ test("valid Settings defaults make Review reachable without a draft content over
       onChooseDestination: () => undefined,
       manifest,
       launchDefaults: defaults,
+      launchDefaultsError: null,
+      onRetryLaunchDefaults: () => undefined,
       manifestError: null,
       state: {
         ...defaultGuidedRegenerationDraft(),
@@ -213,6 +217,7 @@ test("the review step names the source and all four frozen model choices", () =>
     createElement(ReviewStep, {
       draft: defaultGuidedRegenerationDraft(),
       launchDefaults: defaults,
+      modelIssue: null,
       estimate: null,
       destinations: null,
       checking: false,
@@ -234,4 +239,121 @@ test("the review step names the source and all four frozen model choices", () =>
   assert.match(html, /gemini\/gemini-3\.6-flash/);
   assert.match(html, /gemini\/gemini-3\.5-flash-lite/);
   assert.doesNotMatch(html, /not selected/);
+});
+
+test("the review step blocks paid creation when the current model contract is invalid", () => {
+  const html = renderToStaticMarkup(
+    createElement(ReviewStep, {
+      draft: defaultGuidedRegenerationDraft(),
+      launchDefaults: defaults,
+      modelIssue: "Judge model retired-flash is no longer available for gemini.",
+      estimate: {
+        target_count: 1,
+        phase_plan: {
+          subject: "math",
+          canonical_phases: ["reflection"],
+          selected_phases: ["reflection"],
+          auto_included_phases: [],
+          regenerated_phases: ["reflection"],
+          copied_phases: [],
+          excluded_affected_phases: [],
+          broken_dependency_edges: [],
+          refresh_extraction: false,
+          regenerated_phase_count: 1,
+          copied_phase_count: 0,
+          acknowledgement_required: false,
+          acknowledgement_message: null,
+        },
+        estimate: {
+          target_count: 1,
+          regenerated_phase_count: 1,
+          copied_phase_count: 0,
+          judge_call_count: 1,
+          extract_call_count: 0,
+          estimated_input_tokens: 1,
+          estimated_output_tokens: 1,
+          low_usd: 0.01,
+          high_usd: 0.02,
+          exact: false,
+          assumptions: [],
+        },
+        worker_executability: {
+          ok: true,
+          compatible_worker_ids: ["worker-1"],
+          reason: null,
+        },
+      },
+      destinations: {
+        ok: true,
+        target_count: 1,
+        checked_target_count: 1,
+        destination_digest: "digest",
+        destinations: [],
+      },
+      checking: false,
+      starting: false,
+      error: null,
+      onBack: () => undefined,
+      onCheckDestinations: () => undefined,
+      onChooseDestination: () => undefined,
+      onChange: () => undefined,
+      onStart: () => undefined,
+    }),
+  );
+
+  assert.match(html, /Judge model retired-flash is no longer available/);
+  assert.match(html, /<button[^>]*disabled=""[^>]*>Create campaign/);
+});
+
+test("a failed Settings-default request is visible and retryable", () => {
+  const html = renderToStaticMarkup(
+    createElement(RegenerationWizard, {
+      books: [],
+      booksLoading: false,
+      booksError: null,
+      sources: [],
+      ineligible: [],
+      sourcesLoading: false,
+      sourcesError: null,
+      pickBookReason: null,
+      phaseCatalog: ["extract", "reflection"],
+      plan: null,
+      planLoading: false,
+      planError: null,
+      estimate: null,
+      estimateError: null,
+      destinations: null,
+      destinationsChecking: false,
+      destinationError: null,
+      onCheckDestinations: () => undefined,
+      onChooseDestination: () => undefined,
+      manifest,
+      launchDefaults: undefined,
+      launchDefaultsError: {
+        title: "Could not load Settings defaults",
+        message: "The Settings request failed.",
+        details: [],
+        hint: null,
+        code: null,
+        status: 500,
+        campaignIds: [],
+      },
+      onRetryLaunchDefaults: () => undefined,
+      manifestError: null,
+      state: { ...defaultGuidedRegenerationDraft(), step: "content" as const },
+      draftWarning: null,
+      onChange: () => undefined,
+      onDiscard: () => undefined,
+      onCreateAndStart: () => undefined,
+      starting: false,
+      createError: null,
+      onOpenCampaign: () => undefined,
+    }),
+  );
+
+  assert.match(html, /Could not load Settings defaults/);
+  assert.match(html, /The Settings request failed/);
+  assert.match(html, />Retry Settings defaults</);
+  assert.match(html, /Settings defaults could not be loaded/);
+  assert.doesNotMatch(html, /Settings defaults are still loading/);
 });

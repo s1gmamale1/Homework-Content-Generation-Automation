@@ -204,6 +204,7 @@ export interface ReportAction {
 }
 
 export interface GuidedReviewGateInput {
+  modelIssue: string | null;
   estimateReady: boolean;
   workerOk: boolean;
   destinationsOk: boolean;
@@ -241,6 +242,9 @@ export function lessonCountLabel(count: number): string {
 
 /** The review step can advance only when every server authority has answered. */
 export function reviewGate(input: GuidedReviewGateInput): GuidedReviewGate {
+  if (input.modelIssue) {
+    return { ok: false, reason: input.modelIssue };
+  }
   if (!input.estimateReady) {
     return { ok: false, reason: "Wait for the campaign estimate before reviewing destinations." };
   }
