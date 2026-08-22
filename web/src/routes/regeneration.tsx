@@ -651,6 +651,25 @@ export function RegenerationPage() {
         </div>
 
         <div className="space-y-5">
+          <details className={cn(CARD, "p-4")}>
+            <summary className="cursor-pointer text-sm font-semibold text-white/70">
+              Previous campaigns
+            </summary>
+            <div className="mt-4">
+              <CampaignList
+                campaigns={campaigns.data?.campaigns ?? []}
+                count={campaigns.data?.count ?? null}
+                limit={campaigns.data?.limit ?? 0}
+                offset={campaigns.data?.offset ?? 0}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                isLoading={campaigns.isLoading}
+                error={campaigns.error}
+                onRetry={() => campaigns.refetch()}
+              />
+            </div>
+          </details>
+
           {selectedId === null ? (
             <RegenerationWizard
               books={books.data}
@@ -799,25 +818,6 @@ export function RegenerationPage() {
               )}
             </div>
           )}
-
-          <details className={cn(CARD, "p-4")}>
-            <summary className="cursor-pointer text-sm font-semibold text-white/70">
-              Previous campaigns
-            </summary>
-            <div className="mt-4">
-              <CampaignList
-                campaigns={campaigns.data?.campaigns ?? []}
-                count={campaigns.data?.count ?? null}
-                limit={campaigns.data?.limit ?? 0}
-                offset={campaigns.data?.offset ?? 0}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                isLoading={campaigns.isLoading}
-                error={campaigns.error}
-                onRetry={() => campaigns.refetch()}
-              />
-            </div>
-          </details>
         </div>
       </div>
     </div>
