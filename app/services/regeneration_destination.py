@@ -14,6 +14,8 @@ from dataclasses import dataclass
 from typing import Callable, Literal, Optional, Sequence
 from uuid import UUID
 
+from notion_client.errors import APIErrorCode, APIResponseError
+
 from app.config import settings
 from app.services import notion_archive
 from app.services.notion.client import NotionClientWrapper
@@ -51,6 +53,10 @@ class DestinationSource:
     page_start: Optional[int]
     notion_lesson_page_id: Optional[str]
     lesson_title: str
+    # Exact V1 Homework child identity.  Older rows often predate the separate
+    # Lesson Topic pointer; asking Notion for this page's parent recovers that
+    # identity without guessing from a title that may since be disambiguated.
+    notion_homework_page_id: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -240,9 +246,20 @@ def _scan_destinations(
             child_ids = {str(page.get("id")) for page in lesson_children}
             if hint and hint in child_ids:
                 chosen_id = hint
-            elif len(candidates) == 1:
+            else:
+                homework_hint = (source.notion_homework_page_id or "").strip()
+                if homework_hint:
+                    try:
+                        legacy_parent = client.get_page_parent(homework_hint)
+                    except APIResponseError as exc:
+                        if exc.code != APIErrorCode.ObjectNotFound:
+                            raise
+                        legacy_parent = None
+                    if legacy_parent and legacy_parent in child_ids:
+                        chosen_id = legacy_parent
+            if chosen_id is None and len(candidates) == 1:
                 chosen_id = candidates[0].page_id
-            elif len(candidates) > 1:
+            elif chosen_id is None and len(candidates) > 1:
                 resolutions.append(_blocked(
                     source,
                     "multiple Lesson Topic pages match; an operator must choose",

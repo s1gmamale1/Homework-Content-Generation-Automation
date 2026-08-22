@@ -967,6 +967,7 @@ class RegenerationCampaignService:
                     page_start=source.page_start,
                     notion_lesson_page_id=source.notion_lesson_page_id,
                     lesson_title=lesson_title,
+                    notion_homework_page_id=source.notion_homework_page_id,
                 ))
 
         return PreparedCampaign(
@@ -1047,6 +1048,7 @@ class RegenerationCampaignService:
                     lesson_title=notion_archive.resolve_lesson_title(
                         source, sibling_cache[key]
                     ),
+                    notion_homework_page_id=source.notion_homework_page_id,
                 ))
             return tuple(result)
 

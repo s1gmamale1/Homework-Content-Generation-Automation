@@ -32,7 +32,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
+import httpx
 import pytest
+from notion_client.errors import APIErrorCode, APIResponseError
 
 import app.services.regeneration_destination as dest
 from app.services.notion.page_creator import _normalize
@@ -186,6 +188,7 @@ def source(
     section_number: Optional[str] = "7",
     section_title: str = "Photosynthesis",
     book_filename: str = "biology7.pdf",
+    homework_pointer: Optional[str] = None,
 ) -> "dest.DestinationSource":
     return dest.DestinationSource(
         toc_entry_id=toc_entry_id or uuid.uuid4(),
@@ -200,6 +203,7 @@ def source(
         page_start=41,
         notion_lesson_page_id=pointer,
         lesson_title=title,
+        notion_homework_page_id=homework_pointer,
     )
 
 
@@ -231,6 +235,73 @@ async def test_valid_stored_pointer_is_reused(resolver, notion):
     assert _one(result).status == "reuse"
     assert _one(result).container_policy == "reuse"
     assert _one(result).container_page_id == container
+    assert result.ok is True
+
+
+async def test_v1_homework_parent_is_identity_only_inside_target_container(
+    resolver, notion
+):
+    """A pre-backfill lesson can have an exact V1 Homework pointer but no
+    Lesson Topic pointer.  Its V1 parent is stronger identity than a title:
+    title disambiguation may since have added page/id suffixes, as happened in
+    production, without making a second Lesson Topic the right destination."""
+    container = _container(notion)
+    legacy_lesson = notion.seed(container, "7 Photosynthesis", "legacy-lesson")
+    legacy_homework = notion.seed(legacy_lesson, "Homework", "legacy-homework")
+    matching = source(
+        pointer=None,
+        homework_pointer=legacy_homework,
+        title="7 Photosynthesis · p.41 · deadbeef",
+    )
+    ru_container = _container(notion, parent=_SUBJECT_RU, page_id="container-ru")
+    foreign = source(
+        pointer=None,
+        homework_pointer=legacy_homework,
+        language="ru",
+        title="7 Photosynthesis · p.41 · cafebabe",
+    )
+
+    result = await resolver.resolve(sources=[matching, foreign], overrides=())
+
+    adopted, refused_foreign = result.resolutions
+    assert adopted.status == "reuse"
+    assert adopted.lesson_policy == "reuse"
+    assert adopted.lesson_page_id == legacy_lesson
+    assert adopted.container_page_id == container
+    assert refused_foreign.status == "create"
+    assert refused_foreign.lesson_policy == "create"
+    assert refused_foreign.lesson_page_id is None
+    assert refused_foreign.container_page_id == ru_container
+    assert result.ok is True
+
+
+async def test_a_deleted_v1_homework_pointer_falls_through_to_title_matching(
+    resolver, notion, monkeypatch
+):
+    container = _container(notion)
+    notion.seed(container, _TITLE, "lesson-1")
+    real_get_parent = notion.get_page_parent
+
+    def missing_homework(page_id: str) -> Optional[str]:
+        if page_id == "deleted-homework":
+            raise APIResponseError(
+                code=APIErrorCode.ObjectNotFound,
+                status=404,
+                message="Could not find page",
+                headers=httpx.Headers(),
+                raw_body_text="",
+            )
+        return real_get_parent(page_id)
+
+    monkeypatch.setattr(notion, "get_page_parent", missing_homework)
+
+    result = await resolver.resolve(
+        sources=[source(pointer=None, homework_pointer="deleted-homework")],
+        overrides=(),
+    )
+
+    assert _one(result).status == "reuse"
+    assert _one(result).lesson_page_id == "lesson-1"
     assert result.ok is True
 
 

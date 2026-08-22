@@ -313,8 +313,14 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
 
     toc_id, book_id = uuid.uuid4(), uuid.uuid4()
     rows = [
-        (toc_id, "uz", book_id, "7", "b.pdf", "1", "L1", "C1", 4, None, 3),
-        (toc_id, "ru", book_id, "7", "b.pdf", "1", "L1", "C1", 4, "pg", 3),
+        (
+            toc_id, "uz", book_id, "7", "b.pdf", "1", "L1", "C1", 4,
+            None, 3, "hw-uz",
+        ),
+        (
+            toc_id, "ru", book_id, "7", "b.pdf", "1", "L1", "C1", 4,
+            "pg", 3, "hw-ru",
+        ),
     ]
     session = _FakeSession(execute_results=[rows])
     got = await repo.candidate_lineages(
@@ -332,8 +338,10 @@ async def test_candidate_lineages_returns_one_row_per_lesson_and_language():
     assert got[0].chapter_title == "C1"
     assert got[0].page_start == 4
     assert got[0].notion_lesson_page_id is None
+    assert got[0].notion_homework_page_id == "hw-uz"
     assert got[0].order_index == 3
     assert got[1].notion_lesson_page_id == "pg"
+    assert got[1].notion_homework_page_id == "hw-ru"
     sql = _sql(session.statements[0])
     assert "DISTINCT" in sql
     # `homework_jobs.subject` is job-varying (a book's subject is editable), so

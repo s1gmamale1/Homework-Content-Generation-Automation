@@ -57,7 +57,8 @@ class LineageCandidate:
     discovery + Notion-preflight passes need, gathered in ONE query.
 
     The Notion fields (``grade``, ``book_filename``, the section columns,
-    ``notion_lesson_page_id``) are here rather than fetched later because
+    ``notion_lesson_page_id``, ``notion_homework_page_id``) are here rather
+    than fetched later because
     preflight must answer "is there a destination for this lesson" for a whole
     selection at once; a per-lesson round trip would turn a 200-lesson campaign
     preflight into 600 queries.
@@ -82,6 +83,7 @@ class LineageCandidate:
     page_start: Optional[int]
     notion_lesson_page_id: Optional[str]
     order_index: int
+    notion_homework_page_id: Optional[str] = None
 
 
 async def latest_v1_source_job(
@@ -345,6 +347,7 @@ async def candidate_lineages(
             TOCEntry.page_start,
             TOCEntry.notion_lesson_page_id,
             TOCEntry.order_index,
+            TOCEntry.notion_homework_page_id,
         )
         .join(TOCEntry, TOCEntry.id == HomeworkJob.toc_entry_id)
         .join(Book, Book.id == HomeworkJob.book_id)
@@ -382,6 +385,7 @@ async def candidate_lineages(
             page_start=row[8],
             notion_lesson_page_id=row[9],
             order_index=row[10],
+            notion_homework_page_id=row[11],
         )
         for row in rows
     ]
