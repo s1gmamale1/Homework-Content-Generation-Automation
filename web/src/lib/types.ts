@@ -897,15 +897,30 @@ export interface RegenerationPhasePlanRequest extends RegenerationPhaseSelection
 /** `regeneration.EstimateRequest`. `extra="forbid"`: the create-only fields
  *  below must NOT appear in this body. */
 export interface RegenerationEstimateRequest extends RegenerationPhaseSelection {
+  publication_version: number;
   selection: RegenerationSelection;
   contract: RegenerationLaunchContract;
   canary_size: number;
+}
+
+export interface RegenerationDestinationOverride {
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  notion_lesson_page_id: string;
+}
+
+export interface RegenerationDestinationCheckRequest {
+  publication_version: number;
+  selection: RegenerationSelection;
+  destination_overrides: RegenerationDestinationOverride[];
 }
 
 /** `regeneration.CreateCampaignRequest` — the estimate body plus the numbers
  *  the operator was SHOWN, echoed back so the campaign records what was
  *  approved rather than a figure recomputed at insert time. */
 export interface RegenerationCampaignDraft extends RegenerationEstimateRequest {
+  destination_overrides: RegenerationDestinationOverride[];
+  approved_destination_digest: string;
   estimated_cost_low_usd: number | null;
   estimated_cost_high_usd: number | null;
   app_git_revision: string | null;
@@ -1015,6 +1030,43 @@ export interface RegenerationPreflight {
   failures: RegenerationPreflightFailure[];
 }
 
+export interface RegenerationDestinationCandidate {
+  page_id: string;
+  title: string;
+  notion_page_url: string;
+}
+
+export interface RegenerationDestinationResolution {
+  toc_entry_id: string;
+  output_language: RegenerationOutputLanguage;
+  lesson_title: string;
+  status: "reuse" | "create" | "ambiguous" | "blocked";
+  container_policy: "reuse" | "create" | null;
+  container_page_id: string | null;
+  lesson_policy: "reuse" | "create" | null;
+  lesson_page_id: string | null;
+  notion_page_url: string | null;
+  candidates: RegenerationDestinationCandidate[];
+  reason: string | null;
+}
+
+export interface RegenerationDestinationCheckResponse {
+  ok: boolean;
+  target_count: number;
+  checked_target_count: number;
+  destination_digest: string;
+  destinations: RegenerationDestinationResolution[];
+}
+
+export interface RegenerationWorkerExecutability {
+  ok: boolean;
+  workers_online: number;
+  compatible_worker_ids: string[];
+  required_api_providers: string[];
+  fleet_api_paused: boolean;
+  reason: string | null;
+}
+
 /* ── estimate ─────────────────────────────────────────────────────────── */
 
 /** `regeneration.EstimateLineOut`. `is_unpriced` (no RATE) and
@@ -1062,12 +1114,15 @@ export interface RegenerationEstimateTotals {
 export interface RegenerationEstimateResponse {
   target_count: number;
   canary_size: number;
+  publication_version: number;
   acknowledgement_required: boolean;
   sources: RegenerationEligibleSource[];
   ineligible: RegenerationIneligibleLineage[];
   phase_plans: RegenerationPhasePlan[];
   estimate: RegenerationEstimateTotals | null;
   preflight: RegenerationPreflight;
+  worker_executability: RegenerationWorkerExecutability;
+  source_availability_warnings: string[];
 }
 
 /* ── cost, provenance, lesson ─────────────────────────────────────────── */
@@ -1140,6 +1195,13 @@ export interface RegenerationTargetReport {
   publication_version: number | null;
   notion_page_id: string | null;
   notion_page_url: string | null;
+  notion_container_policy: "reuse" | "create" | null;
+  reviewed_notion_container_page_id: string | null;
+  reviewed_notion_container_page_url: string | null;
+  notion_parent_policy: "reuse" | "create" | null;
+  reviewed_notion_lesson_page_id: string | null;
+  reviewed_notion_lesson_page_url: string | null;
+  reviewed_notion_lesson_title: string | null;
   publication_released_at: string | null;
   publication_attempts: number;
   publication_next_attempt_at: string | null;
@@ -1218,6 +1280,8 @@ export interface RegenerationCampaignSummary {
   exclusion_acknowledged: boolean;
   requested_phases: string[];
   excluded_phases: string[];
+  publication_version: number | null;
+  publication_version_label: string;
   app_git_revision: string | null;
   estimated_cost_low_usd: number | null;
   estimated_cost_high_usd: number | null;

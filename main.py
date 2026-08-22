@@ -198,28 +198,33 @@ async def lifespan(app: FastAPI):
     # rather than a silent no-op: the operator asked for a publisher.
     publisher_stop: Optional[asyncio.Event] = None
     publisher_task: Optional[asyncio.Task] = None
-    if settings.regeneration_enabled and settings.regeneration_publisher_enabled:
+    unavailable = None
+    if settings.regeneration_enabled:
         unavailable = regeneration_publisher.publication_unavailable_reason()
         if unavailable is not None:
             log.warning(
-                f"Regeneration publisher NOT started: {unavailable}. The rest of "
-                "the regeneration feature (drafting, estimation, canary "
-                "generation) is unaffected, and approval is refused with a 409 "
-                "until a Notion destination is configured."
+                f"Regeneration publisher/Notion readiness unavailable: {unavailable}. "
+                "DB-only estimation remains available, but destination check, "
+                "campaign creation, canary start and publication are blocked "
+                "until Notion is configured."
             )
-        else:
-            publisher_stop = asyncio.Event()
-            publisher_task = asyncio.create_task(
-                regeneration_publisher.build_publisher_from_settings().run_forever(
-                    publisher_stop
-                ),
-                name="regeneration-publisher",
-            )
-            log.info(
-                "Regeneration publisher started | "
-                f"interval={settings.regeneration_publisher_interval_seconds}s "
-                f"lease={settings.regeneration_publisher_lease_seconds}s"
-            )
+    if (
+        settings.regeneration_enabled
+        and settings.regeneration_publisher_enabled
+        and unavailable is None
+    ):
+        publisher_stop = asyncio.Event()
+        publisher_task = asyncio.create_task(
+            regeneration_publisher.build_publisher_from_settings().run_forever(
+                publisher_stop
+            ),
+            name="regeneration-publisher",
+        )
+        log.info(
+            "Regeneration publisher started | "
+            f"interval={settings.regeneration_publisher_interval_seconds}s "
+            f"lease={settings.regeneration_publisher_lease_seconds}s"
+        )
 
     try:
         yield

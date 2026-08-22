@@ -52,7 +52,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import Optional, Sequence
+from typing import Mapping, Optional, Sequence
 from uuid import UUID
 
 from loguru import logger
@@ -71,6 +71,7 @@ from app.repositories import phase_outputs as phase_repo
 from app.repositories import regeneration_campaigns as campaigns_repo
 from app.repositories import regeneration_sources as sources_repo
 from app.repositories import regeneration_targets as targets_repo
+from app.repositories import toc_entries as toc_repo
 from app.schemas.regeneration_contract import (
     LaunchContract,
     LaunchDefaultsSnapshot,
@@ -78,11 +79,28 @@ from app.schemas.regeneration_contract import (
     ensure_resolved,
     resolve_launch_contract,
 )
-from app.services import agent_models, regeneration_job_state, regeneration_snapshot
+from app.services import (
+    agent_models,
+    notion_archive,
+    regeneration_job_state,
+    regeneration_snapshot,
+)
 from app.services import regeneration_discovery as discovery
+from app.services.regeneration_destination import (
+    DestinationOverride,
+    DestinationPreflight,
+    DestinationResolution,
+    DestinationSource,
+    resolve_destinations,
+)
+from app.services.regeneration_executability import (
+    WorkerExecutability,
+    check_active_workers,
+)
 from app.services.job_reactivation import retired_models_in_job
 from app.services.launch_stagger import stagger_offset
 from app.services.regeneration_planner import (
+    RegenerationPhasePlan,
     build_phase_plan,
     validate_complete_snapshot,
 )
@@ -102,12 +120,15 @@ __all__ = [
     "CampaignSelection",
     "CanaryNotReviewable",
     "CreateCampaignSpec",
+    "DestinationResolutionBlocked",
+    "DestinationReviewChanged",
     "IllegalCampaignAction",
     "IllegalTargetAction",
     "LaunchStaggerPlan",
     "NoEligibleTargets",
     "NonApiTransport",
     "PartialWaveRelease",
+    "PreparedCampaign",
     "PreflightBlocked",
     "RegenerationCampaignService",
     "RequestedPublicationVersionConflict",
@@ -118,6 +139,7 @@ __all__ = [
     "TerminalCampaignWithLiveTargets",
     "UnboundedSelection",
     "WaveFailure",
+    "WorkerPreflightBlocked",
     "assert_canary_gate_ready",
     "assert_not_hiding_live_targets",
     "derive_campaign_status",
@@ -248,6 +270,30 @@ class RequestedPublicationVersionConflict(CampaignError):
             f"these lessons: {listed} — pick a higher version, or drop them "
             "from the selection"
         )
+
+
+class DestinationReviewChanged(CampaignError):
+    """The freshly resolved Notion decision no longer matches the approval."""
+
+
+class DestinationResolutionBlocked(CampaignError):
+    """At least one selected lineage has no safe reviewed destination."""
+
+    def __init__(self, resolutions: Sequence[DestinationResolution]):
+        self.resolutions = tuple(resolutions)
+        blocked = [item for item in self.resolutions if item.status not in ("reuse", "create")]
+        super().__init__(
+            f"{len(blocked)} destination(s) are unresolved or ambiguous — "
+            "review the Notion destination list before creating the campaign"
+        )
+
+
+class WorkerPreflightBlocked(CampaignError):
+    """No current worker can execute the frozen API contract."""
+
+    def __init__(self, result: WorkerExecutability):
+        self.result = result
+        super().__init__(result.reason or "no compatible worker is available")
 
 
 class NonApiTransport(CampaignError):
@@ -505,6 +551,8 @@ class CreateCampaignSpec:
     #: makes the public request require an integer, so every newly created
     #: operator campaign is exact-versioned from then on.
     publication_version: Optional[int] = None
+    destination_overrides: tuple[DestinationOverride, ...] = ()
+    approved_destination_digest: str = ""
     excluded_affected_phases: tuple[str, ...] = ()
     refresh_extraction: bool = False
     exclusion_acknowledged: bool = False
@@ -514,6 +562,19 @@ class CreateCampaignSpec:
     app_git_revision: Optional[str] = None
     actor: str = ""
     notes: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class PreparedCampaign:
+    """All database-derived facts copied out before the remote Notion scan."""
+
+    candidates: tuple[discovery.SourceCandidate, ...]
+    ordered: tuple[discovery.SourceCandidate, ...]
+    contract: ResolvedLaunchContract
+    plans: Mapping[UUID, RegenerationPhasePlan]
+    destination_sources: tuple[DestinationSource, ...]
+    worker_executability: WorkerExecutability
+    source_availability_warnings: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -770,12 +831,347 @@ class RegenerationCampaignService:
     engine; production passes nothing.
     """
 
-    def __init__(self, session_factory=None):
+    def __init__(
+        self,
+        session_factory=None,
+        *,
+        destination_resolver=resolve_destinations,
+        worker_checker=check_active_workers,
+    ):
         self._sessions = session_factory or SessionLocal
+        self._destination_resolver = destination_resolver
+        self._worker_checker = worker_checker
 
     # ─── public API ──────────────────────────────────────────────────────
 
     async def create_campaign(self, spec: CreateCampaignSpec) -> RegenerationCampaign:
+        """Compose DB preparation, remote review revalidation, and short insert.
+
+        Null-version direct callers are historical/internal and retain the old
+        transaction-only path. Every public campaign is exact-versioned and
+        must carry the digest returned by the explicit destination review.
+        """
+        if spec.publication_version is None:
+            return await self._create_campaign_legacy(spec)
+        if spec.publication_version < 2:
+            raise ValueError(
+                "publication_version must be >= 2 — logical V1 is the "
+                "pre-existing Homework page"
+            )
+        if not spec.approved_destination_digest:
+            raise ValueError(
+                "approved_destination_digest is required for an exact-version "
+                "campaign — run the Notion destination check first"
+            )
+        prepared = await self.prepare_campaign(spec)
+        destinations = await self.resolve_prepared_destinations(prepared, spec)
+        return await self.insert_prepared_campaign(prepared, destinations, spec)
+
+    async def prepare_campaign(self, spec: CreateCampaignSpec) -> PreparedCampaign:
+        """Read and copy all DB facts; return with no session or row lock held."""
+        if spec.canary_size < 1:
+            raise ValueError("canary_size must be at least 1")
+        if spec.publication_version is None or spec.publication_version < 2:
+            raise ValueError("publication_version must be >= 2")
+        require_bounded_selection(spec.selection)
+
+        async with self._sessions() as session:
+            contract = await self._resolve_contract_once(session, spec.contract)
+            selection = spec.selection
+            try:
+                candidates = await discovery.list_source_candidates(
+                    session,
+                    book_ids=selection.book_ids or None,
+                    toc_entry_ids=selection.toc_entry_ids or None,
+                    output_languages=selection.output_languages or None,
+                )
+            except discovery.DiscoverySelectionTooLarge as exc:
+                raise SelectionDiscoveryTooLarge(
+                    exc.count_at_least, exc.maximum
+                ) from exc
+            eligible = [candidate for candidate in candidates if candidate.source]
+            require_selection_within_cap(
+                len(eligible), what="create a regeneration campaign"
+            )
+            if not eligible:
+                raise NoEligibleTargets(candidates)
+
+            lineages = [
+                (candidate.toc_entry_id, candidate.output_language)
+                for candidate in eligible
+            ]
+            active = await targets_repo.active_targets_for_lineages(session, lineages)
+            if active:
+                raise ActiveLineageConflict(
+                    [(target.toc_entry_id, target.output_language) for target in active]
+                )
+            conflicts = await sources_repo.publication_version_conflicts(
+                session,
+                sources=[candidate.source for candidate in eligible],
+                requested_version=spec.publication_version,
+            )
+            if conflicts:
+                raise RequestedPublicationVersionConflict(conflicts)
+
+            worker = await self._worker_checker(session, contract)
+            if not worker.ok:
+                raise WorkerPreflightBlocked(worker)
+
+            ordered = tuple(sorted(
+                eligible,
+                key=lambda candidate: target_sort_key(
+                    candidate.source.book_id,
+                    candidate.source.order_index,
+                    candidate.output_language,
+                    candidate.source.source_job_id,
+                ),
+            ))
+            plans: dict[UUID, RegenerationPhasePlan] = {}
+            destination_sources: list[DestinationSource] = []
+            sibling_cache: dict[tuple[str, Optional[str]], Sequence] = {}
+            for candidate in ordered:
+                source = candidate.source
+                plans[source.source_job_id] = build_phase_plan(
+                    subject=source.subject,
+                    selected_phases=spec.selected_phases,
+                    excluded_affected_phases=spec.excluded_affected_phases,
+                    refresh_extraction=spec.refresh_extraction,
+                    exclusion_acknowledged=spec.exclusion_acknowledged,
+                )
+                sibling_key = (source.subject, source.grade)
+                if sibling_key not in sibling_cache:
+                    sibling_cache[sibling_key] = (
+                        await toc_repo.titles_for_subject_grade(
+                            session, subject=source.subject, grade=source.grade
+                        )
+                    )
+                lesson_title = notion_archive.resolve_lesson_title(
+                    source, sibling_cache[sibling_key]
+                )
+                destination_sources.append(DestinationSource(
+                    toc_entry_id=source.toc_entry_id,
+                    output_language=source.output_language,
+                    source_job_id=source.source_job_id,
+                    subject=source.subject,
+                    grade=source.grade,
+                    book_filename=source.book_filename,
+                    section_number=source.section_number,
+                    section_title=source.section_title,
+                    chapter_title=source.chapter_title,
+                    page_start=source.page_start,
+                    notion_lesson_page_id=source.notion_lesson_page_id,
+                    lesson_title=lesson_title,
+                ))
+
+        return PreparedCampaign(
+            candidates=tuple(candidates),
+            ordered=ordered,
+            contract=contract,
+            plans=plans,
+            destination_sources=tuple(destination_sources),
+            worker_executability=worker,
+        )
+
+    async def resolve_prepared_destinations(
+        self, prepared: PreparedCampaign, spec: CreateCampaignSpec
+    ) -> DestinationPreflight:
+        """Run the bounded Notion scan while no database session is open."""
+        assert spec.publication_version is not None
+        return await self._destination_resolver(
+            sources=prepared.destination_sources,
+            requested_version=spec.publication_version,
+            overrides=spec.destination_overrides,
+        )
+
+    async def load_destination_sources(
+        self,
+        selection: CampaignSelection,
+        *,
+        publication_version: int,
+    ) -> tuple[DestinationSource, ...]:
+        """Copy the explicit review selection out of one short read session."""
+        require_bounded_selection(selection)
+        async with self._sessions() as session:
+            try:
+                candidates = await discovery.list_source_candidates(
+                    session,
+                    book_ids=selection.book_ids or None,
+                    toc_entry_ids=selection.toc_entry_ids or None,
+                    output_languages=selection.output_languages or None,
+                )
+            except discovery.DiscoverySelectionTooLarge as exc:
+                raise SelectionDiscoveryTooLarge(
+                    exc.count_at_least, exc.maximum
+                ) from exc
+            eligible = [item for item in candidates if item.source]
+            require_selection_within_cap(
+                len(eligible), what="check Notion destinations"
+            )
+            if not eligible:
+                raise NoEligibleTargets(candidates)
+            conflicts = await sources_repo.publication_version_conflicts(
+                session,
+                sources=[item.source for item in eligible],
+                requested_version=publication_version,
+            )
+            if conflicts:
+                raise RequestedPublicationVersionConflict(conflicts)
+
+            sibling_cache: dict[tuple[str, Optional[str]], Sequence] = {}
+            result: list[DestinationSource] = []
+            for candidate in eligible:
+                source = candidate.source
+                key = (source.subject, source.grade)
+                if key not in sibling_cache:
+                    sibling_cache[key] = await toc_repo.titles_for_subject_grade(
+                        session, subject=source.subject, grade=source.grade
+                    )
+                result.append(DestinationSource(
+                    toc_entry_id=source.toc_entry_id,
+                    output_language=source.output_language,
+                    source_job_id=source.source_job_id,
+                    subject=source.subject,
+                    grade=source.grade,
+                    book_filename=source.book_filename,
+                    section_number=source.section_number,
+                    section_title=source.section_title,
+                    chapter_title=source.chapter_title,
+                    page_start=source.page_start,
+                    notion_lesson_page_id=source.notion_lesson_page_id,
+                    lesson_title=notion_archive.resolve_lesson_title(
+                        source, sibling_cache[key]
+                    ),
+                ))
+            return tuple(result)
+
+    async def insert_prepared_campaign(
+        self,
+        prepared: PreparedCampaign,
+        destinations: DestinationPreflight,
+        spec: CreateCampaignSpec,
+    ) -> RegenerationCampaign:
+        """Recheck mutable DB facts, then freeze the reviewed campaign quickly."""
+        if not destinations.ok:
+            raise DestinationResolutionBlocked(destinations.resolutions)
+        if destinations.digest != spec.approved_destination_digest:
+            raise DestinationReviewChanged(
+                "the Notion destination review changed after approval — check "
+                "destinations again; no campaign was created"
+            )
+        decisions = {
+            (item.toc_entry_id, item.output_language): item
+            for item in destinations.resolutions
+        }
+        expected_sources = {
+            (candidate.toc_entry_id, candidate.output_language):
+            candidate.source.source_job_id
+            for candidate in prepared.ordered
+        }
+        if (
+            destinations.checked_target_count != len(expected_sources)
+            or len(destinations.resolutions) != len(expected_sources)
+            or set(decisions) != set(expected_sources)
+        ):
+            raise DestinationReviewChanged(
+                "the Notion destination review did not cover every selected "
+                "target exactly once — check destinations again; no campaign "
+                "was created"
+            )
+
+        async with self._sessions() as session:
+            selection = spec.selection
+            fresh_candidates = await discovery.list_source_candidates(
+                session,
+                book_ids=selection.book_ids or None,
+                toc_entry_ids=selection.toc_entry_ids or None,
+                output_languages=selection.output_languages or None,
+            )
+            fresh_eligible = [item for item in fresh_candidates if item.source]
+            fresh_sources = {
+                (item.toc_entry_id, item.output_language): item.source.source_job_id
+                for item in fresh_eligible
+            }
+            if fresh_sources != expected_sources:
+                raise DestinationReviewChanged(
+                    "the selected source snapshots changed during destination "
+                    "review — estimate and check destinations again"
+                )
+            lineages = list(expected_sources)
+            active = await targets_repo.active_targets_for_lineages(session, lineages)
+            if active:
+                raise ActiveLineageConflict(
+                    [(target.toc_entry_id, target.output_language) for target in active]
+                )
+            conflicts = await sources_repo.publication_version_conflicts(
+                session,
+                sources=[item.source for item in fresh_eligible],
+                requested_version=spec.publication_version,
+            )
+            if conflicts:
+                raise RequestedPublicationVersionConflict(conflicts)
+            worker = await self._worker_checker(session, prepared.contract)
+            if not worker.ok:
+                raise WorkerPreflightBlocked(worker)
+
+            canary_size = min(spec.canary_size, len(prepared.ordered))
+            campaign = await campaigns_repo.create_campaign(
+                session,
+                selection_spec={
+                    **selection.to_json(),
+                    "actor": spec.actor,
+                    "notes": spec.notes,
+                    "ineligible": [
+                        {
+                            "toc_entry_id": str(item.toc_entry_id),
+                            "output_language": item.output_language,
+                            "reasons": list(item.reasons),
+                        }
+                        for item in prepared.candidates if item.source is None
+                    ],
+                },
+                requested_phases=list(spec.selected_phases),
+                excluded_phases=list(spec.excluded_affected_phases),
+                launch_contract=prepared.contract.model_dump(),
+                refresh_extraction=spec.refresh_extraction,
+                exclusion_acknowledged=spec.exclusion_acknowledged,
+                canary_size=canary_size,
+                estimated_cost_low_usd=spec.estimated_cost_low_usd,
+                estimated_cost_high_usd=spec.estimated_cost_high_usd,
+                app_git_revision=spec.app_git_revision,
+                publication_version=spec.publication_version,
+            )
+            created: list[tuple[object, RegenerationTarget]] = []
+            try:
+                for candidate in prepared.ordered:
+                    source = candidate.source
+                    decision = decisions[(candidate.toc_entry_id, candidate.output_language)]
+                    target = await targets_repo.create_target(
+                        session,
+                        campaign_id=campaign.id,
+                        toc_entry_id=candidate.toc_entry_id,
+                        output_language=candidate.output_language,
+                        phase_plan=prepared.plans[source.source_job_id].to_json(),
+                        source_job_id=source.source_job_id,
+                        is_canary=False,
+                        status="planned",
+                        notion_container_policy=decision.container_policy,
+                        reviewed_notion_container_page_id=decision.container_page_id,
+                        notion_parent_policy=decision.lesson_policy,
+                        reviewed_notion_lesson_page_id=decision.lesson_page_id,
+                        reviewed_notion_lesson_title=decision.lesson_title,
+                    )
+                    created.append((candidate, target))
+                for _candidate, target in created[:canary_size]:
+                    target.is_canary = True
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                raise ActiveLineageConflict(lineages) from exc
+            return campaign
+
+    async def _create_campaign_legacy(
+        self, spec: CreateCampaignSpec
+    ) -> RegenerationCampaign:
         """Draft a campaign: resolve the contract ONCE, freeze every target's
         source and phase plan, pick the canaries. No job, no external call.
 
@@ -947,6 +1343,185 @@ class RegenerationCampaignService:
             created.append((candidate, target))
 
     async def launch_canary(self, campaign_id: UUID) -> RegenerationCampaign:
+        campaign = await self._read_campaign(campaign_id)
+        if campaign.publication_version is None:
+            return await self._launch_canary_legacy(campaign_id)
+        return await self._launch_canary_reviewed(campaign_id)
+
+    async def _launch_canary_reviewed(
+        self, campaign_id: UUID
+    ) -> RegenerationCampaign:
+        """Re-prove the frozen destination before the first paid revision job."""
+        async with self._sessions() as session:
+            campaign = await campaigns_repo.get_campaign(session, campaign_id)
+            if campaign is None:
+                raise CampaignNotFound(
+                    f"regeneration campaign {campaign_id} not found"
+                )
+            self._assert_canary_launchable(campaign, campaign_id)
+            contract = self._stored_contract(campaign, what="launch the canary")
+            targets = await targets_repo.list_for_campaign(session, campaign_id)
+            if not targets:
+                raise IllegalCampaignAction(
+                    f"campaign {campaign_id} has no targets to launch"
+                )
+            worker = await self._worker_checker(session, contract)
+            if not worker.ok:
+                raise WorkerPreflightBlocked(worker)
+            selection_json = dict(campaign.selection_spec or {})
+            selection = CampaignSelection(
+                book_ids=tuple(UUID(value) for value in selection_json.get("book_ids", [])),
+                toc_entry_ids=tuple(
+                    UUID(value) for value in selection_json.get("toc_entry_ids", [])
+                ),
+                output_languages=tuple(selection_json.get("output_languages", [])),
+            )
+            requested_version = int(campaign.publication_version)
+            frozen = {
+                (target.toc_entry_id, target.output_language): target
+                for target in targets
+            }
+
+        # Each helper owns and closes its read session before the Notion call.
+        sources = await self.load_destination_sources(
+            selection, publication_version=requested_version
+        )
+        sources_by_key = {
+            (item.toc_entry_id, item.output_language): item for item in sources
+        }
+        current_sources = {
+            key: item.source_job_id for key, item in sources_by_key.items()
+        }
+        frozen_sources = {
+            key: target.source_job_id for key, target in frozen.items()
+        }
+        if current_sources != frozen_sources:
+            raise DestinationReviewChanged(
+                "the selected source snapshots changed before canary launch — "
+                "create a new campaign from a fresh review"
+            )
+        overrides = tuple(
+            DestinationOverride(
+                toc_entry_id=target.toc_entry_id,
+                output_language=target.output_language,
+                notion_lesson_page_id=target.reviewed_notion_lesson_page_id,
+            )
+            for target in frozen.values()
+            if target.notion_parent_policy == "reuse"
+            and target.reviewed_notion_lesson_page_id
+            and target.reviewed_notion_lesson_page_id
+            != (
+                sources_by_key[(target.toc_entry_id, target.output_language)]
+                .notion_lesson_page_id
+                or ""
+            ).strip()
+        )
+        destinations = await self._destination_resolver(
+            sources=sources,
+            requested_version=requested_version,
+            overrides=overrides,
+        )
+        if not destinations.ok:
+            raise DestinationResolutionBlocked(destinations.resolutions)
+        decisions = {
+            (decision.toc_entry_id, decision.output_language): decision
+            for decision in destinations.resolutions
+        }
+        if (
+            destinations.checked_target_count != len(frozen)
+            or len(destinations.resolutions) != len(frozen)
+            or set(decisions) != set(frozen)
+        ):
+            raise DestinationReviewChanged(
+                "the Notion destination revalidation did not cover every "
+                "campaign target exactly once"
+            )
+        for key, decision in decisions.items():
+            target = frozen[key]
+            expected = (
+                target.notion_container_policy,
+                target.reviewed_notion_container_page_id,
+                target.notion_parent_policy,
+                target.reviewed_notion_lesson_page_id,
+                target.reviewed_notion_lesson_title,
+            )
+            actual = (
+                decision.container_policy,
+                decision.container_page_id,
+                decision.lesson_policy,
+                decision.lesson_page_id,
+                decision.lesson_title,
+            )
+            if actual != expected:
+                raise DestinationReviewChanged(
+                    f"reviewed destination changed for {decision.toc_entry_id}/"
+                    f"{decision.output_language} before canary launch"
+                )
+
+        # The remote proof is complete. Re-lock and recheck only DB facts in a
+        # short transaction; the publisher remains the final race fence.
+        async with self._sessions() as session:
+            campaign = await self._locked_campaign(session, campaign_id)
+            self._assert_canary_launchable(campaign, campaign_id)
+            contract = self._stored_contract(campaign, what="launch the canary")
+            locked_targets = await targets_repo.list_for_campaign(
+                session, campaign_id, for_update=True
+            )
+            if {
+                (target.toc_entry_id, target.output_language)
+                for target in locked_targets
+            } != set(frozen):
+                raise DestinationReviewChanged(
+                    "campaign targets changed during destination revalidation"
+                )
+            failures = await self._preflight(session, locked_targets)
+            if failures:
+                raise PreflightBlocked(failures)
+            worker = await self._worker_checker(session, contract)
+            if not worker.ok:
+                raise WorkerPreflightBlocked(worker)
+            wave = await self._prepare_wave(
+                session,
+                campaign_id,
+                [target for target in locked_targets if target.is_canary],
+            )
+            if campaign.status == "draft":
+                await campaigns_repo.set_campaign_status(
+                    session,
+                    campaign_id=campaign_id,
+                    new_status="canary_running",
+                    expected_statuses=["draft"],
+                    canary_launched_at=_utcnow(),
+                )
+            await session.commit()
+
+        failures = await self._create_wave(wave, contract)
+        campaign = await self.roll_up(campaign_id)
+        if failures:
+            raise PartialWaveRelease(failures)
+        return campaign
+
+    @staticmethod
+    def _assert_canary_launchable(
+        campaign: RegenerationCampaign, campaign_id: UUID
+    ) -> None:
+        if campaign.status in TERMINAL_CAMPAIGN_STATUSES:
+            raise IllegalCampaignAction(
+                f"campaign {campaign_id} is {campaign.status!r} — terminal"
+            )
+        if campaign.cancel_requested_at is not None:
+            raise IllegalCampaignAction(
+                f"campaign {campaign_id} is cancelling — cannot launch"
+            )
+        if campaign.approved_at is not None:
+            raise IllegalCampaignAction(
+                f"campaign {campaign_id} is already approved — the bulk wave "
+                "is released by approve_canary, not by a relaunch"
+            )
+
+    async def _launch_canary_legacy(
+        self, campaign_id: UUID
+    ) -> RegenerationCampaign:
         """Preflight every destination, then create ONLY the canary jobs.
 
         Idempotent and resumable: a target that already owns a revision job is

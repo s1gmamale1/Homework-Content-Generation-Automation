@@ -382,6 +382,44 @@ def test_the_report_keeps_the_frozen_plan_and_the_extraction_choice():
     assert plan.refresh_extraction is False
 
 
+def test_campaign_report_labels_exact_and_legacy_versions_explicitly():
+    exact = out.CampaignSummaryOut.from_row(
+        _campaign(publication_version=3),
+        status_counts={"planned": 1},
+    )
+    legacy = out.CampaignSummaryOut.from_row(
+        _campaign(publication_version=None),
+        status_counts={"planned": 1},
+    )
+
+    assert exact.publication_version == 3
+    assert exact.publication_version_label == "Homework V3"
+    assert legacy.publication_version is None
+    assert legacy.publication_version_label == "Legacy mixed/automatic version"
+
+
+def test_target_report_separates_reviewed_lesson_from_published_version_page():
+    target = _target(
+        uuid4(),
+        "published",
+        notion_container_policy="reuse",
+        reviewed_notion_container_page_id="container-page",
+        notion_parent_policy="reuse",
+        reviewed_notion_lesson_page_id="lesson-topic-page",
+        reviewed_notion_lesson_title="1 Lesson 1",
+        notion_page_id="homework-v3-page",
+        publication_version=3,
+    )
+
+    report = out.TargetReportOut.from_row(target, now=NOW)
+
+    assert report.reviewed_notion_container_page_url.endswith("containerpage")
+    assert report.reviewed_notion_lesson_page_url.endswith("lessontopicpage")
+    assert report.reviewed_notion_lesson_title == "1 Lesson 1"
+    assert report.notion_page_url.endswith("homeworkv3page")
+    assert report.notion_page_id != report.reviewed_notion_lesson_page_id
+
+
 # ═════════════════════════ gather (real Postgres) ════════════════════════
 
 _DB = pytest.mark.skipif(

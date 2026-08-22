@@ -32,6 +32,7 @@ import os
 import pickle
 import uuid
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -814,6 +815,8 @@ async def seeded():
 
 def _spec(ids, *, lessons=None, languages=("uz",), canary_size=1, **kw):
     toc_ids = ids["toc_ids"] if lessons is None else ids["toc_ids"][:lessons]
+    if kw.get("publication_version") is not None:
+        kw.setdefault("approved_destination_digest", "a" * 64)
     return svc.CreateCampaignSpec(
         selection=svc.CampaignSelection(
             toc_entry_ids=tuple(toc_ids), output_languages=tuple(languages),
@@ -827,8 +830,44 @@ def _spec(ids, *, lessons=None, languages=("uz",), canary_size=1, **kw):
     )
 
 
-def _service():
-    return svc.RegenerationCampaignService()
+def _service(*, destination_resolver=None, worker_checker=None):
+    async def _destinations(*, sources, requested_version, overrides):
+        resolutions = tuple(
+            svc.DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="create",
+                container_policy="create",
+                container_page_id=None,
+                lesson_policy="create",
+                lesson_page_id=None,
+                candidates=(),
+                reason=None,
+            )
+            for source in sources
+        )
+        return svc.DestinationPreflight(
+            ok=True,
+            resolutions=resolutions,
+            digest="a" * 64,
+            checked_target_count=len(resolutions),
+        )
+
+    async def _workers(_session, _contract):
+        return svc.WorkerExecutability(
+            ok=True,
+            workers_online=1,
+            compatible_worker_ids=("pytest-worker",),
+            required_api_providers=("gemini",),
+            fleet_api_paused=False,
+            reason=None,
+        )
+
+    return svc.RegenerationCampaignService(
+        destination_resolver=destination_resolver or _destinations,
+        worker_checker=worker_checker or _workers,
+    )
 
 
 async def _statuses(campaign_id):
@@ -936,6 +975,50 @@ async def test_creation_freezes_the_requested_publication_version(seeded):
     # closed its session, and a lazy relationship would emit IO on a detached
     # instance rather than answer the question.
     assert [version for _, _, version in await _statuses(campaign.id)] == [None]
+
+
+@db_only
+async def test_exact_version_creation_freezes_the_reviewed_destination(seeded):
+    campaign = await _service().create_campaign(
+        _spec(seeded, publication_version=3)
+    )
+    (target,) = await _targets(campaign.id)
+
+    assert target.notion_container_policy == "create"
+    assert target.reviewed_notion_container_page_id is None
+    assert target.notion_parent_policy == "create"
+    assert target.reviewed_notion_lesson_page_id is None
+    assert target.reviewed_notion_lesson_title
+
+
+@db_only
+async def test_changed_destination_digest_leaves_no_campaign_row(seeded):
+    with pytest.raises(svc.DestinationReviewChanged):
+        await _service().create_campaign(_spec(
+            seeded,
+            publication_version=3,
+            approved_destination_digest="b" * 64,
+        ))
+
+    assert await _versioned_campaigns() == []
+
+
+@db_only
+async def test_incomplete_destination_scan_leaves_no_campaign_row(seeded):
+    async def _incomplete_destination_scan(*, sources, requested_version, overrides):
+        return svc.DestinationPreflight(
+            ok=True,
+            resolutions=(),
+            digest="a" * 64,
+            checked_target_count=0,
+        )
+
+    with pytest.raises(svc.DestinationReviewChanged, match="every selected target"):
+        await _service(
+            destination_resolver=_incomplete_destination_scan
+        ).create_campaign(_spec(seeded, publication_version=3))
+
+    assert await _versioned_campaigns() == []
 
 
 @db_only
@@ -1350,6 +1433,129 @@ async def test_preflight_refuses_a_lesson_whose_pointer_belongs_to_another_langu
     assert failure.reason == discovery.NO_SUBJECT_PAGE_REASON
     assert failure.toc_entry_id == toc_entry_id
     assert f"ru:{_SUBJECT}|5" in failure.detail
+
+
+@db_only
+async def test_exact_campaign_revalidates_reviewed_destination_before_canary_spend(
+    seeded,
+):
+    calls = 0
+
+    async def _changing_destination(*, sources, requested_version, overrides):
+        nonlocal calls
+        calls += 1
+        resolutions = tuple(
+            svc.DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="create" if calls == 1 else "reuse",
+                container_policy="create" if calls == 1 else "reuse",
+                container_page_id=None if calls == 1 else "moved-container",
+                lesson_policy="create" if calls == 1 else "reuse",
+                lesson_page_id=None if calls == 1 else "moved-lesson",
+                candidates=(), reason=None,
+            )
+            for source in sources
+        )
+        return svc.DestinationPreflight(
+            ok=True, resolutions=resolutions, digest="a" * 64,
+            checked_target_count=len(resolutions),
+        )
+
+    service = _service(destination_resolver=_changing_destination)
+    campaign = await service.create_campaign(
+        _spec(seeded, publication_version=3)
+    )
+
+    with pytest.raises(svc.DestinationReviewChanged):
+        await service.launch_canary(campaign.id)
+
+    assert calls == 2, "one review at create, one revalidation at canary"
+    assert await _revision_jobs(campaign.id) == []
+    assert (await _campaign(campaign.id)).status == "draft"
+
+
+@db_only
+async def test_exact_canary_refuses_an_incomplete_destination_rescan(seeded):
+    calls = 0
+
+    async def _incomplete_second_scan(*, sources, requested_version, overrides):
+        nonlocal calls
+        calls += 1
+        resolutions = tuple(
+            svc.DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="create",
+                container_policy="create",
+                container_page_id=None,
+                lesson_policy="create",
+                lesson_page_id=None,
+                candidates=(),
+                reason=None,
+            )
+            for source in sources
+        )
+        if calls == 2:
+            resolutions = ()
+        return svc.DestinationPreflight(
+            ok=True,
+            resolutions=resolutions,
+            digest="a" * 64,
+            checked_target_count=len(resolutions),
+        )
+
+    service = _service(destination_resolver=_incomplete_second_scan)
+    campaign = await service.create_campaign(
+        _spec(seeded, publication_version=3)
+    )
+
+    with pytest.raises(svc.DestinationReviewChanged, match="every campaign target"):
+        await service.launch_canary(campaign.id)
+
+    assert calls == 2
+    assert await _revision_jobs(campaign.id) == []
+    assert (await _campaign(campaign.id)).status == "draft"
+
+
+@db_only
+async def test_exact_campaign_refuses_a_changed_source_snapshot_before_canary_spend(
+    seeded,
+    monkeypatch,
+):
+    service = _service()
+    campaign = await service.create_campaign(
+        _spec(seeded, publication_version=3)
+    )
+    original_sources = await service.load_destination_sources(
+        _spec(seeded).selection,
+        publication_version=3,
+    )
+    changed_sources = tuple(
+        svc.DestinationSource(
+            **{
+                **source.__dict__,
+                "source_job_id": uuid.uuid4(),
+            }
+        )
+        for source in original_sources
+    )
+    resolver = AsyncMock()
+    monkeypatch.setattr(
+        service,
+        "load_destination_sources",
+        AsyncMock(return_value=changed_sources),
+    )
+    monkeypatch.setattr(service, "_destination_resolver", resolver)
+
+    with pytest.raises(svc.DestinationReviewChanged, match="source snapshots changed"):
+        await service.launch_canary(campaign.id)
+
+    assert resolver.await_count == 0
+    assert await _revision_jobs(campaign.id) == []
+    assert (await _campaign(campaign.id)).status == "draft"
 
 
 @db_only

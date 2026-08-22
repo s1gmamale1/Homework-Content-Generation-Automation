@@ -21,6 +21,7 @@ import {
   regenerationSourcesView,
   regenerationToggleLesson,
 } from "@/lib/api";
+import type { DestinationOverrideDraft } from "@/lib/regeneration-draft";
 import {
   exclusionWarning,
   formatUsd,
@@ -30,6 +31,7 @@ import {
 import type {
   Book,
   ProviderModelManifest,
+  RegenerationDestinationCheckResponse,
   RegenerationEligibleSource,
   RegenerationEstimateResponse,
   RegenerationIneligibleLineage,
@@ -41,10 +43,11 @@ import { cn, formatPhaseName } from "@/lib/utils";
 /**
  * Campaign wizard, over the real Task 9 API.
  *
- * Nothing on this screen spends money or writes to Notion: `/phase-plan` and
- * `/estimate` are read-only previews and `POST /campaigns` only freezes a row.
- * The canary launch — the first paid step — lives on the campaign panel, not
- * here, so the create button can never be mistaken for it.
+ * Nothing on this screen spends money or writes a Notion page: `/phase-plan`
+ * and `/estimate` are local/DB previews, `/destinations` is an explicit
+ * read-only Notion review, and `POST /campaigns` only freezes the reviewed
+ * snapshot. The canary launch — the first paid step — lives on the campaign
+ * panel, so the create button can never be mistaken for it.
  *
  * The dependency closure is the SERVER's. This component never walks
  * `PHASE_DEPS` in TypeScript: it renders `canonical_phases`,
@@ -67,12 +70,15 @@ const LANGUAGES: RegenerationOutputLanguage[] = ["uz", "ru", "en"];
  *  lessons, phases, acknowledgement, canary — is shared with
  *  `regenerationNarrowScope`, which owns what a narrowing clears. */
 export interface RegenerationDraftState extends RegenerationScopeState {
+  mode: "full" | "selective";
   refreshExtraction: boolean;
   provider: string;
   /** Never defaulted for the operator: the server refuses a campaign with no
    *  content model precisely so nobody freezes a whole campaign onto whatever
    *  happens to be first in the manifest. */
   model: string | null;
+  publicationVersion: number;
+  destinationOverrides: DestinationOverrideDraft[];
 }
 
 export function defaultRegenerationDraft(): RegenerationDraftState {
@@ -84,11 +90,14 @@ export function defaultRegenerationDraft(): RegenerationDraftState {
     selectedTocEntryIds: [],
     selectedPhases: [],
     excludedPhases: [],
+    mode: "full",
     refreshExtraction: false,
     acknowledged: false,
     canarySize: 1,
     provider: "gemini",
     model: null,
+    publicationVersion: 3,
+    destinationOverrides: [],
   };
 }
 
@@ -219,6 +228,11 @@ export function RegenerationWizard({
   estimate,
   estimateLoading,
   estimateError,
+  destinations,
+  destinationsChecking,
+  destinationError,
+  onCheckDestinations,
+  onChooseDestination,
   manifest,
   manifestError,
   state,
@@ -255,6 +269,15 @@ export function RegenerationWizard({
   estimate: RegenerationEstimateResponse | null;
   estimateLoading: boolean;
   estimateError: RegenerationErrorView | null;
+  destinations: RegenerationDestinationCheckResponse | null;
+  destinationsChecking: boolean;
+  destinationError: RegenerationErrorView | null;
+  onCheckDestinations: () => void;
+  onChooseDestination: (
+    tocEntryId: string,
+    outputLanguage: RegenerationOutputLanguage,
+    notionLessonPageId: string,
+  ) => void;
   manifest: ProviderModelManifest | undefined;
   /** `GET /agent/models` failed. Without it there is no provider list and no
    *  model list, and the server refuses a campaign with no content model — so
@@ -270,8 +293,17 @@ export function RegenerationWizard({
   /** Every subject/grade/book/language change goes through the one helper that
    *  decides what it invalidates — a lesson belongs to one book in one
    *  language, and a phase list belongs to one subject's flow. */
-  const narrow = (change: RegenerationScopeChange) =>
-    onChange(regenerationNarrowScope(state, change));
+  const narrow = (change: RegenerationScopeChange) => {
+    const next = regenerationNarrowScope(state, change);
+    const selected = new Set(next.selectedTocEntryIds);
+    onChange({
+      ...next,
+      destinationOverrides: state.destinationOverrides.filter(
+        (override) =>
+          selected.has(override.tocEntryId) && override.outputLanguage === next.language,
+      ),
+    });
+  };
   const toggle = (list: string[], value: string): string[] =>
     list.includes(value) ? list.filter((v) => v !== value) : [...list, value];
 
@@ -306,7 +338,10 @@ export function RegenerationWizard({
   // operator's own choice.
   const planStep = regenerationPlanStepView({
     plan,
-    hasSelection: state.selectedPhases.length > 0 || state.refreshExtraction,
+    hasSelection:
+      state.mode === "full"
+        ? regenerationSelectablePhases(phaseCatalog).length > 0
+        : state.selectedPhases.length > 0 || state.refreshExtraction,
     isLoading: planLoading,
     error: planError,
   });
@@ -348,7 +383,15 @@ export function RegenerationWizard({
               ? manifestError
                 ? "The model list could not be loaded, so there is no model to freeze this campaign to."
                 : "Pick the model this campaign will be frozen to."
-              : null;
+              : estimate && !estimate.worker_executability.ok
+                ? (estimate.worker_executability.reason ??
+                  "No active worker can execute this API contract.")
+                : !destinations
+                  ? "Check the Notion destinations for this exact lesson and version selection."
+                  : !destinations.ok ||
+                      destinations.checked_target_count !== destinations.target_count
+                    ? "Resolve every blocked or ambiguous Notion destination and check again."
+                    : null;
 
   const canarySize = clampCanarySize(state.canarySize, targetCount);
 
@@ -464,7 +507,18 @@ export function RegenerationWizard({
                     type="checkbox"
                     className="mt-0.5 size-4 accent-[#7c5cff]"
                     checked={state.selectedTocEntryIds.includes(source.toc_entry_id)}
-                    onChange={() => onChange(regenerationToggleLesson(state, source.toc_entry_id))}
+                    onChange={() => {
+                      const next = regenerationToggleLesson(state, source.toc_entry_id);
+                      const selected = new Set(next.selectedTocEntryIds);
+                      onChange({
+                        ...next,
+                        destinationOverrides: state.destinationOverrides.filter(
+                          (override) =>
+                            selected.has(override.tocEntryId) &&
+                            override.outputLanguage === next.language,
+                        ),
+                      });
+                    }}
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate">{row.headline}</span>
@@ -504,31 +558,52 @@ export function RegenerationWizard({
 
       <Step
         index={3}
-        title="Pick the phases to rebuild"
-        hint="Ticking a phase also rebuilds everything downstream of it. Step 3 shows the real expansion the planner returned."
+        title="Choose full or selective regeneration"
+        hint="Full rebuild is the default and regenerates every content phase. Selective mode is optional; picking an early phase may still pull most downstream phases into the rebuild."
       >
         <div className="flex flex-wrap gap-1">
-          {selectablePhases.map((phase) => (
-            <Chip
-              key={phase}
-              active={state.selectedPhases.includes(phase)}
-              onClick={() =>
-                patch({
-                  selectedPhases: toggle(state.selectedPhases, phase),
-                  excludedPhases: [],
-                  acknowledged: false,
-                })
-              }
-            >
-              {formatPhaseName(phase)}
-            </Chip>
-          ))}
-          {selectablePhases.length === 0 && (
-            <span className="text-xs text-white/40">
-              Pick a lesson first — the phase list comes from that subject's flow.
-            </span>
-          )}
+          <Chip
+            active={state.mode === "full"}
+            onClick={() => patch({ mode: "full", excludedPhases: [], acknowledged: false })}
+          >
+            Full rebuild · recommended
+          </Chip>
+          <Chip
+            active={state.mode === "selective"}
+            onClick={() => patch({ mode: "selective", excludedPhases: [], acknowledged: false })}
+          >
+            Choose phases
+          </Chip>
         </div>
+        {state.mode === "full" ? (
+          <p className="text-xs leading-5 text-emerald-100/75">
+            All {selectablePhases.length} content phases will be regenerated. Extraction stays
+            reused unless you enable it below.
+          </p>
+        ) : (
+          <div className="flex flex-wrap gap-1">
+            {selectablePhases.map((phase) => (
+              <Chip
+                key={phase}
+                active={state.selectedPhases.includes(phase)}
+                onClick={() =>
+                  patch({
+                    selectedPhases: toggle(state.selectedPhases, phase),
+                    excludedPhases: [],
+                    acknowledged: false,
+                  })
+                }
+              >
+                {formatPhaseName(phase)}
+              </Chip>
+            ))}
+            {selectablePhases.length === 0 && (
+              <span className="text-xs text-white/40">
+                Pick a lesson first — the phase list comes from that subject's flow.
+              </span>
+            )}
+          </div>
+        )}
         {planError && <RegenerationProblem view={planError} />}
       </Step>
 
@@ -768,11 +843,124 @@ export function RegenerationWizard({
               ))}
             </ul>
             <p>
-              You can still freeze this campaign, but the canary is refused until the Notion
-              destination exists.
+              This is the fast database preflight. Run the read-only Notion destination check below
+              before the campaign can be frozen.
             </p>
           </div>
         )}
+
+        {estimate && (
+          <div
+            className={cn(
+              "rounded-xl border p-3 text-xs leading-5",
+              estimate.worker_executability.ok
+                ? "border-emerald-300/20 bg-emerald-300/[0.05] text-emerald-100/80"
+                : "border-rose-300/25 bg-rose-300/[0.07] text-rose-100/90",
+            )}
+          >
+            {estimate.worker_executability.ok
+              ? `${estimate.worker_executability.compatible_worker_ids.length} compatible worker(s) are active.`
+              : (estimate.worker_executability.reason ??
+                "No active worker can execute this campaign contract.")}
+          </div>
+        )}
+        {(estimate?.source_availability_warnings.length ?? 0) > 0 && (
+          <ul className="space-y-1 text-xs leading-5 text-amber-100/80">
+            {regenerationKeyedLines(estimate?.source_availability_warnings).map((row) => (
+              <li key={row.key}>{row.text}</li>
+            ))}
+          </ul>
+        )}
+
+        <div className="space-y-3 rounded-xl border border-white/[0.08] bg-white/[0.03] p-3">
+          <label className="flex flex-wrap items-center gap-3 text-xs text-white/60">
+            Publish this campaign as
+            <span className="font-semibold text-white">Homework V</span>
+            <input
+              type="number"
+              min={2}
+              step={1}
+              value={state.publicationVersion}
+              onChange={(event) =>
+                patch({
+                  publicationVersion: Math.max(2, Math.trunc(Number(event.target.value) || 2)),
+                })
+              }
+              className="w-20 rounded-lg border border-white/[0.1] bg-white/[0.05] px-2 py-1 text-sm text-white"
+            />
+          </label>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              className={GHOST_BTN}
+              disabled={targetCount === 0 || destinationsChecking}
+              onClick={onCheckDestinations}
+            >
+              <ListChecks className="size-4" />
+              {destinationsChecking ? "Checking Notion…" : "Check Notion destinations"}
+            </button>
+            <span className="text-xs text-white/45">
+              Read-only. This confirms where each new Homework V{state.publicationVersion} page will
+              be created.
+            </span>
+          </div>
+          {destinationError && <RegenerationProblem view={destinationError} />}
+          {destinations && (
+            <ul className="space-y-2">
+              {destinations.destinations.map((destination) => {
+                const selectedOverride = state.destinationOverrides.find(
+                  (item) =>
+                    item.tocEntryId === destination.toc_entry_id &&
+                    item.outputLanguage === destination.output_language,
+                );
+                return (
+                  <li
+                    key={`${destination.toc_entry_id}:${destination.output_language}`}
+                    className="rounded-lg border border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-white/65"
+                  >
+                    <div className="font-medium text-white/85">{destination.lesson_title}</div>
+                    <div className="mt-0.5">
+                      {destination.status === "reuse"
+                        ? "Use the reviewed Lesson Topic"
+                        : destination.status === "create"
+                          ? "Create a new Lesson Topic under the reviewed container"
+                          : (destination.reason ?? "Choose a safe Lesson Topic candidate")}
+                    </div>
+                    {destination.notion_page_url && (
+                      <a
+                        href={destination.notion_page_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-1 inline-block text-sky-200/80 underline"
+                      >
+                        Open reviewed Lesson Topic
+                      </a>
+                    )}
+                    {destination.candidates.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {destination.candidates.map((candidate) => (
+                          <Chip
+                            key={candidate.page_id}
+                            active={selectedOverride?.notionLessonPageId === candidate.page_id}
+                            onClick={() =>
+                              onChooseDestination(
+                                destination.toc_entry_id,
+                                destination.output_language,
+                                candidate.page_id,
+                              )
+                            }
+                          >
+                            {candidate.title || candidate.page_id}
+                          </Chip>
+                        ))}
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
 
         <label className="flex items-center gap-3 text-xs text-white/55">
           Canary size

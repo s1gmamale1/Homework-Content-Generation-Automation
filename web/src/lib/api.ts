@@ -44,6 +44,8 @@ import type {
   RegenerationCampaignList,
   RegenerationCampaignStatus,
   RegenerationCampaignSummary,
+  RegenerationDestinationCheckRequest,
+  RegenerationDestinationCheckResponse,
   RegenerationEligibleSource,
   RegenerationEligibleSources,
   RegenerationEstimateRequest,
@@ -700,12 +702,19 @@ export const api = {
    *  `extra="forbid"`, so posting a create-shaped draft is a 422, not a
    *  tolerated superset. */
   async estimateRegeneration(
-    draft: RegenerationCampaignDraft,
+    draft: RegenerationEstimateRequest,
   ): Promise<RegenerationEstimateResponse> {
     return regenerationPost<RegenerationEstimateResponse>(
       "/estimate",
       regenerationEstimateBody(draft),
     );
+  },
+
+  /** Explicit, read-only Notion destination review. */
+  async checkRegenerationDestinations(
+    body: RegenerationDestinationCheckRequest,
+  ): Promise<RegenerationDestinationCheckResponse> {
+    return regenerationPost<RegenerationDestinationCheckResponse>("/destinations", body);
   },
 
   /** Freeze an immutable campaign and its targets. Still no job, no model
@@ -969,9 +978,10 @@ function plural(n: number, one: string, many: string): string {
  * calls; only this function decides what each route is allowed to see.
  */
 export function regenerationEstimateBody(
-  draft: RegenerationCampaignDraft,
+  draft: RegenerationEstimateRequest,
 ): RegenerationEstimateRequest {
   return {
+    publication_version: draft.publication_version,
     selection: draft.selection,
     contract: draft.contract,
     selected_phases: draft.selected_phases,
@@ -1006,6 +1016,13 @@ export function regenerationDraftSignature(draft: {
   canarySize: number;
   provider: string;
   model: string | null;
+  mode: "full" | "selective";
+  publicationVersion: number;
+  destinationOverrides: Array<{
+    tocEntryId: string;
+    outputLanguage: string;
+    notionLessonPageId: string;
+  }>;
 }): string {
   return JSON.stringify([
     draft.bookId,
@@ -1018,6 +1035,37 @@ export function regenerationDraftSignature(draft: {
     draft.canarySize,
     draft.provider,
     draft.model,
+    draft.mode,
+    draft.publicationVersion,
+    [...draft.destinationOverrides]
+      .sort((a, b) =>
+        `${a.tocEntryId}:${a.outputLanguage}`.localeCompare(
+          `${b.tocEntryId}:${b.outputLanguage}`,
+        ),
+      )
+      .map((item) => [item.tocEntryId, item.outputLanguage, item.notionLessonPageId]),
+  ]);
+}
+
+/** The exact operator inputs a reviewed destination digest is bound to. */
+export function regenerationDestinationSignature(
+  request: RegenerationDestinationCheckRequest,
+): string {
+  return JSON.stringify([
+    request.publication_version,
+    [...request.selection.toc_entry_ids].sort(),
+    [...request.selection.output_languages].sort(),
+    [...request.destination_overrides]
+      .sort((a, b) =>
+        `${a.toc_entry_id}:${a.output_language}`.localeCompare(
+          `${b.toc_entry_id}:${b.output_language}`,
+        ),
+      )
+      .map((item) => [
+        item.toc_entry_id,
+        item.output_language,
+        item.notion_lesson_page_id,
+      ]),
   ]);
 }
 
@@ -1026,6 +1074,8 @@ export function regenerationCampaignBody(
 ): RegenerationCampaignDraft {
   return {
     ...regenerationEstimateBody(draft),
+    destination_overrides: draft.destination_overrides,
+    approved_destination_digest: draft.approved_destination_digest,
     estimated_cost_low_usd: draft.estimated_cost_low_usd,
     estimated_cost_high_usd: draft.estimated_cost_high_usd,
     app_git_revision: draft.app_git_revision,

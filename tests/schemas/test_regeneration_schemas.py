@@ -43,6 +43,8 @@ def _create_payload(**overrides) -> dict:
         "selection": {"toc_entry_ids": [str(uuid4())]},
         "contract": _contract_payload(),
         "selected_phases": ["flashcards"],
+        "publication_version": 3,
+        "approved_destination_digest": "a" * 64,
         "actor": "operator",
     }
     payload.update(overrides)
@@ -50,6 +52,68 @@ def _create_payload(**overrides) -> dict:
 
 
 # ─────────────────────────── request validation ──────────────────────────
+
+
+def test_estimate_requires_an_exact_campaign_version_but_no_destination_digest():
+    payload = _create_payload()
+    payload.pop("approved_destination_digest")
+    payload.pop("actor")
+    estimate = schemas.EstimateRequest.model_validate(payload)
+    assert estimate.publication_version == 3
+
+    payload.pop("publication_version")
+    with pytest.raises(ValidationError):
+        schemas.EstimateRequest.model_validate(payload)
+
+    with pytest.raises(ValidationError):
+        schemas.EstimateRequest.model_validate({**payload, "publication_version": 1})
+
+
+def test_create_requires_a_lowercase_sha256_destination_digest():
+    with pytest.raises(ValidationError):
+        schemas.CreateCampaignRequest.model_validate(
+            _create_payload(approved_destination_digest="")
+        )
+    with pytest.raises(ValidationError):
+        schemas.CreateCampaignRequest.model_validate(
+            _create_payload(approved_destination_digest="A" * 64)
+        )
+
+
+def test_destination_check_validates_unique_in_scope_overrides():
+    toc_id = uuid4()
+    base = {
+        "selection": {"toc_entry_ids": [str(toc_id)], "output_languages": ["uz"]},
+        "publication_version": 3,
+        "destination_overrides": [{
+            "toc_entry_id": str(toc_id),
+            "output_language": "uz",
+            "notion_lesson_page_id": "lesson-page",
+        }],
+    }
+    parsed = schemas.DestinationCheckRequest.model_validate(base)
+    assert parsed.destination_overrides[0].notion_lesson_page_id == "lesson-page"
+
+    with pytest.raises(ValidationError):
+        schemas.DestinationCheckRequest.model_validate({
+            **base, "destination_overrides": base["destination_overrides"] * 2,
+        })
+    with pytest.raises(ValidationError):
+        schemas.DestinationCheckRequest.model_validate({
+            **base,
+            "destination_overrides": [{
+                **base["destination_overrides"][0],
+                "toc_entry_id": str(uuid4()),
+            }],
+        })
+    with pytest.raises(ValidationError):
+        schemas.DestinationCheckRequest.model_validate({
+            **base,
+            "destination_overrides": [{
+                **base["destination_overrides"][0],
+                "notion_lesson_page_id": " ",
+            }],
+        })
 
 
 def test_create_request_requires_a_phase_selection_or_extraction_refresh():

@@ -462,7 +462,7 @@ export function pruneRegenerationDraft(
  * the extract has its own switch, `refreshExtraction`.
  */
 export function effectiveSelectedPhases(
-  draft: GuidedRegenerationDraft,
+  draft: Pick<GuidedRegenerationDraft, "mode" | "selectedPhases">,
   canonicalPhases: string[],
 ): string[] {
   return draft.mode === "full" ? [...canonicalPhases] : [...draft.selectedPhases];

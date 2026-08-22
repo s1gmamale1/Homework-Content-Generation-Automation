@@ -193,18 +193,80 @@ class EstimateRequest(_PhaseSelectionIn):
 
     selection: CampaignSelectionIn = Field(default_factory=CampaignSelectionIn)
     contract: LaunchContract
+    publication_version: int = Field(ge=2)
     canary_size: int = Field(default=1, ge=1)
+
+
+class DestinationOverrideIn(_Strict):
+    toc_entry_id: UUID
+    output_language: str
+    notion_lesson_page_id: str = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def _validate_override(self) -> "DestinationOverrideIn":
+        if self.output_language not in OUTPUT_LANGUAGES:
+            raise ValueError(
+                f"unknown output language {self.output_language!r}; expected "
+                f"one of {list(OUTPUT_LANGUAGES)}"
+            )
+        page_id = self.notion_lesson_page_id.strip()
+        if not page_id:
+            raise ValueError("notion_lesson_page_id must not be blank")
+        self.notion_lesson_page_id = page_id
+        return self
+
+
+def _validate_destination_overrides(
+    selection: CampaignSelectionIn,
+    overrides: Sequence[DestinationOverrideIn],
+) -> None:
+    keys = [(item.toc_entry_id, item.output_language) for item in overrides]
+    if len(keys) != len(set(keys)):
+        raise ValueError("destination_overrides contains a duplicate lineage")
+    selected_toc = set(selection.toc_entry_ids)
+    selected_languages = set(selection.output_languages)
+    for toc_entry_id, output_language in keys:
+        if selected_toc and toc_entry_id not in selected_toc:
+            raise ValueError(
+                f"destination override {toc_entry_id}/{output_language} is "
+                "outside the selected lessons"
+            )
+        if selected_languages and output_language not in selected_languages:
+            raise ValueError(
+                f"destination override {toc_entry_id}/{output_language} is "
+                "outside the selected output languages"
+            )
 
 
 class CreateCampaignRequest(EstimateRequest):
     """Freeze a campaign. The estimate is passed back in because the operator
     approves the number they were SHOWN, not one recomputed at insert time."""
 
+    destination_overrides: list[DestinationOverrideIn] = Field(default_factory=list)
+    approved_destination_digest: str = Field(
+        min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$"
+    )
     estimated_cost_low_usd: Optional[float] = Field(default=None, ge=0)
     estimated_cost_high_usd: Optional[float] = Field(default=None, ge=0)
     app_git_revision: Optional[str] = Field(default=None, max_length=64)
     actor: str = ""
     notes: dict = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_overrides(self) -> "CreateCampaignRequest":
+        _validate_destination_overrides(self.selection, self.destination_overrides)
+        return self
+
+
+class DestinationCheckRequest(_Strict):
+    selection: CampaignSelectionIn
+    publication_version: int = Field(ge=2)
+    destination_overrides: list[DestinationOverrideIn] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_overrides(self) -> "DestinationCheckRequest":
+        _validate_destination_overrides(self.selection, self.destination_overrides)
+        return self
 
 
 class _ActorRequest(_Strict):
@@ -567,12 +629,86 @@ class EstimateOut(BaseModel):
 
     target_count: int
     canary_size: int
+    publication_version: int
     acknowledgement_required: bool
     sources: list[EligibleSourceOut]
     ineligible: list[IneligibleLineageOut]
     phase_plans: list[PhasePlanOut]
     estimate: Optional[RegenerationEstimateOut]
     preflight: PreflightOut
+    worker_executability: "WorkerExecutabilityOut"
+    source_availability_warnings: list[str] = Field(default_factory=list)
+
+
+class WorkerExecutabilityOut(BaseModel):
+    ok: bool
+    workers_online: int
+    compatible_worker_ids: list[str]
+    required_api_providers: list[str]
+    fleet_api_paused: bool
+    reason: Optional[str]
+
+    @classmethod
+    def from_result(cls, result) -> "WorkerExecutabilityOut":
+        return cls(
+            ok=result.ok,
+            workers_online=result.workers_online,
+            compatible_worker_ids=list(result.compatible_worker_ids),
+            required_api_providers=list(result.required_api_providers),
+            fleet_api_paused=result.fleet_api_paused,
+            reason=result.reason,
+        )
+
+
+class DestinationCandidateOut(BaseModel):
+    page_id: str
+    title: str
+    notion_page_url: str
+
+
+class DestinationResolutionOut(BaseModel):
+    toc_entry_id: UUID
+    output_language: str
+    lesson_title: str
+    status: str
+    container_policy: Optional[str]
+    container_page_id: Optional[str]
+    lesson_policy: Optional[str]
+    lesson_page_id: Optional[str]
+    notion_page_url: Optional[str]
+    candidates: list[DestinationCandidateOut]
+    reason: Optional[str]
+
+    @classmethod
+    def from_resolution(cls, resolution) -> "DestinationResolutionOut":
+        return cls(
+            toc_entry_id=resolution.toc_entry_id,
+            output_language=resolution.output_language,
+            lesson_title=resolution.lesson_title,
+            status=resolution.status,
+            container_policy=resolution.container_policy,
+            container_page_id=resolution.container_page_id,
+            lesson_policy=resolution.lesson_policy,
+            lesson_page_id=resolution.lesson_page_id,
+            notion_page_url=notion_page_url(resolution.lesson_page_id),
+            candidates=[
+                DestinationCandidateOut(
+                    page_id=item.page_id,
+                    title=item.title,
+                    notion_page_url=notion_page_url(item.page_id) or "",
+                )
+                for item in resolution.candidates
+            ],
+            reason=resolution.reason,
+        )
+
+
+class DestinationCheckOut(BaseModel):
+    ok: bool
+    target_count: int
+    checked_target_count: int
+    destination_digest: str
+    destinations: list[DestinationResolutionOut]
 
 
 # ═══════════════════════════ cost ════════════════════════════════════════
@@ -813,6 +949,13 @@ class TargetReportOut(BaseModel):
     publication_version: Optional[int]
     notion_page_id: Optional[str]
     notion_page_url: Optional[str]
+    notion_container_policy: Optional[str]
+    reviewed_notion_container_page_id: Optional[str]
+    reviewed_notion_container_page_url: Optional[str]
+    notion_parent_policy: Optional[str]
+    reviewed_notion_lesson_page_id: Optional[str]
+    reviewed_notion_lesson_page_url: Optional[str]
+    reviewed_notion_lesson_title: Optional[str]
     publication_released_at: Optional[datetime]
     publication_attempts: int
     publication_next_attempt_at: Optional[datetime]
@@ -919,6 +1062,25 @@ class TargetReportOut(BaseModel):
             publication_version=target.publication_version,
             notion_page_id=target.notion_page_id,
             notion_page_url=notion_page_url(target.notion_page_id),
+            notion_container_policy=getattr(
+                target, "notion_container_policy", None
+            ),
+            reviewed_notion_container_page_id=getattr(
+                target, "reviewed_notion_container_page_id", None
+            ),
+            reviewed_notion_container_page_url=notion_page_url(getattr(
+                target, "reviewed_notion_container_page_id", None
+            )),
+            notion_parent_policy=getattr(target, "notion_parent_policy", None),
+            reviewed_notion_lesson_page_id=getattr(
+                target, "reviewed_notion_lesson_page_id", None
+            ),
+            reviewed_notion_lesson_page_url=notion_page_url(getattr(
+                target, "reviewed_notion_lesson_page_id", None
+            )),
+            reviewed_notion_lesson_title=getattr(
+                target, "reviewed_notion_lesson_title", None
+            ),
             publication_released_at=target.publication_released_at,
             publication_attempts=int(target.publication_attempts or 0),
             publication_next_attempt_at=target.publication_next_attempt_at,
@@ -1033,6 +1195,8 @@ class CampaignSummaryOut(BaseModel):
     exclusion_acknowledged: bool
     requested_phases: list[str]
     excluded_phases: list[str]
+    publication_version: Optional[int]
+    publication_version_label: str
     app_git_revision: Optional[str]
     estimated_cost_low_usd: Optional[float]
     estimated_cost_high_usd: Optional[float]
@@ -1066,6 +1230,12 @@ class CampaignSummaryOut(BaseModel):
             exclusion_acknowledged=bool(campaign.exclusion_acknowledged),
             requested_phases=list(campaign.requested_phases or []),
             excluded_phases=list(campaign.excluded_phases or []),
+            publication_version=getattr(campaign, "publication_version", None),
+            publication_version_label=(
+                f"Homework V{campaign.publication_version}"
+                if getattr(campaign, "publication_version", None) is not None
+                else "Legacy mixed/automatic version"
+            ),
             app_git_revision=campaign.app_git_revision,
             estimated_cost_low_usd=campaign.estimated_cost_low_usd,
             estimated_cost_high_usd=campaign.estimated_cost_high_usd,

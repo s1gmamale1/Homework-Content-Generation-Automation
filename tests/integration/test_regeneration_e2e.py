@@ -4,8 +4,8 @@ This is the implementation gate for the feature (plan Task 11). It drives the
 REAL operator sequence over a real PostgreSQL:
 
     estimate → create → launch canary → run the revision through the real
-    pipeline → approve once → publish V2 → a later campaign publishing V3 →
-    an independent RU V2 for the same lesson
+    pipeline → approve once → publish the requested V3 → a later campaign
+    publishing V4 → an independent RU V3 for the same lesson
 
 Only two boundaries are faked, and both are faked at the outermost edge:
 
@@ -61,6 +61,7 @@ MARKER = "pytest-regen-e2e"
 SUBJECT_PAGE_UZ = "subject-page-uz-math-5"
 SUBJECT_PAGE_RU = "subject-page-ru-math-5"
 BASE = "/api/v1/regeneration"
+_TEST_CAMPAIGN_SERVICE_FACTORY = None
 
 _CONTRACT = {
     "provider": "gemini",
@@ -262,8 +263,17 @@ def fakes(monkeypatch, tmp_path):
     """Provider + Notion boundary. $0, no network, no subprocess, no client."""
     from app.config import settings
     from app.models.base import _utcnow
+    from app.api.v1 import regeneration as regen_api
     from app.services import agent as agent_mod
-    from app.services import notion_archive, phase_judge, pipeline, solver
+    from app.services import (
+        notion_archive,
+        phase_judge,
+        pipeline,
+        regeneration_destination,
+        regeneration_executability,
+        solver,
+    )
+    from app.services.regeneration_campaign import RegenerationCampaignService
     from app.services.notion import client as notion_client_mod
     from app.services.prompts import load_all
 
@@ -377,8 +387,47 @@ def fakes(monkeypatch, tmp_path):
     monkeypatch.setattr(settings, "regeneration_launch_wave_size", 0)
     monkeypatch.setattr(settings, "regeneration_launch_wave_interval_seconds", 0)
     monkeypatch.setattr(settings, "solver_enabled", False)
+
+    async def _resolve_destinations(*, sources, requested_version, overrides):
+        return await regeneration_destination.resolve_destinations(
+            sources=sources,
+            requested_version=requested_version,
+            overrides=overrides,
+            client_factory=lambda: ns.notion,
+        )
+
+    async def _workers(_session, contract):
+        required = tuple(sorted({
+            contract.provider,
+            contract.extract_provider,
+            contract.judge_provider,
+            contract.solver_provider,
+        }))
+        return regeneration_executability.WorkerExecutability(
+            ok=True,
+            workers_online=1,
+            compatible_worker_ids=("pytest-worker",),
+            required_api_providers=required,
+            fleet_api_paused=False,
+            reason=None,
+        )
+
+    def _campaign_service():
+        return RegenerationCampaignService(
+            destination_resolver=_resolve_destinations,
+            worker_checker=_workers,
+        )
+
+    global _TEST_CAMPAIGN_SERVICE_FACTORY
+    _TEST_CAMPAIGN_SERVICE_FACTORY = _campaign_service
+    monkeypatch.setattr(regen_api, "_service", _campaign_service)
+    monkeypatch.setattr(regen_api, "_resolve_destinations", _resolve_destinations)
+    monkeypatch.setattr(regen_api, "_check_active_workers", _workers)
     ns.notion_archive = notion_archive
-    return ns
+    try:
+        yield ns
+    finally:
+        _TEST_CAMPAIGN_SERVICE_FACTORY = None
 
 
 def _resolved(value):
@@ -418,9 +467,8 @@ async def _stamp_lesson_page(toc_entry_id, lesson_page_id: str) -> None:
 
 
 def _service():
-    from app.services.regeneration_campaign import RegenerationCampaignService
-
-    return RegenerationCampaignService()
+    assert _TEST_CAMPAIGN_SERVICE_FACTORY is not None
+    return _TEST_CAMPAIGN_SERVICE_FACTORY()
 
 
 def _publisher(fakes):
@@ -466,7 +514,14 @@ async def _api(method: str, path: str, json=None):
         regen_api.reset_rollup_debounce()
 
 
-def _draft(world, *, languages=("uz",), canary_size=1, phases=SELECTED_PHASES):
+def _draft(
+    world,
+    *,
+    languages=("uz",),
+    canary_size=1,
+    phases=SELECTED_PHASES,
+    publication_version=3,
+):
     return {
         "selection": {
             "toc_entry_ids": [str(world.toc_entry_id)],
@@ -475,12 +530,32 @@ def _draft(world, *, languages=("uz",), canary_size=1, phases=SELECTED_PHASES):
         "contract": dict(_CONTRACT),
         "selected_phases": list(phases),
         "canary_size": canary_size,
+        "publication_version": publication_version,
+    }
+
+
+async def _reviewed_create_body(body: dict) -> dict:
+    overrides = body.get("destination_overrides", [])
+    review = await _api("post", "/destinations", {
+        "selection": body["selection"],
+        "publication_version": body["publication_version"],
+        "destination_overrides": overrides,
+    })
+    assert review.status_code == 200, review.text
+    reviewed = review.json()
+    assert reviewed["ok"] is True, reviewed
+    assert reviewed["checked_target_count"] == reviewed["target_count"]
+    return {
+        **body,
+        "destination_overrides": overrides,
+        "approved_destination_digest": reviewed["destination_digest"],
     }
 
 
 async def _create_campaign(world, **kw):
     body = _draft(world, **kw)
     body.update({"actor": "pytest", "app_git_revision": MARKER})
+    body = await _reviewed_create_body(body)
     response = await _api("post", "/campaigns", body)
     assert response.status_code == 201, response.text
     return uuid.UUID(response.json()["id"])
@@ -583,9 +658,19 @@ async def _report(campaign_id):
         return await regen_api._campaign_detail(session, campaign_id, now=_now())
 
 
-async def _publish_one_campaign(world, fakes, *, languages=("uz",)):
+async def _publish_one_campaign(
+    world,
+    fakes,
+    *,
+    languages=("uz",),
+    publication_version=3,
+):
     """create → canary → run → approve → publish, for a one-lesson selection."""
-    campaign_id = await _create_campaign(world, languages=languages)
+    campaign_id = await _create_campaign(
+        world,
+        languages=languages,
+        publication_version=publication_version,
+    )
     await _service().launch_canary(campaign_id)
     for target in await _targets(campaign_id):
         await _run_revision(target.id)
@@ -597,13 +682,12 @@ async def _publish_one_campaign(world, fakes, *, languages=("uz",)):
 # ═════════════ 1–2. an existing V1, and a free draft ═════════════════════
 
 
-async def test_estimate_and_create_touch_no_model_and_no_notion(world, fakes):
-    """Item 2. Pricing and freezing a campaign are pure reads.
+async def test_estimate_is_db_only_and_create_only_revalidates_notion(world, fakes):
+    """Item 2. Pricing is DB-only; review/create make read-only Notion checks.
 
-    The tripwires in `fakes` cover the model side (every spawn entry point) and
-    the Notion side (`NotionClientWrapper.__init__`); this asserts the visible
-    consequence as well — nothing was generated, and Notion has exactly the V1
-    tree it started with.
+    The tripwires in `fakes` cover every model spawn and every real Notion
+    client construction. Destination review and create revalidation may read
+    the fake tree, but must not mutate it or create a revision job.
     """
     before = copy.deepcopy(fakes.notion.blocks)
 
@@ -617,11 +701,16 @@ async def test_estimate_and_create_touch_no_model_and_no_notion(world, fakes):
     assert sorted(plan["regenerated_phases"]) == sorted(PLAN.regenerated_phases)
     assert priced["sources"][0]["next_expected_version"] == 2, (
         "logical V1 has no version row, so the first allocated version is 2")
+    assert fakes.notion.calls == [], "estimate must remain DB-only"
 
     campaign_id = await _create_campaign(world)
 
     assert fakes.generated == [], "a draft must not generate anything"
-    assert fakes.notion.calls == [], "a draft must not read or write Notion"
+    assert fakes.notion.count("get_child_pages") > 0
+    assert not any(call[0] in {
+        "create_page", "append_block_children", "delete_block",
+        "clear_content_blocks", "upload_bytes",
+    } for call in fakes.notion.calls), "review/create must not write Notion"
     assert fakes.notion.blocks == before
     campaign = await _campaign(campaign_id)
     assert campaign.status == "draft"
@@ -668,8 +757,11 @@ async def test_the_canary_is_a_complete_snapshot_of_copies_and_regenerations(
     assert fakes.legacy_archived == [], (
         "the legacy archive writes the lesson's EXISTING `Homework` page — "
         "which IS V1, the immutable thing a revision exists to preserve")
-    assert fakes.notion.calls == [], (
-        "the canary must reach the human gate with NO Notion call at all")
+    assert not any(call[0] in {
+        "create_page", "append_block_children", "delete_block",
+        "clear_content_blocks", "upload_bytes",
+    } for call in fakes.notion.calls), (
+        "the canary may revalidate the reviewed destination but must not write")
 
 
 async def test_publication_is_impossible_before_the_campaign_is_approved(
@@ -683,7 +775,10 @@ async def test_publication_is_impossible_before_the_campaign_is_approved(
     await _run_revision(target.id)
 
     assert await _publisher(fakes).run_once() is False
-    assert fakes.notion.calls == []
+    assert not any(call[0] in {
+        "create_page", "append_block_children", "delete_block",
+        "clear_content_blocks", "upload_bytes",
+    } for call in fakes.notion.calls)
     refreshed = await _target(target.id)
     assert refreshed.publication_version is None
     assert refreshed.publication_released_at is None
@@ -735,6 +830,7 @@ async def test_approval_publishes_the_canary_and_releases_the_rest_exactly_once(
     body["selection"]["toc_entry_ids"] = [
         str(world.toc_entry_id), str(second_id)]
     body.update({"actor": "pytest", "app_git_revision": MARKER})
+    body = await _reviewed_create_body(body)
     created = await _api("post", "/campaigns", body)
     assert created.status_code == 201, created.text
     campaign_id = uuid.UUID(created.json()["id"])
@@ -767,20 +863,20 @@ async def test_approval_publishes_the_canary_and_releases_the_rest_exactly_once(
     assert published.status == "published", (
         "after approval every later success publishes automatically — there is "
         "no per-lesson publication approval")
-    assert published.publication_version == 2
+    assert published.publication_version == 3
     assert await _rolled_up(campaign_id) == "completed"
 
 
-# ═════════════ 7–9. V2 → V3, an independent RU V2, and V1 intact ═════════
+# ═════════════ 7–9. V3 → V4, an independent RU V3, and V1 intact ═════════
 
 
-async def test_a_later_campaign_is_sourced_from_v2_and_publishes_v3(world, fakes):
+async def test_a_later_campaign_is_sourced_from_v3_and_publishes_v4(world, fakes):
     """Item 7. The second campaign's source is the PUBLISHED revision job, not
     V1, and the version it consumes is the next one."""
     first = await _publish_one_campaign(world, fakes)
     first_target = (await _targets(first))[0]
     first_job = await _revision_job_id(first_target.id)
-    assert (await _target(first_target.id)).publication_version == 2
+    assert (await _target(first_target.id)).publication_version == 3
 
     eligible = await _api("get", "/eligible")
     assert eligible.status_code == 200, eligible.text
@@ -790,28 +886,30 @@ async def test_a_later_campaign_is_sourced_from_v2_and_publishes_v3(world, fakes
         and row["output_language"] == "uz"
     )
     assert source["source_job_id"] == str(first_job), (
-        "V3 must be regenerated from the published V2 revision, not from V1")
-    assert source["source_publication_version"] == 2
-    assert source["next_expected_version"] == 3
+        "V4 must be regenerated from the published V3 revision, not from V1")
+    assert source["source_publication_version"] == 3
+    assert source["next_expected_version"] == 4
     assert source["source_is_revision"] is True
 
-    second = await _publish_one_campaign(world, fakes)
+    second = await _publish_one_campaign(
+        world, fakes, publication_version=4
+    )
     second_target = (await _targets(second))[0]
     assert second_target.source_job_id == first_job
     published = await _target(second_target.id)
-    assert published.publication_version == 3
+    assert published.publication_version == 4
     assert published.notion_page_id != (
         await _target(first_target.id)).notion_page_id
 
     titles = fakes.notion.child_titles(world.notion.lesson)
-    assert titles == ["Homework", "Homework V2", "Homework V3"], (
+    assert titles == ["Homework", "Homework V3", "Homework V4"], (
         "each version is a NEW sibling page; nothing is renamed or replaced")
 
 
 async def test_uz_and_ru_are_independent_lineages_with_their_own_version_2(fakes):
     """Item 8. A lineage is scoped by ``(lesson, output_language)``: one campaign
     holds a UZ and an RU target for the SAME TOC row, each reserves its own
-    version 2, and each revision carries its own source and language.
+    requested version 3, and each revision carries its own source and language.
 
     The publisher's page-identity half of item 8 is asserted separately, in
     ``test_uz_and_ru_publish_to_separate_notion_pages`` below.
@@ -842,8 +940,8 @@ async def test_uz_and_ru_are_independent_lineages_with_their_own_version_2(fakes
 
         for language, target in targets.items():
             refreshed = await _target(target.id)
-            assert refreshed.publication_version == 2, (
-                f"{language} must reserve its OWN version 2 — "
+            assert refreshed.publication_version == 3, (
+                f"{language} must reserve its OWN requested version 3 — "
                 "uq_regeneration_targets_publication_version keys on "
                 f"(lesson, language, version) (got {refreshed.publication_version})")
 
@@ -861,14 +959,14 @@ async def test_uz_and_ru_are_independent_lineages_with_their_own_version_2(fakes
 
 
 async def test_uz_and_ru_publish_to_separate_notion_pages(fakes):
-    """Item 8's page-identity promise: UZ V2 and RU V2 are valid independent
+    """Item 8's page-identity promise: UZ V3 and RU V3 are valid independent
     publications, so both must reach `published` — each on a page of its own,
     beside its OWN language's V1, under its OWN language's subject page.
 
     Deliberately the harsh shape: the TOC row's single `notion_lesson_page_id`
     is already stamped with the UZ Lesson Topic (V1 was archived), which is
     exactly the language-blind pointer that would route the RU revision into the
-    UZ tree and collide there on `Homework V2`.
+    UZ tree and collide there on `Homework V3`.
     """
     seeded = await _seed_world(languages=("uz", "ru"))
     # Seeded under the title the archive really files by —
@@ -899,19 +997,19 @@ async def test_uz_and_ru_publish_to_separate_notion_pages(fakes):
         for language, target in targets.items():
             refreshed = await _target(target.id)
             assert refreshed.status == "published", (
-                f"{language} V2 did not publish: "
+                f"{language} V3 did not publish: "
                 f"{refreshed.publication_last_error}")
-            assert refreshed.publication_version == 2, (
-                f"{language} reserves its OWN version 2, independently of the "
+            assert refreshed.publication_version == 3, (
+                f"{language} reserves its OWN version 3, independently of the "
                 f"other lineage (got {refreshed.publication_version})")
             pages[language] = refreshed.notion_page_id
         assert pages["uz"] != pages["ru"], (
-            "UZ V2 and RU V2 are separate publications and need separate pages")
+            "UZ V3 and RU V3 are separate publications and need separate pages")
 
         for language, node in trees.items():
             assert fakes.notion.child_titles(node.lesson) == [
-                "Homework", "Homework V2"], (
-                f"the {language} V2 belongs beside the {language} V1, and "
+                "Homework", "Homework V3"], (
+                f"the {language} V3 belongs beside the {language} V1, and "
                 f"nothing else may land under that Lesson Topic")
             assert fakes.notion.parents[pages[language]] == node.lesson
             assert fakes.notion.child_titles(node.container) == [lesson_title], (
@@ -937,33 +1035,33 @@ async def _lesson_page_id(toc_entry_id):
 async def test_v1_and_every_earlier_version_page_are_never_touched(world, fakes):
     """Item 9. The strongest assertion in this file: V1's blocks are compared
     byte for byte against the snapshot taken before the campaign ran, and no
-    destructive Notion call is ever made against V1 or V2."""
+    destructive Notion call is ever made against V1 or V3."""
     v1_page = world.notion.homework_v1
 
     await _publish_one_campaign(world, fakes)
-    v2_page = (await _targets(await _first_campaign_id()))[0]
+    v3_page = (await _targets(await _first_campaign_id()))[0]
     assert fakes.notion.blocks[v1_page] == world.v1_snapshot, (
         "the V1 `Homework` page was modified")
 
-    v2_page_id = (await _target(v2_page.id)).notion_page_id
-    v2_snapshot = copy.deepcopy(fakes.notion.blocks[v2_page_id])
+    v3_page_id = (await _target(v3_page.id)).notion_page_id
+    v3_snapshot = copy.deepcopy(fakes.notion.blocks[v3_page_id])
 
-    await _publish_one_campaign(world, fakes)
+    await _publish_one_campaign(world, fakes, publication_version=4)
 
     assert fakes.notion.blocks[v1_page] == world.v1_snapshot, (
-        "publishing V3 rewrote V1")
-    assert fakes.notion.blocks[v2_page_id] == v2_snapshot, (
-        "publishing V3 rewrote V2 — earlier versions are immutable")
+        "publishing V4 rewrote V1")
+    assert fakes.notion.blocks[v3_page_id] == v3_snapshot, (
+        "publishing V4 rewrote V3 — earlier versions are immutable")
     assert fakes.notion.titles[v1_page] == "Homework", "V1 was renamed"
     destructive = [
         call for call in fakes.notion.calls
-        if call[0] == "clear_content_blocks" and call[1] in (v1_page, v2_page_id)
+        if call[0] == "clear_content_blocks" and call[1] in (v1_page, v3_page_id)
     ]
-    assert destructive == [], f"V1/V2 content was cleared: {destructive}"
+    assert destructive == [], f"V1/V3 content was cleared: {destructive}"
 
 
 async def _first_campaign_id():
-    """The oldest campaign this module created (the V2 one)."""
+    """The oldest campaign this module created (the V3 one)."""
     from sqlalchemy import select
 
     from app.db import SessionLocal

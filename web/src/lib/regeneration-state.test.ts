@@ -46,6 +46,7 @@ import {
   regenerationCampaignStatusLabel,
   regenerationCanaryCostView,
   regenerationDecisionGate,
+  regenerationDestinationSignature,
   regenerationDetailView,
   regenerationDraftSignature,
   regenerationEligibleQuery,
@@ -3550,6 +3551,9 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     canarySize: 1,
     provider: "gemini",
     model: "gemini-3.6-flash",
+    mode: "selective" as const,
+    publicationVersion: 3,
+    destinationOverrides: [],
   };
   const sig = regenerationDraftSignature(base);
   assert.strictEqual(sig, regenerationDraftSignature({ ...base }), "the signature is stable");
@@ -3572,6 +3576,51 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
   assert.ok(
     /regenerationDraftSignature\(/.test(acceptanceRouteSrc),
     "the route must scope the create error to the draft that produced it",
+  );
+}
+
+/* ── Task 6: destination review is valid for one exact destination input ── */
+{
+  const base = {
+    publication_version: 3,
+    selection: {
+      book_ids: ["b1"],
+      toc_entry_ids: ["t1"],
+      output_languages: ["uz" as const],
+    },
+    destination_overrides: [],
+  };
+  const sig = regenerationDestinationSignature(base);
+  assert.strictEqual(sig, regenerationDestinationSignature({ ...base }));
+  assert.notStrictEqual(
+    sig,
+    regenerationDestinationSignature({
+      ...base,
+      publication_version: 4,
+    }),
+    "changing V3 to V4 invalidates the reviewed Notion decision",
+  );
+  assert.notStrictEqual(
+    sig,
+    regenerationDestinationSignature({
+      ...base,
+      selection: { ...base.selection, toc_entry_ids: ["t1", "t2"] },
+    }),
+    "changing lessons invalidates the reviewed Notion decision",
+  );
+  assert.notStrictEqual(
+    sig,
+    regenerationDestinationSignature({
+      ...base,
+    destination_overrides: [
+      {
+        toc_entry_id: "t1",
+        output_language: "uz",
+        notion_lesson_page_id: "page-1",
+      },
+    ],
+    }),
+    "choosing a candidate invalidates the prior destination digest",
   );
 }
 

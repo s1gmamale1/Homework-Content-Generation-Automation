@@ -14,6 +14,7 @@ import {
   api,
   clampCanarySize,
   mergeReleasedFailures,
+  regenerationDestinationSignature,
   regenerationDetailView,
   regenerationDraftSignature,
   regenerationEligibleQuery,
@@ -23,10 +24,16 @@ import {
   regenerationMutationView,
   regenerationPollDecision,
   regenerationRetryAudit,
+  regenerationSelectablePhases,
 } from "@/lib/api";
+import { effectiveSelectedPhases } from "@/lib/regeneration-draft";
 import type {
   RegenerationCampaignDetail,
   RegenerationCampaignDraft,
+  RegenerationDestinationCheckRequest,
+  RegenerationDestinationCheckResponse,
+  RegenerationDestinationOverride,
+  RegenerationEstimateRequest,
   RegenerationPhasePlanRequest,
   RegenerationTargetReport,
   RegenerationWaveFailure,
@@ -100,63 +107,98 @@ function catalogRequest(subject: string): RegenerationPhasePlanRequest {
   };
 }
 
-function planRequest(subject: string, draft: RegenerationDraftState): RegenerationPhasePlanRequest {
+function selectedPhases(draft: RegenerationDraftState, canonicalPhases: string[]): string[] {
+  return effectiveSelectedPhases(draft, regenerationSelectablePhases(canonicalPhases));
+}
+
+function planRequest(
+  subject: string,
+  draft: RegenerationDraftState,
+  canonicalPhases: string[],
+): RegenerationPhasePlanRequest {
   return {
     subject,
-    selected_phases: draft.selectedPhases,
+    selected_phases: selectedPhases(draft, canonicalPhases),
     excluded_affected_phases: draft.excludedPhases,
     refresh_extraction: draft.refreshExtraction,
     exclusion_acknowledged: draft.acknowledged,
   };
 }
 
+function selection(draft: RegenerationDraftState) {
+  return {
+    // The filters AND server-side, so naming the book alongside the lessons
+    // narrows nothing away — it records WHICH book was regenerated on the
+    // frozen campaign's `selection_spec`.
+    book_ids: draft.bookId ? [draft.bookId] : [],
+    toc_entry_ids: draft.selectedTocEntryIds,
+    output_languages: [draft.language],
+  };
+}
+
+function contract(draft: RegenerationDraftState) {
+  return {
+    provider: draft.provider,
+    model: draft.model,
+    transport: "api" as const,
+    extract_transport: "api" as const,
+    extract_provider: null,
+    extract_model: null,
+    judge_transport: "api" as const,
+    judge_provider: null,
+    judge_model: null,
+    solver_transport: "api" as const,
+    solver_provider: null,
+    solver_model: null,
+    session_limit_strategy: "inherit" as const,
+  };
+}
+
+function destinationOverrides(draft: RegenerationDraftState): RegenerationDestinationOverride[] {
+  return draft.destinationOverrides.map((override) => ({
+    toc_entry_id: override.tocEntryId,
+    output_language: override.outputLanguage,
+    notion_lesson_page_id: override.notionLessonPageId,
+  }));
+}
+
+function destinationCheckRequest(
+  draft: RegenerationDraftState,
+): RegenerationDestinationCheckRequest {
+  return {
+    publication_version: draft.publicationVersion,
+    selection: selection(draft),
+    destination_overrides: destinationOverrides(draft),
+  };
+}
+
+function estimateRequest(
+  draft: RegenerationDraftState,
+  canonicalPhases: string[],
+): RegenerationEstimateRequest {
+  return {
+    publication_version: draft.publicationVersion,
+    selection: selection(draft),
+    contract: contract(draft),
+    selected_phases: selectedPhases(draft, canonicalPhases),
+    excluded_affected_phases: draft.excludedPhases,
+    refresh_extraction: draft.refreshExtraction,
+    exclusion_acknowledged: draft.acknowledged,
+    canary_size: clampCanarySize(draft.canarySize, draft.selectedTocEntryIds.length),
+  };
+}
+
 function campaignDraft(
   draft: RegenerationDraftState,
+  canonicalPhases: string[],
+  approvedDestinationDigest: string,
   estimateLow: number | null,
   estimateHigh: number | null,
 ): RegenerationCampaignDraft {
   return {
-    selection: {
-      // The filters AND server-side, so naming the book alongside the lessons
-      // narrows nothing away — it records WHICH book was regenerated on the
-      // frozen campaign's `selection_spec`.
-      book_ids: draft.bookId ? [draft.bookId] : [],
-      toc_entry_ids: draft.selectedTocEntryIds,
-      output_languages: [draft.language],
-    },
-    contract: {
-      provider: draft.provider,
-      model: draft.model,
-      // Regeneration is api-only server-side; sending anything else is a
-      // guaranteed `non_api_transport` refusal, so it is pinned here.
-      transport: "api",
-      // The ROLES are pinned to api literally, not left to `inherit`.
-      // `resolve_role_transport_default` resolves `inherit` against the mutable
-      // `launch_defaults.<role>_transport` row — NOT against the contract's own
-      // api transport — so a fleet default of `cli` there makes
-      // `require_api_transport` refuse every campaign this screen can compose,
-      // with no lever anywhere in this UI to fix it. `api` is the only value
-      // regeneration accepts, so saying it outright costs nothing and cannot
-      // be broken from outside.
-      extract_transport: "api",
-      extract_provider: null,
-      extract_model: null,
-      judge_transport: "api",
-      judge_provider: null,
-      judge_model: null,
-      solver_transport: "api",
-      solver_provider: null,
-      solver_model: null,
-      session_limit_strategy: "inherit",
-    },
-    selected_phases: draft.selectedPhases,
-    excluded_affected_phases: draft.excludedPhases,
-    refresh_extraction: draft.refreshExtraction,
-    exclusion_acknowledged: draft.acknowledged,
-    // Clamped again at the boundary: `canary_size` has a `ge=1` server refusal
-    // that arrives as a raw validation payload, and deselecting lessons after
-    // sizing the canary is the ordinary way to get there.
-    canary_size: clampCanarySize(draft.canarySize, draft.selectedTocEntryIds.length),
+    ...estimateRequest(draft, canonicalPhases),
+    destination_overrides: destinationOverrides(draft),
+    approved_destination_digest: approvedDestinationDigest,
     // Echoed back so the frozen campaign records the figure that was SHOWN,
     // not one recomputed at insert time.
     estimated_cost_low_usd: estimateLow,
@@ -174,6 +216,13 @@ export function RegenerationPage() {
   /** The draft signature a create refusal belongs to. A refusal is rendered
    *  only while the draft still matches it. */
   const [createErrorFor, setCreateErrorFor] = useState<string | null>(null);
+  /** A destination digest is valid only for the exact lesson/language/version
+   *  and override inputs that produced it. The server response is transient;
+   *  only the operator's override choices belong in the persisted draft. */
+  const [destinationReview, setDestinationReview] = useState<{
+    signature: string;
+    response: RegenerationDestinationCheckResponse;
+  } | null>(null);
   const [pendingByTarget, setPendingByTarget] = useState<
     Record<string, RegenerationActionKind | null>
   >({});
@@ -242,20 +291,36 @@ export function RegenerationPage() {
     enabled: Boolean(subject),
   });
 
-  const hasPhaseSelection = draft.selectedPhases.length > 0 || draft.refreshExtraction;
+  const canonicalPhases = catalog.data?.canonical_phases ?? [];
+  const effectivePhases = selectedPhases(draft, canonicalPhases);
+  const hasPhaseSelection = effectivePhases.length > 0 || draft.refreshExtraction;
+  const phasePlanBody = planRequest(subject ?? "", draft, canonicalPhases);
   const plan = useQuery({
-    queryKey: ["regeneration", "phase-plan", subject, planRequest(subject ?? "", draft)],
-    queryFn: () => api.previewRegenerationPhasePlan(planRequest(subject ?? "", draft)),
+    queryKey: ["regeneration", "phase-plan", subject, phasePlanBody],
+    queryFn: () => api.previewRegenerationPhasePlan(phasePlanBody),
     enabled: Boolean(subject) && hasPhaseSelection,
   });
 
   const canEstimate =
     draft.selectedTocEntryIds.length > 0 && hasPhaseSelection && draft.model !== null;
-  const estimateBody = campaignDraft(draft, null, null);
+  const estimateBody = estimateRequest(draft, canonicalPhases);
   const estimate = useQuery({
     queryKey: ["regeneration", "estimate", estimateBody],
     queryFn: () => api.estimateRegeneration(estimateBody),
     enabled: canEstimate,
+  });
+
+  const destinationBody = destinationCheckRequest(draft);
+  const destinationSignature = regenerationDestinationSignature(destinationBody);
+  const currentDestinations =
+    destinationReview?.signature === destinationSignature ? destinationReview.response : null;
+
+  const destinationMut = useMutation({
+    mutationFn: (vars: {
+      request: RegenerationDestinationCheckRequest;
+      signature: string;
+    }) => api.checkRegenerationDestinations(vars.request),
+    onSuccess: (response, vars) => setDestinationReview({ signature: vars.signature, response }),
   });
 
   /** Write the refreshed report the mutation returned straight into the cache,
@@ -277,14 +342,7 @@ export function RegenerationPage() {
     // describing a draft that no longer exists and blaming a selection that is
     // no longer there.
     onMutate: () => setCreateErrorFor(regenerationDraftSignature(draft)),
-    mutationFn: () =>
-      api.createRegenerationCampaign(
-        campaignDraft(
-          draft,
-          estimate.data?.estimate?.low_usd ?? null,
-          estimate.data?.estimate?.high_usd ?? null,
-        ),
-      ),
+    mutationFn: (body: RegenerationCampaignDraft) => api.createRegenerationCampaign(body),
     onSuccess: (fresh) => {
       adopt(fresh);
       // Freezing a campaign takes an ACTIVE lineage lock on every lesson in
@@ -292,6 +350,7 @@ export function RegenerationPage() {
       // alone lets the operator tick one again and meet an
       // `active_lineage_conflict` that the screen already knew about.
       qc.invalidateQueries({ queryKey: ELIGIBLE_KEY });
+      setDestinationReview(null);
       setSelectedId(fresh.id);
       toast.success("Campaign frozen. Nothing has been spent or published yet.");
     },
@@ -493,17 +552,50 @@ export function RegenerationPage() {
               estimate={estimate.data ?? null}
               estimateLoading={estimate.isFetching}
               estimateError={view(estimate.error)}
+              destinations={currentDestinations}
+              destinationsChecking={destinationMut.isPending}
+              destinationError={
+                destinationMut.variables?.signature === destinationSignature
+                  ? view(destinationMut.error)
+                  : null
+              }
+              onCheckDestinations={() =>
+                destinationMut.mutate({
+                  request: destinationBody,
+                  signature: destinationSignature,
+                })
+              }
+              onChooseDestination={(tocEntryId, outputLanguage, notionLessonPageId) =>
+                setDraft((current) => ({
+                  ...current,
+                  destinationOverrides: [
+                    ...current.destinationOverrides.filter(
+                      (override) =>
+                        override.tocEntryId !== tocEntryId ||
+                        override.outputLanguage !== outputLanguage,
+                    ),
+                    { tocEntryId, outputLanguage, notionLessonPageId },
+                  ],
+                }))
+              }
               manifest={manifest.data}
               manifestError={view(manifest.error)}
               state={draft}
               onChange={setDraft}
-              onCreate={() => createMut.mutate()}
+              onCreate={() => {
+                if (!currentDestinations) return;
+                createMut.mutate(
+                  campaignDraft(
+                    draft,
+                    canonicalPhases,
+                    currentDestinations.destination_digest,
+                    estimate.data?.estimate?.low_usd ?? null,
+                    estimate.data?.estimate?.high_usd ?? null,
+                  ),
+                );
+              }}
               creating={createMut.isPending}
-              createError={
-                createErrorFor === regenerationDraftSignature(draft)
-                  ? view(createMut.error)
-                  : null
-              }
+              createError={createErrorFor === regenerationDraftSignature(draft) ? view(createMut.error) : null}
             />
           </div>
 

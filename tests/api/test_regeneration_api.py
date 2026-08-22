@@ -68,6 +68,21 @@ def _feature_on(monkeypatch):
     # inside the container it is testing; a test that wants the baked source
     # sets it explicitly.
     monkeypatch.delenv("APP_GIT_REVISION", raising=False)
+    monkeypatch.setattr(
+        regen_api,
+        "_check_active_workers",
+        AsyncMock(return_value=SimpleNamespace(
+            ok=True,
+            workers_online=1,
+            compatible_worker_ids=("worker-1",),
+            required_api_providers=("gemini",),
+            fleet_api_paused=False,
+            reason=None,
+        )),
+    )
+    monkeypatch.setattr(
+        regen_api, "_publication_version_conflicts", AsyncMock(return_value=[])
+    )
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
 
     async def _fake_session():
@@ -91,7 +106,17 @@ def _feature_on(monkeypatch):
     app.dependency_overrides[get_session] = _fake_session
     # The report gather is DB-shaped; every route test that isn't about the
     # report itself gets a canned one.
-    monkeypatch.setattr(regen_api, "_reconcile", AsyncMock(return_value=0))
+    reconcile = AsyncMock(return_value=0)
+    monkeypatch.setattr(regen_api, "_reconcile", reconcile)
+
+    async def _closed_reconcile():
+        return await reconcile(MagicMock())
+
+    monkeypatch.setattr(
+        regen_api,
+        "_reconcile_closed",
+        AsyncMock(side_effect=_closed_reconcile),
+    )
     yield
     app.dependency_overrides.pop(get_current_user, None)
     app.dependency_overrides.pop(get_session, None)
@@ -165,6 +190,7 @@ def _fake_service(**methods):
     for name in (
         "create_campaign", "launch_canary", "approve_canary", "reject_canary",
         "cancel", "retry_generation", "retry_publication", "abandon", "roll_up",
+        "load_destination_sources",
     ):
         setattr(service, name, AsyncMock(return_value=methods.get(name)))
     for name, value in methods.items():
@@ -201,6 +227,8 @@ def _create_body(**overrides):
             "transport": "api",
         },
         "selected_phases": ["flashcards"],
+        "publication_version": 3,
+        "approved_destination_digest": "a" * 64,
         "actor": "operator",
     }
     body.update(overrides)
@@ -210,6 +238,7 @@ def _create_body(**overrides):
 def _estimate_body(**overrides):
     body = _create_body()
     body.pop("actor")
+    body.pop("approved_destination_digest")
     body.update(overrides)
     return body
 
@@ -598,6 +627,124 @@ def test_estimate_is_read_only_and_carries_preflight_and_incompleteness(monkeypa
     assert priced.await_count == 1
 
 
+def test_estimate_returns_exact_version_and_worker_readiness_without_notion_io(
+    monkeypatch,
+):
+    source = _source()
+    monkeypatch.setattr(
+        discovery, "list_source_candidates", AsyncMock(return_value=[_candidate(source)])
+    )
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        regen_api,
+        "_estimate_regeneration",
+        AsyncMock(return_value=SimpleNamespace(
+            low_usd=1.0, high_usd=2.0, line_items=(), target_count=1,
+            regenerated_phase_count=10, copied_phase_count=1,
+            regenerated_extract_count=0, copied_extract_count=1,
+            window_start=NOW - timedelta(days=30), window_end=NOW,
+            notes=(), is_estimate=True, has_unpriced_lines=False,
+        )),
+    )
+    remote = AsyncMock()
+    monkeypatch.setattr(regen_api, "_resolve_destinations", remote)
+
+    response = client.post(f"{BASE}/estimate", json=_estimate_body())
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["publication_version"] == 3
+    assert body["worker_executability"] == {
+        "ok": True,
+        "workers_online": 1,
+        "compatible_worker_ids": ["worker-1"],
+        "required_api_providers": ["gemini"],
+        "fleet_api_paused": False,
+        "reason": None,
+    }
+    assert "destination_digest" not in body
+    assert remote.await_count == 0
+
+
+def test_estimate_warns_when_refresh_pdf_is_missing_on_the_head(
+    monkeypatch,
+    tmp_path,
+):
+    source = _source(book_filename="missing-algebra.pdf")
+    monkeypatch.setattr(settings, "var_dir", str(tmp_path))
+    monkeypatch.setattr(
+        discovery,
+        "list_source_candidates",
+        AsyncMock(return_value=[_candidate(source)]),
+    )
+    monkeypatch.setattr(
+        discovery, "preflight_notion_destinations", AsyncMock(return_value=[])
+    )
+    monkeypatch.setattr(
+        regen_api,
+        "_estimate_regeneration",
+        AsyncMock(return_value=SimpleNamespace(
+            low_usd=1.0, high_usd=2.0, line_items=(), target_count=1,
+            regenerated_phase_count=11, copied_phase_count=0,
+            regenerated_extract_count=1, copied_extract_count=0,
+            window_start=NOW - timedelta(days=30), window_end=NOW,
+            notes=(), is_estimate=True, has_unpriced_lines=False,
+        )),
+    )
+
+    response = client.post(
+        f"{BASE}/estimate",
+        json=_estimate_body(refresh_extraction=True),
+    )
+
+    assert response.status_code == 200
+    (warning,) = response.json()["source_availability_warnings"]
+    assert "missing-algebra.pdf" in warning
+    assert str(source.book_id) in warning
+    assert "worker" in warning.lower()
+
+
+def test_destination_check_returns_every_reviewed_target(monkeypatch):
+    source = campaign_service.DestinationSource(
+        toc_entry_id=uuid4(), output_language="uz", source_job_id=uuid4(),
+        subject=SUBJECT, grade="5", book_filename="algebra.pdf",
+        section_number="1", section_title="Lesson one", chapter_title="",
+        page_start=7, notion_lesson_page_id="lesson-1",
+        lesson_title="1 Lesson one",
+    )
+    service = _install_service(monkeypatch, _fake_service())
+    service.load_destination_sources.return_value = (source,)
+    resolution = campaign_service.DestinationResolution(
+        toc_entry_id=source.toc_entry_id, output_language="uz",
+        lesson_title=source.lesson_title, status="reuse",
+        container_policy="reuse", container_page_id="container-1",
+        lesson_policy="reuse", lesson_page_id="lesson-1",
+        candidates=(), reason=None,
+    )
+    resolved = AsyncMock(return_value=campaign_service.DestinationPreflight(
+        ok=True, resolutions=(resolution,), digest="b" * 64,
+        checked_target_count=1,
+    ))
+    monkeypatch.setattr(regen_api, "_resolve_destinations", resolved)
+
+    response = client.post(f"{BASE}/destinations", json={
+        "selection": {"toc_entry_ids": [str(source.toc_entry_id)]},
+        "publication_version": 3,
+        "destination_overrides": [],
+    })
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["target_count"] == body["checked_target_count"] == 1
+    assert body["destination_digest"] == "b" * 64
+    assert body["destinations"][0]["status"] == "reuse"
+    assert body["destinations"][0]["notion_page_url"].endswith("lesson1")
+    assert service.load_destination_sources.await_count == 1
+    assert resolved.await_count == 1
+
+
 def test_estimate_refuses_a_retired_model_the_same_way_creation_does(monkeypatch):
     """A stale `launch_defaults` row is the ONE way a retired model reaches a
     campaign: the draft body is manifest-validated by pydantic, but that row is
@@ -689,9 +836,27 @@ def test_create_campaign_returns_the_new_campaign_report(monkeypatch):
     assert response.json()["id"] == str(campaign.id)
     spec = service.create_campaign.await_args.args[0]
     assert spec.canary_size == 2
+    assert spec.publication_version == 3
+    assert spec.approved_destination_digest == "a" * 64
     assert spec.selected_phases == ("flashcards",)
     assert spec.contract.transport == "api"
     assert detail.await_count == 1
+
+
+def test_create_maps_a_changed_destination_review_without_a_report_read(monkeypatch):
+    service = _install_service(
+        monkeypatch,
+        _fake_service(create_campaign=AsyncMock(side_effect=
+            campaign_service.DestinationReviewChanged("review changed"))),
+    )
+    detail = _install_detail(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "destination_review_changed"
+    assert service.create_campaign.await_count == 1
+    assert detail.await_count == 0
 
 
 @pytest.mark.parametrize(

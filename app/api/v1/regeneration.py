@@ -15,18 +15,21 @@ dependency is used, not the SA-key-strict one: this is an operator workflow,
 and the SSE/query-token form belongs to it.
 
 **The feature gate is a 404, not a 403.** With ``REGENERATION_ENABLED=false``
-every route is absent, so a stale UI cannot mutate a hidden feature. The two
-routes that hand work to the publication loop (``approve``, ``retry-publication``)
-additionally require that delivery is actually POSSIBLE — the
+every route is absent, so a stale UI cannot mutate a hidden feature. The
+explicit destination review, campaign-create and canary routes require a
+readable Notion destination: that snapshot is part of the frozen campaign and
+is revalidated immediately before paid work. The two routes that hand work to
+the publication loop (``approve``, ``retry-publication``) additionally require
+that delivery is actually POSSIBLE — the
 ``REGENERATION_PUBLISHER_ENABLED`` flag AND a usable Notion destination, which
 are exactly the conditions under which `main.py` starts the loop — because
 approving a campaign into a queue nobody serves is a lie, and it is an expensive
 one: approval releases
 every target, and each release ends in a `Homework V{n}` number reserved
 forever. So it is a structured 409 instead, naming which of the two is missing.
-Generation-only routes (estimate, create, canary, ``retry-generation``) are
-deliberately NOT gated on any of this: running the feature with delivery dark is
-a supported way to work.
+The DB-only estimate remains available with delivery dark and makes no Notion
+call. No campaign can be frozen or launched until the destinations for its
+exact requested version have been reviewed.
 
 **This router owns no state machine.** Every transition belongs to
 ``RegenerationCampaignService``; the routes translate its refusals into status
@@ -61,7 +64,7 @@ from sqlalchemy import Row, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
-from app.db import get_session
+from app.db import SessionLocal, get_session
 from app.models.agent_usage import AgentUsage
 from app.models.homework_job import HomeworkJob
 from app.models.phase_output import PhaseOutput
@@ -70,6 +73,7 @@ from app.models.regeneration_target import RegenerationTarget
 from app.models.toc_entry import TOCEntry
 from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import regeneration_campaigns as campaigns_repo
+from app.repositories import regeneration_sources as sources_repo
 from app.repositories import regeneration_targets as targets_repo
 from app.schemas import regeneration as out
 from app.schemas.regeneration_contract import (
@@ -79,8 +83,12 @@ from app.schemas.regeneration_contract import (
 from app.services import (
     agent_models,
     code_version,
+    regeneration_destination,
+    regeneration_executability,
     regeneration_job_state,
+    regeneration_notion_readiness,
     regeneration_publisher,
+    storage,
 )
 from app.services import regeneration_discovery as discovery
 from app.services.regeneration_campaign import (
@@ -90,6 +98,8 @@ from app.services.regeneration_campaign import (
     CampaignSelection,
     CanaryNotReviewable,
     CreateCampaignSpec,
+    DestinationResolutionBlocked,
+    DestinationReviewChanged,
     IllegalCampaignAction,
     IllegalTargetAction,
     NoEligibleTargets,
@@ -97,12 +107,14 @@ from app.services.regeneration_campaign import (
     PartialWaveRelease,
     PreflightBlocked,
     RegenerationCampaignService,
+    RequestedPublicationVersionConflict,
     RetiredModelRefusal,
     SelectionTooLarge,
     SelectionDiscoveryTooLarge,
     TargetNotFound,
     TerminalCampaignWithLiveTargets,
     UnboundedSelection,
+    WorkerPreflightBlocked,
     require_api_transport,
     require_bounded_selection,
     require_live_models,
@@ -189,6 +201,9 @@ _DEBOUNCE_MAX_ENTRIES = 1024
 _clock = time.monotonic
 #: Indirection so a route test can price without a database.
 _estimate_regeneration = estimate_regeneration
+_check_active_workers = regeneration_executability.check_active_workers
+_resolve_destinations = regeneration_destination.resolve_destinations
+_publication_version_conflicts = sources_repo.publication_version_conflicts
 
 
 def reset_rollup_debounce() -> None:
@@ -237,6 +252,14 @@ async def _reconcile(session: AsyncSession) -> int:
     a campaign lock only for a target it actually moves.
     """
     return await regeneration_job_state.reconcile_terminal_revision_jobs(session)
+
+
+async def _reconcile_closed() -> int:
+    """Run crash repair in its own short session before remote service work."""
+    async with SessionLocal() as session:
+        repaired = await _reconcile(session)
+        await session.commit()
+        return repaired
 
 
 # ═══════════════════════════ error mapping ═══════════════════════════════
@@ -303,6 +326,35 @@ def _translate_campaign_error(exc: CampaignError, *, request_shaped: bool):
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, ActiveLineageConflict):
         return _lineage_conflict(exc)
+    if isinstance(exc, RequestedPublicationVersionConflict):
+        return _conflict(
+            "publication_version_conflict",
+            str(exc),
+            conflicts=[
+                {
+                    "toc_entry_id": str(item.toc_entry_id),
+                    "output_language": item.output_language,
+                    "requested_version": item.requested_version,
+                    "existing_version": item.existing_version,
+                    "reason": item.reason,
+                }
+                for item in exc.conflicts
+            ],
+        )
+    if isinstance(exc, DestinationReviewChanged):
+        return _conflict("destination_review_changed", str(exc))
+    if isinstance(exc, DestinationResolutionBlocked):
+        return _conflict("destination_resolution_blocked", str(exc))
+    if isinstance(exc, WorkerPreflightBlocked):
+        result = exc.result
+        return _conflict(
+            "worker_not_executable",
+            str(exc),
+            workers_online=result.workers_online,
+            compatible_worker_ids=list(result.compatible_worker_ids),
+            required_api_providers=list(result.required_api_providers),
+            fleet_api_paused=result.fleet_api_paused,
+        )
     if isinstance(exc, PreflightBlocked):
         return _preflight_conflict(exc)
     if isinstance(exc, RetiredModelRefusal):
@@ -801,6 +853,29 @@ def _plans_for_sources(request: out.EstimateRequest, sources: Sequence):
     return plans
 
 
+def _source_availability_warnings(
+    request: out.EstimateRequest,
+    sources: Sequence,
+) -> list[str]:
+    """Describe head-local refresh inputs without treating them as fleet truth."""
+    if not request.refresh_extraction:
+        return []
+    warnings: list[str] = []
+    seen_books: set[UUID] = set()
+    for source in sources:
+        if source.book_id in seen_books:
+            continue
+        seen_books.add(source.book_id)
+        if storage.book_pdf_path(source.book_id).is_file():
+            continue
+        warnings.append(
+            f"{source.book_filename} ({source.book_id}) is not present on the "
+            "head machine. Extraction refresh may still run if an active "
+            "worker already has or can pull the source PDF."
+        )
+    return warnings
+
+
 # ═══════════════════════════ discovery routes ════════════════════════════
 
 
@@ -906,6 +981,7 @@ async def estimate(
         require_bounded_selection(body.selection)
     except UnboundedSelection as exc:
         raise _translate_campaign_error(exc, request_shaped=True) from exc
+
     try:
         candidates = await discovery.list_source_candidates(
             session,
@@ -930,12 +1006,22 @@ async def estimate(
         return out.EstimateOut(
             target_count=0,
             canary_size=body.canary_size,
+            publication_version=body.publication_version,
             acknowledgement_required=False,
             sources=listing.sources,
             ineligible=listing.ineligible,
             phase_plans=[],
             estimate=None,
             preflight=out.PreflightOut.from_failures([]),
+            worker_executability=out.WorkerExecutabilityOut(
+                ok=False,
+                workers_online=0,
+                compatible_worker_ids=[],
+                required_api_providers=[],
+                fleet_api_paused=False,
+                reason="no eligible targets",
+            ),
+            source_availability_warnings=[],
         )
 
     try:
@@ -976,6 +1062,19 @@ async def estimate(
     except ValueError as exc:
         raise _unprocessable("unresolvable_contract", str(exc)) from exc
 
+    version_conflicts = await _publication_version_conflicts(
+        session,
+        sources=sources,
+        requested_version=body.publication_version,
+    )
+    if version_conflicts:
+        raise _translate_campaign_error(
+            RequestedPublicationVersionConflict(version_conflicts),
+            request_shaped=True,
+        )
+
+    worker_executability = await _check_active_workers(session, contract)
+
     priced = await _estimate_regeneration(
         session,
         targets=sources,
@@ -987,6 +1086,7 @@ async def estimate(
     return out.EstimateOut(
         target_count=len(sources),
         canary_size=body.canary_size,
+        publication_version=body.publication_version,
         acknowledgement_required=acknowledgement_required,
         sources=listing.sources,
         ineligible=listing.ineligible,
@@ -998,6 +1098,65 @@ async def estimate(
         ],
         estimate=out.RegenerationEstimateOut.from_estimate(priced),
         preflight=out.PreflightOut.from_failures(failures),
+        worker_executability=out.WorkerExecutabilityOut.from_result(
+            worker_executability
+        ),
+        source_availability_warnings=_source_availability_warnings(body, sources),
+    )
+
+
+@router.post("/destinations", response_model=out.DestinationCheckOut)
+async def check_destinations(
+    body: out.DestinationCheckRequest,
+) -> out.DestinationCheckOut:
+    """Explicit read-only Notion review; no request DB session stays open."""
+    unavailable = regeneration_notion_readiness.publication_unavailable_reason()
+    if unavailable is not None:
+        raise _conflict(
+            "notion_destination_unavailable",
+            unavailable,
+            retryable=False,
+        )
+    selection = CampaignSelection(
+        book_ids=tuple(body.selection.book_ids),
+        toc_entry_ids=tuple(body.selection.toc_entry_ids),
+        output_languages=tuple(body.selection.output_languages),
+    )
+    service = _service()
+    try:
+        sources = await service.load_destination_sources(
+            selection, publication_version=body.publication_version
+        )
+        result = await _resolve_destinations(
+            sources=sources,
+            requested_version=body.publication_version,
+            overrides=tuple(
+                regeneration_destination.DestinationOverride(
+                    toc_entry_id=item.toc_entry_id,
+                    output_language=item.output_language,
+                    notion_lesson_page_id=item.notion_lesson_page_id,
+                )
+                for item in body.destination_overrides
+            ),
+        )
+    except regeneration_destination.DestinationServiceUnavailable as exc:
+        raise _conflict(
+            "notion_destination_unavailable",
+            str(exc),
+            retryable=exc.retryable,
+        ) from exc
+    except CampaignError as exc:
+        raise _translate_campaign_error(exc, request_shaped=True) from exc
+
+    return out.DestinationCheckOut(
+        ok=result.ok,
+        target_count=len(sources),
+        checked_target_count=result.checked_target_count,
+        destination_digest=result.digest,
+        destinations=[
+            out.DestinationResolutionOut.from_resolution(item)
+            for item in result.resolutions
+        ],
     )
 
 
@@ -1019,6 +1178,12 @@ async def create_campaign(
     except UnboundedSelection as exc:
         raise _translate_campaign_error(exc, request_shaped=True) from exc
 
+    unavailable = regeneration_notion_readiness.publication_unavailable_reason()
+    if unavailable is not None:
+        raise _conflict(
+            "notion_destination_unavailable", unavailable, retryable=False
+        )
+
     # Provenance is resolved before the crash-repair sweep and before
     # the service is asked for anything. It is a pure local read with no I/O,
     # and creation is the audit boundary — a request that cannot say which code
@@ -1027,7 +1192,7 @@ async def create_campaign(
     # request validation, so neither an anonymous nor a flag-off nor a
     # malformed caller ever learns this deployment's git state.
     app_git_revision = _resolve_app_git_revision(body.app_git_revision)
-    await _reconcile(session)
+    await _reconcile_closed()
     spec = CreateCampaignSpec(
         selection=CampaignSelection(
             book_ids=tuple(body.selection.book_ids),
@@ -1036,6 +1201,16 @@ async def create_campaign(
         ),
         contract=body.contract,
         selected_phases=tuple(body.selected_phases),
+        publication_version=body.publication_version,
+        destination_overrides=tuple(
+            regeneration_destination.DestinationOverride(
+                toc_entry_id=item.toc_entry_id,
+                output_language=item.output_language,
+                notion_lesson_page_id=item.notion_lesson_page_id,
+            )
+            for item in body.destination_overrides
+        ),
+        approved_destination_digest=body.approved_destination_digest,
         excluded_affected_phases=tuple(body.excluded_affected_phases),
         refresh_extraction=body.refresh_extraction,
         exclusion_acknowledged=body.exclusion_acknowledged,
@@ -1112,6 +1287,8 @@ async def _campaign_action(
     session: AsyncSession,
     campaign_id: UUID,
     action,
+    *,
+    already_reconciled: bool = False,
     **kwargs,
 ) -> out.CampaignDetailOut:
     """Run one campaign transition and return the refreshed report.
@@ -1121,7 +1298,8 @@ async def _campaign_action(
     so it becomes a 200 carrying the per-target failures, never a generic
     409/500.
     """
-    await _reconcile(session)
+    if not already_reconciled:
+        await _reconcile(session)
     failures: list[out.WaveFailureOut] = []
     try:
         await action(campaign_id, **kwargs)
@@ -1135,6 +1313,12 @@ async def _campaign_action(
         ]
     except CampaignError as exc:
         raise _translate_campaign_error(exc, request_shaped=False) from exc
+    except regeneration_destination.DestinationServiceUnavailable as exc:
+        raise _conflict(
+            "notion_destination_unavailable",
+            str(exc),
+            retryable=exc.retryable,
+        ) from exc
     return _with_extras(
         await _campaign_detail(session, campaign_id, now=_now()),
         released_failures=failures,
@@ -1148,7 +1332,18 @@ async def launch_canary(
 ) -> out.CampaignDetailOut:
     """Preflight every destination, then create ONLY the canary jobs.
     Idempotent: a target that already has a revision job is left alone."""
-    return await _campaign_action(session, campaign_id, _service().launch_canary)
+    unavailable = regeneration_notion_readiness.publication_unavailable_reason()
+    if unavailable is not None:
+        raise _conflict(
+            "notion_destination_unavailable", unavailable, retryable=False
+        )
+    await _reconcile_closed()
+    return await _campaign_action(
+        session,
+        campaign_id,
+        _service().launch_canary,
+        already_reconciled=True,
+    )
 
 
 @router.post(

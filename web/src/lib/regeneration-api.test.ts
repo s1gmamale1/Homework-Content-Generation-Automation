@@ -123,6 +123,7 @@ const CONTRACT: RegenerationLaunchContract = {
 };
 
 const DRAFT: RegenerationCampaignDraft = {
+  publication_version: 3,
   selection: {
     book_ids: [BOOK_ID],
     toc_entry_ids: [TOC_ID],
@@ -134,6 +135,8 @@ const DRAFT: RegenerationCampaignDraft = {
   refresh_extraction: false,
   exclusion_acknowledged: true,
   canary_size: 2,
+  destination_overrides: [],
+  approved_destination_digest: "a".repeat(64),
   estimated_cost_low_usd: 1.25,
   estimated_cost_high_usd: 3.5,
   app_git_revision: "7209a4e",
@@ -143,6 +146,8 @@ const DRAFT: RegenerationCampaignDraft = {
 
 /** Keys `EstimateRequest` does not declare; `extra="forbid"` 422s on each. */
 const CREATE_ONLY_KEYS = [
+  "destination_overrides",
+  "approved_destination_digest",
   "estimated_cost_low_usd",
   "estimated_cost_high_usd",
   "app_git_revision",
@@ -236,6 +241,7 @@ const CREATE_ONLY_KEYS = [
     );
   }
   assert.deepStrictEqual(body, {
+    publication_version: 3,
     selection: DRAFT.selection,
     contract: CONTRACT,
     selected_phases: ["flashcards"],
@@ -257,7 +263,32 @@ const CREATE_ONLY_KEYS = [
 }
 
 /* ════════════════════════════════════════════════════════════════════
- * 4. POST /regeneration/campaigns — full draft, including the shown estimate
+ * 4. POST /regeneration/destinations — explicit read-only Notion review
+ * ════════════════════════════════════════════════════════════════════ */
+
+{
+  const request = {
+    publication_version: 3,
+    selection: DRAFT.selection,
+    destination_overrides: [],
+  };
+  const call = await sent(
+    () => api.checkRegenerationDestinations(request),
+    {
+      ok: true,
+      target_count: 1,
+      checked_target_count: 1,
+      destination_digest: "a".repeat(64),
+      destinations: [],
+    },
+  );
+  assert.strictEqual(call.method, "POST");
+  assert.strictEqual(call.url, "/api/v1/regeneration/destinations");
+  assert.deepStrictEqual(call.body, request);
+}
+
+/* ════════════════════════════════════════════════════════════════════
+ * 5. POST /regeneration/campaigns — full draft, including reviewed destination
  * ════════════════════════════════════════════════════════════════════ */
 
 {
@@ -273,6 +304,9 @@ const CREATE_ONLY_KEYS = [
   assert.strictEqual(body.estimated_cost_high_usd, 3.5);
   assert.strictEqual(body.app_git_revision, "7209a4e");
   assert.deepStrictEqual(body.notes, { why: "flashcard prompt refresh" });
+  assert.strictEqual(body.publication_version, 3);
+  assert.strictEqual(body.approved_destination_digest, "a".repeat(64));
+  assert.deepStrictEqual(body.destination_overrides, []);
   assert.deepStrictEqual(regenerationCampaignBody(DRAFT), body);
 }
 
@@ -407,6 +441,14 @@ const CREATE_ONLY_KEYS = [
         }),
     ],
     ["POST /estimate", () => api.estimateRegeneration(DRAFT)],
+    [
+      "POST /destinations",
+      () => api.checkRegenerationDestinations({
+        publication_version: 3,
+        selection: DRAFT.selection,
+        destination_overrides: [],
+      }),
+    ],
     ["POST /campaigns", () => api.createRegenerationCampaign(DRAFT)],
     ["GET /campaigns", () => api.listRegenerationCampaigns()],
     ["GET /campaigns/{id}", () => api.getRegenerationCampaign(CAMPAIGN_ID)],
@@ -430,7 +472,7 @@ const CREATE_ONLY_KEYS = [
       () => api.abandonRegenerationTarget(TARGET_ID, { actor: "", reason: "no" }),
     ],
   ];
-  assert.strictEqual(ENDPOINTS.length, 13, "Task 9 exposes exactly 13 endpoints");
+  assert.strictEqual(ENDPOINTS.length, 14, "Task 6 exposes exactly 14 endpoints");
   const seen = new Set<string>();
   for (const [name, run] of ENDPOINTS) {
     const call = await sent(run);
@@ -440,7 +482,7 @@ const CREATE_ONLY_KEYS = [
     );
     seen.add(`${call.method} ${path(call.url)}`);
   }
-  assert.strictEqual(seen.size, 13, "each endpoint must hit a distinct method+path");
+  assert.strictEqual(seen.size, 14, "each endpoint must hit a distinct method+path");
 }
 
 /* ════════════════════════════════════════════════════════════════════

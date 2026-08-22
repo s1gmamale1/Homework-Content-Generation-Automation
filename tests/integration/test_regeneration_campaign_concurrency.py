@@ -156,8 +156,49 @@ def _spec(ids, *, canary_size=1, lessons=None, publication_version=None):
         selected_phases=("flashcards",),
         canary_size=canary_size,
         publication_version=publication_version,
+        approved_destination_digest=("a" * 64 if publication_version else ""),
         app_git_revision=_MARKER,
         actor="pytest",
+    )
+
+
+def _reviewed_service():
+    async def _destinations(*, sources, requested_version, overrides):
+        resolutions = tuple(
+            svc.DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="create",
+                container_policy="create",
+                container_page_id=None,
+                lesson_policy="create",
+                lesson_page_id=None,
+                candidates=(),
+                reason=None,
+            )
+            for source in sources
+        )
+        return svc.DestinationPreflight(
+            ok=True,
+            resolutions=resolutions,
+            digest="a" * 64,
+            checked_target_count=len(resolutions),
+        )
+
+    async def _workers(_session, _contract):
+        return svc.WorkerExecutability(
+            ok=True,
+            workers_online=1,
+            compatible_worker_ids=("pytest-worker",),
+            required_api_providers=("gemini",),
+            fleet_api_paused=False,
+            reason=None,
+        )
+
+    return svc.RegenerationCampaignService(
+        destination_resolver=_destinations,
+        worker_checker=_workers,
     )
 
 
@@ -294,6 +335,79 @@ async def test_locked_target_reload_is_fresh_not_the_stale_identity_map():
             locked = await targets_repo.get_target_for_update(session, target.id)
             assert locked is stale[0]
             assert locked.status == "generating"
+    finally:
+        await _purge(ids)
+
+
+# ═════════════ remote preflight is outside DB sessions and row locks ═════
+
+
+async def test_exact_canary_remote_review_precedes_db_lock_and_holds_no_connection(
+    monkeypatch,
+):
+    """Notion latency must never sit inside a DB transaction or row lock.
+
+    The exact campaign resolves once while it is created and once immediately
+    before the paid canary. This pins the load-bearing ordering on that second
+    call: the worker/read sessions are already closed, and the campaign lock
+    has not started yet.
+    """
+    from app.db import engine
+    from app.repositories import regeneration_campaigns as campaigns_repo
+
+    ids = await _seed()
+    lock_started = False
+    remote_calls = 0
+    original_locked_read = campaigns_repo.get_campaign_for_update
+
+    async def _locked_read(*args, **kwargs):
+        nonlocal lock_started
+        lock_started = True
+        return await original_locked_read(*args, **kwargs)
+
+    async def _destinations(*, sources, requested_version, overrides):
+        nonlocal remote_calls
+        remote_calls += 1
+        if remote_calls == 2:
+            assert engine.pool.checkedout() == 0
+            assert lock_started is False
+        resolutions = tuple(
+            svc.DestinationResolution(
+                toc_entry_id=source.toc_entry_id,
+                output_language=source.output_language,
+                lesson_title=source.lesson_title,
+                status="create",
+                container_policy="create",
+                container_page_id=None,
+                lesson_policy="create",
+                lesson_page_id=None,
+                candidates=(),
+                reason=None,
+            )
+            for source in sources
+        )
+        return svc.DestinationPreflight(
+            ok=True,
+            resolutions=resolutions,
+            digest="a" * 64,
+            checked_target_count=len(resolutions),
+        )
+
+    service = _reviewed_service()
+    service._destination_resolver = _destinations
+    try:
+        campaign = await service.create_campaign(
+            _spec(ids, publication_version=3)
+        )
+        monkeypatch.setattr(
+            campaigns_repo, "get_campaign_for_update", _locked_read
+        )
+
+        await service.launch_canary(campaign.id)
+
+        assert remote_calls == 2
+        assert lock_started is True
+        assert await _revision_job_count(campaign.id) == 1
     finally:
         await _purge(ids)
 
@@ -642,7 +756,7 @@ async def test_two_campaigns_racing_one_publication_version_create_only_one():
     """
     ids = await _seed()
     try:
-        service = svc.RegenerationCampaignService()
+        service = _reviewed_service()
         results = await asyncio.gather(
             service.create_campaign(_spec(ids, publication_version=4)),
             service.create_campaign(_spec(ids, publication_version=4)),

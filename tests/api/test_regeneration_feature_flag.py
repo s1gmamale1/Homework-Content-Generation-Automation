@@ -48,6 +48,7 @@ WRITE_ROUTES = (
     ("post", f"{BASE}/phase-plan",
      {"subject": SUBJECT, "selected_phases": ["reflection"]}),
     ("post", f"{BASE}/estimate", {}),
+    ("post", f"{BASE}/destinations", {}),
     ("post", f"{BASE}/campaigns", {}),
     ("post", f"{BASE}/campaigns/{uuid4()}/canary", {}),
     ("post", f"{BASE}/campaigns/{uuid4()}/approve", {}),
@@ -70,6 +71,7 @@ def _isolate(monkeypatch):
 
     app.dependency_overrides[get_session] = _fake_session
     monkeypatch.setattr(regen_api, "_reconcile", AsyncMock(return_value=0))
+    monkeypatch.setattr(regen_api, "_reconcile_closed", AsyncMock(return_value=0))
     yield
     app.dependency_overrides.pop(get_current_user, None)
     app.dependency_overrides.pop(get_session, None)
@@ -87,6 +89,7 @@ def _fake_service():
     for name in (
         "create_campaign", "launch_canary", "approve_canary", "reject_canary",
         "cancel", "retry_generation", "retry_publication", "abandon", "roll_up",
+        "load_destination_sources",
     ):
         setattr(service, name, AsyncMock())
     return service
@@ -317,44 +320,92 @@ def test_reads_and_generation_routes_ignore_the_publisher_flag(
     assert _call(method, url, body).status_code == 200
 
 
-@pytest.mark.parametrize(
-    "url, seam",
-    [
-        (f"{BASE}/campaigns/{uuid4()}/canary", "_campaign_action"),
-        (f"{BASE}/targets/{uuid4()}/retry-generation", "_target_action"),
-    ],
-    ids=["canary", "retry-generation"],
-)
-def test_generation_routes_still_run_with_notion_unavailable(monkeypatch, url, seam):
-    """Canary generation and generation retry spend model budget but write no
-    Notion page and reserve no version, so an unconfigured head must still serve
-    them. The route body is replaced by a teapot: reaching it at all is the
-    assertion, and 418 is a status neither gate can produce."""
+def test_generation_retry_still_runs_with_notion_unavailable(monkeypatch):
+    """Retrying generated content is independent of destination review."""
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
     _notion(monkeypatch, enabled=False)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
     monkeypatch.setattr(regen_api, "_service", _fake_service)
-    monkeypatch.setattr(regen_api, seam, _teapot)
+    monkeypatch.setattr(regen_api, "_target_action", _teapot)
 
-    assert client.post(url, json={}).status_code == 418
+    assert client.post(
+        f"{BASE}/targets/{uuid4()}/retry-generation", json={}
+    ).status_code == 418
 
 
-@pytest.mark.parametrize("url", [f"{BASE}/estimate", f"{BASE}/campaigns"])
-def test_pricing_and_creation_are_not_gated_on_notion(monkeypatch, url):
-    """Estimating prices a draft and creation freezes one; neither writes a
-    Notion page or reserves a version, so both stay open on an unconfigured
-    head. A **422** on this empty body is the proof, and a precise one: a route
-    dependency raises before the body is validated (that is exactly why the
-    feature 404 beats request validation above), so reaching validation at all
-    means no gate refused the request."""
+def _valid_estimate_body() -> dict:
+    return {
+        "selection": {"toc_entry_ids": [str(uuid4())]},
+        "contract": {
+            "provider": "gemini", "model": "gemini-3.6-flash",
+            "transport": "api",
+        },
+        "selected_phases": ["flashcards"],
+        "publication_version": 3,
+        "canary_size": 1,
+    }
+
+
+def test_db_only_estimate_remains_available_when_notion_is_off(monkeypatch):
     monkeypatch.setattr(settings, "regeneration_enabled", True)
     monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
     _notion(monkeypatch, enabled=False)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
     monkeypatch.setattr(regen_api, "_service", _fake_service)
+    monkeypatch.setattr(
+        regen_api.discovery, "list_source_candidates", AsyncMock(return_value=[])
+    )
 
-    assert client.post(url, json={}).status_code == 422
+    assert client.post(
+        f"{BASE}/estimate", json=_valid_estimate_body()
+    ).status_code == 200
+
+
+@pytest.mark.parametrize("kind", ["destinations", "campaigns"])
+def test_review_and_create_refuse_when_notion_is_off(monkeypatch, kind):
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    monkeypatch.setattr(settings, "regeneration_publisher_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+    monkeypatch.setattr(regen_api, "_service", _fake_service)
+    estimate = _valid_estimate_body()
+    if kind == "destinations":
+        body = {
+            "selection": estimate["selection"],
+            "publication_version": 3,
+            "destination_overrides": [],
+        }
+    else:
+        body = {
+            **estimate,
+            "approved_destination_digest": "a" * 64,
+            "destination_overrides": [],
+            "actor": "",
+            "notes": {},
+        }
+
+    response = client.post(f"{BASE}/{kind}", json=body)
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "notion_destination_unavailable"
+
+
+def test_malformed_create_remains_422_before_notion_readiness(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+
+    assert client.post(f"{BASE}/campaigns", json={}).status_code == 422
+
+
+def test_canary_start_refuses_without_notion_revalidation(monkeypatch):
+    monkeypatch.setattr(settings, "regeneration_enabled", True)
+    _notion(monkeypatch, enabled=False)
+    app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
+
+    response = client.post(f"{BASE}/campaigns/{uuid4()}/canary", json={})
+    assert response.status_code == 409
+    assert response.json()["detail"]["error"] == "notion_destination_unavailable"
 
 
 def test_both_flags_default_to_off():

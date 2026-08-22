@@ -255,28 +255,28 @@ async def test_a_solver_mismatch_is_a_HARD_failure_that_cannot_publish(
 async def test_a_timeout_after_the_page_is_created_adopts_it_on_retry(
     world, fakes
 ):
-    """Item 10. The publisher creates `Homework V3` remotely and dies before
+    """Item 10. The publisher creates `Homework V4` remotely and dies before
     the page id reaches the database.
 
     The retry must find that page by its immutable MARKER (never by title
     alone), adopt it, and finish — ONE page and ONE reserved version, not a
-    second `Homework V3` and not a second version number.
+    second `Homework V4` and not a second version number.
     """
     from app.services.notion_versioned_homework import decode_revision_marker
 
-    # V2 first, so the crash lands on V3 exactly as the plan item specifies.
+    # The guided flow starts at V3; the crash therefore lands on the next V4.
     first = await _create_campaign(world)
     await _service().launch_canary(first)
-    v2_target = (await _targets(first))[0]
-    await _run_revision(v2_target.id)
+    v3_target = (await _targets(first))[0]
+    await _run_revision(v3_target.id)
     await _service().approve_canary(first, actor="pytest")
     await _drain_publisher(fakes)
-    assert (await _target(v2_target.id)).publication_version == 2
+    assert (await _target(v3_target.id)).publication_version == 3
 
-    second = await _create_campaign(world)
+    second = await _create_campaign(world, publication_version=4)
     await _service().launch_canary(second)
-    v3_target = (await _targets(second))[0]
-    await _run_revision(v3_target.id)
+    v4_target = (await _targets(second))[0]
+    await _run_revision(v4_target.id)
     await _service().approve_canary(second, actor="pytest")
 
     real_create = fakes.notion.create_page
@@ -292,9 +292,9 @@ async def test_a_timeout_after_the_page_is_created_adopts_it_on_retry(
     fakes.notion.create_page = real_create
 
     assert crashed, "the crash never happened — the test proved nothing"
-    interrupted = await _target(v3_target.id)
+    interrupted = await _target(v4_target.id)
     assert interrupted.status == "publication_failed"
-    assert interrupted.publication_version == 3, (
+    assert interrupted.publication_version == 4, (
         "the version is reserved before the remote write and is never reused")
     assert interrupted.notion_page_id is None, (
         "the page id never reached the database — that IS the crash window")
@@ -302,12 +302,12 @@ async def test_a_timeout_after_the_page_is_created_adopts_it_on_retry(
     # The retry-due backoff is in the future; an operator retry is the
     # documented way to bring it forward, and it must make no model call.
     generated_before = list(fakes.generated)
-    await _service().retry_publication(v3_target.id)
+    await _service().retry_publication(v4_target.id)
     await _drain_publisher(fakes)
 
-    published = await _target(v3_target.id)
+    published = await _target(v4_target.id)
     assert published.status == "published"
-    assert published.publication_version == 3, "the reserved version was re-used"
+    assert published.publication_version == 4, "the reserved version was re-used"
     assert published.notion_page_id == crashed[0], (
         "the retry must ADOPT the page the crashed attempt created, not mint a "
         "second one")
@@ -315,10 +315,10 @@ async def test_a_timeout_after_the_page_is_created_adopts_it_on_retry(
         "a publication retry re-DELIVERS; it must never re-generate")
 
     titles = fakes.notion.child_titles(world.notion.lesson)
-    assert titles.count("Homework V3") == 1, f"duplicate V3 pages: {titles}"
-    assert titles == ["Homework", "Homework V2", "Homework V3"]
+    assert titles.count("Homework V4") == 1, f"duplicate V4 pages: {titles}"
+    assert titles == ["Homework", "Homework V3", "Homework V4"]
     marker = decode_revision_marker(fakes.notion.blocks[published.notion_page_id])
-    assert marker is not None and marker.publication_version == 3
+    assert marker is not None and marker.publication_version == 4
     assert marker.toc_entry_id == world.toc_entry_id
 
 
@@ -380,7 +380,7 @@ async def test_a_publication_failure_retries_delivery_and_never_regenerates(
 
     failed = await _target(target.id)
     assert failed.status == "publication_failed"
-    assert failed.publication_version == 2
+    assert failed.publication_version == 3
     assert failed.publication_attempts == 1
     assert failed.publication_last_error and "notion 503" in failed.publication_last_error
     assert failed.publication_next_attempt_at is not None, (
@@ -390,7 +390,7 @@ async def test_a_publication_failure_retries_delivery_and_never_regenerates(
     generated_before = list(fakes.generated)
     retried = await _service().retry_publication(target.id)
     assert retried.status == "publication_pending"
-    assert retried.publication_version == 2, "the reserved version must be kept"
+    assert retried.publication_version == 3, "the reserved version must be kept"
     assert retried.publication_next_attempt_at is None
     assert retried.publication_last_error is None
     assert await _revision_job_id(target.id) == job_id
@@ -434,9 +434,9 @@ async def test_an_unretryable_collision_parks_for_an_operator_without_backoff(
     await _run_revision(target.id)
     await _service().approve_canary(campaign_id, actor="pytest")
 
-    # Somebody else's `Homework V2`, with no marker of ours.
+    # Somebody else's `Homework V3`, with no marker of ours.
     impostor = fakes.notion.add_page(
-        world.notion.lesson, version_page_title(2),
+        world.notion.lesson, version_page_title(3),
         [{"type": "paragraph", "paragraph": {
             "rich_text": [{"type": "text", "text": {"content": "not ours"}}]}}])
     impostor_before = copy.deepcopy(fakes.notion.blocks[impostor])
@@ -453,11 +453,11 @@ async def test_an_unretryable_collision_parks_for_an_operator_without_backoff(
     assert await _publisher(fakes).run_once() is False
 
     # The operator's documented second exit: abandon. The reserved version is
-    # permanently consumed, so the next regeneration publishes at V3.
+    # permanently consumed, so the next regeneration must use V4 or higher.
     abandoned = await _service().abandon(
         target.id, actor="pytest", reason="manual Notion cleanup required")
     assert abandoned.status == "abandoned"
-    assert abandoned.publication_version == 2, (
+    assert abandoned.publication_version == 3, (
         "abandonment preserves the consumed version — it is never released")
     assert abandoned.terminal_at is not None
     assert await _rolled_up(campaign_id) == "completed_with_abandonments"
@@ -649,7 +649,7 @@ async def test_a_publishing_target_cancelled_mid_flight_lands_on_the_real_outcom
         "the page EXISTS; reporting it abandoned would be a lie the operator "
         "cannot act on")
     assert published.notion_page_id is not None
-    assert published.publication_version == 2
+    assert published.publication_version == 3
     # `roll_up_campaign` rule 1: a cancelled campaign that nevertheless
     # DELIVERED reports `completed`, not `cancelled` — the same reason the
     # target itself lands `published`. Reporting a cancellation over a live
@@ -689,8 +689,6 @@ async def test_rejecting_the_canary_consumes_no_version_and_writes_no_page(
 ):
     """The pre-approval exit. Rejection abandons every canary and planned
     target, publishes nothing, and burns no publication version."""
-    notion_calls_before = len(fakes.notion.calls)
-
     campaign_id = await _create_campaign(world)
     await _service().launch_canary(campaign_id)
     target = (await _targets(campaign_id))[0]
@@ -705,7 +703,10 @@ async def test_rejecting_the_canary_consumes_no_version_and_writes_no_page(
     assert closed.status == "abandoned"
     assert closed.publication_version is None, "a rejected canary consumes no version"
     assert closed.notion_page_id is None
-    assert len(fakes.notion.calls) == notion_calls_before
+    assert not any(call[0] in {
+        "create_page", "append_block_children", "delete_block",
+        "clear_content_blocks", "upload_bytes",
+    } for call in fakes.notion.calls)
     assert fakes.notion.child_titles(world.notion.lesson) == ["Homework"], (
         "no versioned page may exist after a rejection")
     assert await _publisher(fakes).run_once() is False
