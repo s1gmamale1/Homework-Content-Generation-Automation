@@ -20,6 +20,7 @@ from app.schemas.solver import Discrepancy, SolveVerdict
 from app.services import agent
 from app.services.errors import SlotSaturation, is_slot_saturation
 from app.services.phase_judge import _is_auth_error, _is_refusal
+from app.services.prompt_sets import LEGACY_PROMPT_SET_ID
 from app.services.prompts import get_prompt
 
 
@@ -125,6 +126,7 @@ async def solve(
     homework_job_id: Optional[UUID] = None,
     phase_output_id: Optional[UUID] = None,
     contract_override: Optional[str] = None,
+    prompt_set_id: str = LEGACY_PROMPT_SET_ID,
 ) -> SolveOutcome:
     """Independently re-solve `phase_output_md`'s items and report where the
     generated answer key is wrong. Returns a SolveOutcome; for cli transport
@@ -133,7 +135,12 @@ async def solve(
     api transport an auth/401 error is RE-RAISED instead of swallowed: an api
     job must fail loudly, not ship unsolved."""
     try:
-        contract = contract_override or get_prompt(subject, phase_name, output_language=output_language)
+        # contract_override is already the fully-resolved contract text and
+        # bypasses prompt_set_id routing, same as phase_judge.judge().
+        contract = contract_override or get_prompt(
+            subject, phase_name, output_language=output_language,
+            prompt_set_id=prompt_set_id,
+        )
         solver_prompt = _build_solver_prompt(
             contract=contract, phase_output_md=phase_output_md, phase_name=phase_name)
         result = await agent.run_phase(

@@ -1,6 +1,7 @@
 import pathlib
 
-_P = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
+_P = (pathlib.Path(__file__).resolve().parents[2]
+      / "prompts" / "sets" / "homework-v1" / "_general")
 
 
 def _read(name: str) -> str:

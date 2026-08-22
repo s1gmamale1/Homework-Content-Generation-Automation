@@ -2,7 +2,7 @@ import pathlib
 
 _REFLECTION = (
     pathlib.Path(__file__).resolve().parents[2]
-    / "prompts" / "_general" / "reflection.md"
+    / "prompts" / "sets" / "homework-v1" / "_general" / "reflection.md"
 )
 
 

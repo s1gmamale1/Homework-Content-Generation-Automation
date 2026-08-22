@@ -27,7 +27,8 @@ def test_flow_generates_all_seven_gamified_games():
 def test_every_subject_game_is_registered_and_has_prompt():
     import pathlib
     from app.services.prompts import get_prompt
-    gdir = pathlib.Path(flows.__file__).resolve().parents[2] / "prompts" / "_general"
+    gdir = (pathlib.Path(flows.__file__).resolve().parents[2]
+            / "prompts" / "sets" / "homework-v1" / "_general")
     for subject, game in flows.SUBJECT_GAME.items():
         prompt = get_prompt(subject, game)
         assert prompt, f"{game} has no prompt for subject {subject}"

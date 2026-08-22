@@ -1,0 +1,12 @@
+{
+  "schema": "hcga-prompt-sets@1",
+  "default": "homework-v1",
+  "sets": [
+    {
+      "id": "homework-v1",
+      "label": "Homework v1 (legacy)",
+      "root": "sets/homework-v1",
+      "description": "Frozen production prompt set predating selective regeneration"
+    }
+  ]
+}

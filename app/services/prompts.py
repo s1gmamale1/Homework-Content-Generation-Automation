@@ -1,9 +1,10 @@
 import hashlib
 from pathlib import Path
 
-from app.services import subjects
+from app.services import prompt_sets, subjects
+from app.services.prompt_sets import LEGACY_PROMPT_SET_ID
 
-PROMPTS_DIR = Path(__file__).resolve().parent.parent.parent / "prompts"
+PROMPTS_DIR = prompt_sets.PROMPTS_DIR
 GENERAL_DIR = "_general"
 # MVP: general prompts serve every subject. Set True later to prefer a
 # subject-specific prompt when prompts/<subject>/<phase>.md exists.
@@ -468,18 +469,25 @@ FAMILY_RULES: dict[str, dict[str, str]] = {
     },
 }
 
-_cache: dict[str, dict[str, str]] = {}
-_hash_cache: dict[str, dict[str, str]] = {}
+# Cache keys are (prompt_set_id, dirname) so different prompt sets never share
+# a slot even when they both use the "_general" dirname (or, in the dormant
+# USE_SUBJECT_PROMPTS override layer, the same subject dirname).
+_cache: dict[tuple[str, str], dict[str, str]] = {}
+_hash_cache: dict[tuple[str, str], dict[str, str]] = {}
 
 
-def _resolve_dir(subject: str, phase_name: str) -> str:
-    if USE_SUBJECT_PROMPTS and (PROMPTS_DIR / subject / f"{phase_name}.md").is_file():
+def _root_for(prompt_set_id: str) -> Path:
+    return prompt_sets.get_prompt_set(prompt_set_id).root
+
+
+def _resolve_dir(root: Path, subject: str, phase_name: str) -> str:
+    if USE_SUBJECT_PROMPTS and (root / subject / f"{phase_name}.md").is_file():
         return subject
     return GENERAL_DIR
 
 
-def _load_dir(dirname: str) -> tuple[dict[str, str], dict[str, str]]:
-    d = PROMPTS_DIR / dirname
+def _load_dir(root: Path, dirname: str) -> tuple[dict[str, str], dict[str, str]]:
+    d = root / dirname
     if not d.is_dir():
         raise FileNotFoundError(f"Prompt directory not found: {d}")
     bodies: dict[str, str] = {}
@@ -491,25 +499,28 @@ def _load_dir(dirname: str) -> tuple[dict[str, str], dict[str, str]]:
     return bodies, hashes
 
 
-def load_all() -> None:
+def load_all(prompt_set_id: str = LEGACY_PROMPT_SET_ID) -> None:
+    root = _root_for(prompt_set_id)
     dirs = {GENERAL_DIR}
     if USE_SUBJECT_PROMPTS:
         from app.services.flows import SUPPORTED_SUBJECTS
         dirs.update(SUPPORTED_SUBJECTS)
     for dirname in dirs:
-        bodies, hashes = _load_dir(dirname)
-        _cache[dirname] = bodies
-        _hash_cache[dirname] = hashes
+        bodies, hashes = _load_dir(root, dirname)
+        _cache[(prompt_set_id, dirname)] = bodies
+        _hash_cache[(prompt_set_id, dirname)] = hashes
 
 
-def _raw(dirname: str, phase_name: str) -> tuple[str, str]:
-    if dirname not in _cache:
-        bodies, hashes = _load_dir(dirname)
-        _cache[dirname] = bodies
-        _hash_cache[dirname] = hashes
-    if phase_name not in _cache[dirname]:
-        raise KeyError(f"Prompt {dirname}/{phase_name}.md not found")
-    return _cache[dirname][phase_name], _hash_cache[dirname][phase_name]
+def _raw(prompt_set_id: str, dirname: str, phase_name: str) -> tuple[str, str]:
+    key = (prompt_set_id, dirname)
+    if key not in _cache:
+        root = _root_for(prompt_set_id)
+        bodies, hashes = _load_dir(root, dirname)
+        _cache[key] = bodies
+        _hash_cache[key] = hashes
+    if phase_name not in _cache[key]:
+        raise KeyError(f"Prompt {prompt_set_id}/{dirname}/{phase_name}.md not found")
+    return _cache[key][phase_name], _hash_cache[key][phase_name]
 
 
 def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
@@ -527,9 +538,11 @@ def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
 
 
 def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
-               output_language: str = "uz") -> str:
-    dirname = _resolve_dir(subject, phase_name)
-    body, _h = _raw(dirname, phase_name)
+               output_language: str = "uz", *,
+               prompt_set_id: str = LEGACY_PROMPT_SET_ID) -> str:
+    root = _root_for(prompt_set_id)
+    dirname = _resolve_dir(root, subject, phase_name)
+    body, _h = _raw(prompt_set_id, dirname, phase_name)
     body = _apply_substitutions(body, subject, output_language)
     phase_blocks = FAMILY_RULES.get(phase_name, {})
     family = _SUBJECT_FAMILY.get(subject)
@@ -541,31 +554,35 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
 
 
 def get_structured_prompt(
-    subject: str, phase: str, *, output_language: str = "uz"
+    subject: str, phase: str, *, output_language: str = "uz",
+    prompt_set_id: str = LEGACY_PROMPT_SET_ID,
 ) -> "str | None":
     """The JSON-authoring prompt for a structured phase, or None if it has none.
 
     Separate from `get_prompt`: that one is the MARKDOWN evaluation contract the
     judge, solver and lint read, and it says "Markdown only". A single prompt
     cannot both demand JSON and serve as the markdown contract. Structured
-    prompts live under `prompts/_general/structured/` — a subdirectory of
-    `_general`, deliberately not picked up by the `*.md` (non-recursive) globs
-    that scan `_general` itself for the markdown contracts.
+    prompts live under `<prompt set root>/_general/structured/` — a
+    subdirectory of `_general`, deliberately not picked up by the `*.md`
+    (non-recursive) globs that scan `_general` itself for the markdown
+    contracts.
     """
-    path = PROMPTS_DIR / "_general" / "structured" / f"{phase}.md"
+    root = _root_for(prompt_set_id)
+    path = root / "_general" / "structured" / f"{phase}.md"
     if not path.exists():
         return None
     body = path.read_text(encoding="utf-8")
     return _apply_substitutions(body, subject, output_language)
 
 
-_TEACHER_DECK_FIDELITY_PATH = (
-    PROMPTS_DIR / "_general" / "structured" / "teacher-deck.fidelity.md"
-)
-_teacher_deck_fidelity_cache: str | None = None
+# Keyed by prompt_set_id -- each prompt set carries its own fidelity contract
+# text, and the cache must never serve one set's bytes for another's id.
+_teacher_deck_fidelity_cache: dict[str, str] = {}
 
 
-def get_teacher_deck_fidelity_contract() -> str:
+def get_teacher_deck_fidelity_contract(
+    *, prompt_set_id: str = LEGACY_PROMPT_SET_ID
+) -> str:
     """The judge contract for grading a generated teacher deck's factual fidelity.
 
     Deliberately NOT reachable via `get_prompt(subject, "teacher-deck")` — that
@@ -576,17 +593,18 @@ def get_teacher_deck_fidelity_contract() -> str:
     English-only reviewer instruction, not student-facing content) and passed
     explicitly by the caller as `phase_judge.judge(..., contract_override=...)`.
     """
-    global _teacher_deck_fidelity_cache
-    if _teacher_deck_fidelity_cache is None:
-        _teacher_deck_fidelity_cache = _TEACHER_DECK_FIDELITY_PATH.read_text(
-            encoding="utf-8"
-        )
-    return _teacher_deck_fidelity_cache
+    if prompt_set_id not in _teacher_deck_fidelity_cache:
+        root = _root_for(prompt_set_id)
+        path = root / "_general" / "structured" / "teacher-deck.fidelity.md"
+        _teacher_deck_fidelity_cache[prompt_set_id] = path.read_text(encoding="utf-8")
+    return _teacher_deck_fidelity_cache[prompt_set_id]
 
 
-def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz") -> str:
+def get_prompt_hash(subject: str, phase_name: str, output_language: str = "uz", *,
+                     prompt_set_id: str = LEGACY_PROMPT_SET_ID) -> str:
     # Provenance only (recorded on agent_usages); does NOT drive cross-job reuse.
     import hashlib
     return hashlib.sha256(
-        get_prompt(subject, phase_name, output_language=output_language).encode("utf-8")
+        get_prompt(subject, phase_name, output_language=output_language,
+                   prompt_set_id=prompt_set_id).encode("utf-8")
     ).hexdigest()
