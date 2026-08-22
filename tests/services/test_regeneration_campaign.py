@@ -1427,10 +1427,10 @@ async def test_preflight_refuses_a_lesson_whose_pointer_belongs_to_another_langu
     carries a `notion_lesson_page_id`.
 
     That column is one language-blind pointer, owned by whichever lineage
-    archived the lesson first. The publisher resolves the Lesson Topic beneath
-    the target's OWN subject tree and refuses non-retryably when that tree is
-    unmapped, so a campaign that let the pointer stand in for the mapping would
-    pay to generate an `ru` revision that can then only park.
+    archived the lesson first. This fixture carries only the language-blind
+    Lesson Topic pointer — no exact V1 archive provenance — so it cannot bypass
+    the target language's subject tree. A campaign that trusted that unproven
+    pointer would pay to generate an `ru` revision that can then only park.
 
     Runs without Postgres on purpose: the ordering guarantee ("before any spend")
     is the db_only test above; what this pins is the VERDICT the launch gate

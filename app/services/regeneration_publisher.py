@@ -47,17 +47,15 @@ with the reserved version preserved, which is what lets the campaign roll up.
 The intent is re-read inside the fenced resolution transaction, never trusted
 from the claim snapshot.
 
-**A version page's identity is its LANGUAGE's subject tree.** A lineage is
-`(lesson, output_language)`, and each language files under its own configured
-Notion subject page — but `toc_entries.notion_lesson_page_id` is a single
-language-blind column that whichever lineage archived first happens to own.
-Following it would file an `ru` revision under the `uz` Lesson Topic, where it
-either collides with that language's `Homework V{n}` or, worse, quietly lands
-beside the wrong V1. So the Lesson Topic is ALWAYS resolved beneath this
-target's own `subject_page_id`, and the stored pointer is honoured only once it
-is shown to be a child of that tree's `Generated Homeworks` container. Within
-one language it is still authoritative — that is what keeps a lesson whose
-disambiguating title suffix has since changed on the page it already has.
+**A reviewed lineage id outranks mutable filing configuration.** A lineage is
+`(lesson, output_language)`. Preflight may freeze an exact container + Lesson
+Topic recovered from the V1 Homework page only after the database proves that
+the archive stamp belongs to this same lineage. Publication then revalidates
+the immutable Lesson Topic -> container edge and uses it even if titles or
+`NOTION_SUBJECT_PAGES` changed after review. Unreviewed historical targets and
+container-creation decisions still require the configured language subject
+page. This keeps cross-language pointers fail-closed without re-filing a proven
+legacy lesson merely because mutable organization drifted.
 
 **Lock order is parent then child, always.** Campaign-level actions take
 campaign ``FOR UPDATE`` then target ``FOR UPDATE``; the publication-gate trigger
@@ -76,6 +74,7 @@ from typing import Callable, Literal, Mapping, Optional, Union
 from uuid import UUID
 
 from loguru import logger
+from notion_client.errors import APIErrorCode, APIResponseError
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -139,7 +138,7 @@ class PublicationInputs:
     output_language: str
     claim_token: UUID
     publication_version: int
-    subject_page_id: str
+    subject_page_id: Optional[str]
     lesson_title: str
     legacy_lesson_page_id: Optional[str]
     stored_version_page_id: Optional[str]
@@ -564,22 +563,30 @@ class RegenerationPublisher:
                 section = await toc_repo.get(session, claim.toc_entry_id)
                 if book is None or section is None:
                     return _Refusal("the book or TOC row is missing")
-                subject_page_id = notion_archive._resolve_subject_page_id(
-                    settings.notion_subject_pages, job.subject, book.grade,
-                    book.original_filename or "", language=target.output_language,
-                )
-                if not subject_page_id:
-                    return _Refusal(
-                        f"no Notion subject page for language={target.output_language} "
-                        f"{job.subject}|{book.grade}"
-                    )
-
                 try:
                     reviewed_destination = _validated_reviewed_destination(target)
                 except ValueError as exc:
                     return _Refusal(
                         f"reviewed Notion destination is not executable: {exc}",
                         retryable=False,
+                    )
+
+                subject_page_id = notion_archive._resolve_subject_page_id(
+                    settings.notion_subject_pages, job.subject, book.grade,
+                    book.original_filename or "", language=target.output_language,
+                )
+                # A frozen reused container is already an exact destination;
+                # mutable subject-page configuration is only needed when the
+                # publisher may have to create that container (or when serving
+                # a historical target with no reviewed decision at all).
+                needs_subject_page = (
+                    reviewed_destination is None
+                    or reviewed_destination[0] == "create"
+                )
+                if not subject_page_id and needs_subject_page:
+                    return _Refusal(
+                        f"no Notion subject page for language={target.output_language} "
+                        f"{job.subject}|{book.grade}"
                     )
 
                 version = await targets_repo.reserve_publication_version(
@@ -717,27 +724,26 @@ class RegenerationPublisher:
         )
 
     def _resolve_lesson_parent(self, inputs: PublicationInputs) -> str:
-        """This LANGUAGE's subject page → `Generated Homeworks` →
-        `<lesson title>`, synchronously.
+        """Execute the frozen destination, or derive the historical one.
 
         Adopts the container and Lesson Topic the legacy archive and the teacher
         deck already share — a revision is a sibling INSIDE that lesson, not a
         parallel tree.
 
-        The stored `legacy_lesson_page_id` short-circuits the title lookup only
-        when it is a child of THIS language's container. That one membership
-        read is what makes the pointer safe to keep using: one TOC row can carry
-        a `uz` and an `ru` lineage while the column names whichever Lesson Topic
-        was archived first, so trusting it unconditionally files one language's
-        revision in the other's tree. Proven membership keeps its real value —
-        a lesson whose disambiguating title suffix has since changed stays on
-        the page it already has instead of being re-keyed onto a fresh one —
-        without letting it carry a target across languages.
+        Reviewed reuse ids were lineage-proven before the campaign froze them;
+        revalidate only their immutable Lesson Topic -> container relationship.
+        Historical targets still use this language's configured subject tree,
+        and its language-blind legacy pointer remains only a membership-checked
+        hint on that compatibility path.
         """
         client = self._client_factory()
         if inputs.notion_container_policy is None:
             # Byte-for-byte behavioural compatibility for historical targets:
             # derive/adopt the destination exactly as the old publisher did.
+            if not inputs.subject_page_id:
+                raise ReviewedDestinationChanged(
+                    "the historical destination has no configured subject page"
+                )
             container_id, _ = notion_archive.find_or_create(
                 client, inputs.subject_page_id, notion_archive.CONTAINER_TITLE
             )
@@ -752,21 +758,22 @@ class RegenerationPublisher:
             )
             return lesson_id
 
-        container_matches = [
-            page for page in client.get_child_pages(inputs.subject_page_id)
-            if _normalize(str(page.get("title", "")))
-            == _normalize(notion_archive.CONTAINER_TITLE)
-        ]
         if inputs.notion_container_policy == "reuse":
             container_id = inputs.reviewed_container_page_id
-            if not container_id or not any(
-                str(page.get("id")) == container_id for page in container_matches
-            ):
+            if not container_id:
                 raise ReviewedDestinationChanged(
-                    "the approved Generated Homeworks container is no longer "
-                    "under the configured subject page"
+                    "the approved container id is missing"
                 )
         else:
+            if not inputs.subject_page_id:
+                raise ReviewedDestinationChanged(
+                    "the approved container creation has no configured subject page"
+                )
+            container_matches = [
+                page for page in client.get_child_pages(inputs.subject_page_id)
+                if _normalize(str(page.get("title", "")))
+                == _normalize(notion_archive.CONTAINER_TITLE)
+            ]
             if len(container_matches) > 1:
                 raise ReviewedDestinationChanged(
                     "the Generated Homeworks container became ambiguous"
@@ -778,7 +785,17 @@ class RegenerationPublisher:
                     inputs.subject_page_id, notion_archive.CONTAINER_TITLE
                 )["id"])
 
-        lesson_children = client.get_child_pages(container_id)
+        try:
+            lesson_children = client.get_child_pages(container_id)
+        except APIResponseError as exc:
+            if (
+                inputs.notion_container_policy == "reuse"
+                and exc.code == APIErrorCode.ObjectNotFound
+            ):
+                raise ReviewedDestinationChanged(
+                    "the approved container no longer exists or is inaccessible"
+                ) from exc
+            raise
         if inputs.notion_parent_policy == "reuse":
             lesson_id = inputs.reviewed_lesson_page_id
             if not lesson_id or not any(

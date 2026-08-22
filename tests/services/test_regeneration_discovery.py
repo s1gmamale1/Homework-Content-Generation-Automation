@@ -457,8 +457,37 @@ async def test_languages_are_independent_lineages(monkeypatch):
     }
     assert by_lang["uz"].source_job_id == uz.id
     assert by_lang["uz"].next_expected_version == 2
+    assert by_lang["uz"].lineage_previously_published is False
     assert by_lang["ru"].source_job_id == ru_revision.id
     assert by_lang["ru"].next_expected_version == 4
+    assert by_lang["ru"].lineage_previously_published is True, (
+        "a lineage published only as a regeneration revision must never fall "
+        "back into the never-published page-creation path"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_archive_provenance_reaches_the_eligible_source(monkeypatch):
+    from app.services import regeneration_discovery as discovery
+
+    job = _Job()
+    _FakeRepo(
+        candidates=[_candidate(
+            job,
+            notion_homework_page_id="legacy-homework",
+            notion_homework_lineage_verified=True,
+            lineage_previously_published=True,
+        )],
+        v1_jobs={(job.toc_entry_id, "uz"): job},
+        phase_rows={job.id: _complete_rows()},
+    ).install(monkeypatch)
+
+    (source,) = await discovery.list_eligible_sources(
+        None, book_ids=None, toc_entry_ids=None, output_languages=None
+    )
+    assert source.notion_homework_page_id == "legacy-homework"
+    assert source.notion_homework_lineage_verified is True
+    assert source.lineage_previously_published is True
 
 
 @pytest.mark.asyncio
