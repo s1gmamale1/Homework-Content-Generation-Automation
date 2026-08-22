@@ -29,6 +29,11 @@ export function RegenerationModelSelection({
   onChange: (draft: GuidedRegenerationDraft) => void;
 }) {
   const patch = (next: Partial<GuidedRegenerationDraft>) => onChange({ ...draft, ...next });
+  const patchRole = (role: RegenerationModelRole, next: Partial<GuidedRegenerationDraft>) =>
+    patch({
+      ...next,
+      modelOverrideTouchedRoles: [...new Set([...draft.modelOverrideTouchedRoles, role])],
+    });
   const selected = effectiveRegenerationModels(draft, defaults);
   const issue = regenerationModelSelectionIssue(draft, defaults, manifest, defaultsLoadFailed);
 
@@ -100,8 +105,8 @@ export function RegenerationModelSelection({
             provider={draft.provider}
             model={draft.model}
             manifest={manifest}
-            onProvider={(provider) => patch({ provider, model: null })}
-            onModel={(model) => patch({ model })}
+            onProvider={(provider) => patchRole("content", { provider, model: null })}
+            onModel={(model) => patchRole("content", { model })}
           />
           <RolePicker
             modelRole="judge"
@@ -109,9 +114,9 @@ export function RegenerationModelSelection({
             model={draft.judgeModel}
             manifest={manifest}
             onProvider={(judgeProvider) =>
-              patch({ judgeProvider: judgeProvider || null, judgeModel: null })
+              patchRole("judge", { judgeProvider: judgeProvider || null, judgeModel: null })
             }
-            onModel={(judgeModel) => patch({ judgeModel })}
+            onModel={(judgeModel) => patchRole("judge", { judgeModel })}
           />
           <RolePicker
             modelRole="solver"
@@ -119,9 +124,9 @@ export function RegenerationModelSelection({
             model={draft.solverModel}
             manifest={manifest}
             onProvider={(solverProvider) =>
-              patch({ solverProvider: solverProvider || null, solverModel: null })
+              patchRole("solver", { solverProvider: solverProvider || null, solverModel: null })
             }
-            onModel={(solverModel) => patch({ solverModel })}
+            onModel={(solverModel) => patchRole("solver", { solverModel })}
           />
           <RolePicker
             modelRole="extract"
@@ -129,9 +134,12 @@ export function RegenerationModelSelection({
             model={draft.extractModel}
             manifest={manifest}
             onProvider={(extractProvider) =>
-              patch({ extractProvider: extractProvider || null, extractModel: null })
+              patchRole("extract", {
+                extractProvider: extractProvider || null,
+                extractModel: null,
+              })
             }
-            onModel={(extractModel) => patch({ extractModel })}
+            onModel={(extractModel) => patchRole("extract", { extractModel })}
           />
         </div>
       )}

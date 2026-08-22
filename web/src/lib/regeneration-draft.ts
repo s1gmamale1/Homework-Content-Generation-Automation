@@ -69,10 +69,12 @@ const INITIAL_PUBLICATION_VERSION = 3;
 export type RegenerationWizardStep = "lessons" | "content" | "review" | "canary";
 export type RegenerationMode = "full" | "selective";
 export type RegenerationModelSelectionMode = "settings" | "override";
+export type RegenerationModelRole = "content" | "judge" | "solver" | "extract";
 
 const WIZARD_STEPS: RegenerationWizardStep[] = ["lessons", "content", "review", "canary"];
 const REGENERATION_MODES: RegenerationMode[] = ["full", "selective"];
 const MODEL_SELECTION_MODES: RegenerationModelSelectionMode[] = ["settings", "override"];
+const MODEL_ROLES: RegenerationModelRole[] = ["content", "judge", "solver", "extract"];
 const PUBLICATION_VERSION_MODES: ("automatic" | "manual")[] = ["automatic", "manual"];
 
 /** One lesson published somewhere other than where the resolver would put it. */
@@ -90,6 +92,7 @@ export interface GuidedRegenerationDraft extends RegenerationScopeState {
   provider: string;
   model: string | null;
   modelSelectionMode: RegenerationModelSelectionMode;
+  modelOverrideTouchedRoles: RegenerationModelRole[];
   judgeProvider: string | null;
   judgeModel: string | null;
   solverProvider: string | null;
@@ -161,6 +164,7 @@ export function defaultGuidedRegenerationDraft(): GuidedRegenerationDraft {
     // route boundary; a restored or edited choice is never overwritten.
     model: null,
     modelSelectionMode: "settings",
+    modelOverrideTouchedRoles: [],
     judgeProvider: null,
     judgeModel: null,
     solverProvider: null,
@@ -191,35 +195,40 @@ export function initializeDraftModel(
   >,
 ): GuidedRegenerationDraft {
   const pair = (
+    role: RegenerationModelRole,
     provider: string | null,
     model: string | null,
     defaultProvider: string | null,
     defaultModel: string | null,
   ): [string | null, string | null] => {
-    const hasPartialOverride = draft.modelSelectionMode === "override" && Boolean(provider);
+    const hasPartialOverride = draft.modelOverrideTouchedRoles.includes(role);
     return model !== null || hasPartialOverride || !defaultProvider || !defaultModel
       ? [provider, model]
       : [defaultProvider, defaultModel];
   };
   const [provider, model] = pair(
+    "content",
     draft.provider,
     draft.model,
     defaults.content_provider,
     defaults.content_model,
   );
   const [judgeProvider, judgeModel] = pair(
+    "judge",
     draft.judgeProvider,
     draft.judgeModel,
     defaults.judge_provider,
     defaults.judge_model,
   );
   const [solverProvider, solverModel] = pair(
+    "solver",
     draft.solverProvider,
     draft.solverModel,
     defaults.solver_provider,
     defaults.solver_model,
   );
   const [extractProvider, extractModel] = pair(
+    "extract",
     draft.extractProvider,
     draft.extractModel,
     defaults.extract_provider,
@@ -271,6 +280,11 @@ function textList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const strings = value.filter((item): item is string => typeof item === "string" && item !== "");
   return [...new Set(strings)];
+}
+
+function modelRoleList(value: unknown): RegenerationModelRole[] {
+  const roles = new Set(textList(value));
+  return MODEL_ROLES.filter((role) => roles.has(role));
 }
 
 /**
@@ -368,6 +382,7 @@ function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
       raw.modelSelectionMode,
       nullableText(raw.model) ? "override" : fallback.modelSelectionMode,
     ),
+    modelOverrideTouchedRoles: modelRoleList(raw.modelOverrideTouchedRoles),
     judgeProvider: nullableText(raw.judgeProvider),
     judgeModel: nullableText(raw.judgeModel),
     solverProvider: nullableText(raw.solverProvider),

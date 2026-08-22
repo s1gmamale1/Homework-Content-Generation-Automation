@@ -1,7 +1,7 @@
-import type { GuidedRegenerationDraft } from "./regeneration-draft";
+import type { GuidedRegenerationDraft, RegenerationModelRole } from "./regeneration-draft";
 import type { LaunchDefaults, ProviderModelManifest, RegenerationLaunchContract } from "./types";
 
-export type RegenerationModelRole = "content" | "judge" | "solver" | "extract";
+export type { RegenerationModelRole } from "./regeneration-draft";
 
 export interface RegenerationModelPair {
   provider: string | null;

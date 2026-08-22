@@ -104,6 +104,7 @@ const savedDraft: GuidedRegenerationDraft = {
   provider: "gemini",
   model: "gemini-3.6-flash",
   modelSelectionMode: "override",
+  modelOverrideTouchedRoles: ["content", "judge", "solver", "extract"],
   judgeProvider: "gemini",
   judgeModel: "gemini-3.6-flash",
   solverProvider: "gemini",
@@ -140,6 +141,7 @@ test("the default draft picks no model and nothing to publish over", () => {
   assert.strictEqual(draft.canarySize, 1);
   assert.strictEqual(draft.schemaVersion, 1);
   assert.strictEqual(draft.modelSelectionMode, "settings");
+  assert.deepStrictEqual(draft.modelOverrideTouchedRoles, []);
   assert.strictEqual(draft.judgeProvider, null);
   assert.strictEqual(draft.judgeModel, null);
   assert.strictEqual(draft.solverProvider, null);
@@ -205,6 +207,27 @@ test("a new override copy is prefilled from all four Settings defaults", () => {
   );
 });
 
+test("an untouched Override mode still seeds when defaults arrive late", () => {
+  const initialized = initializeDraftModel(
+    { ...defaultGuidedRegenerationDraft(), modelSelectionMode: "override" },
+    {
+      content_provider: "gemini",
+      content_model: "gemini-3.6-flash",
+      judge_provider: "gemini",
+      judge_model: "gemini-3.6-flash",
+      solver_provider: "gemini",
+      solver_model: "gemini-3.5-flash-lite",
+      extract_provider: "gemini",
+      extract_model: "gemini-3.5-flash-lite",
+    },
+  );
+
+  assert.strictEqual(initialized.model, "gemini-3.6-flash");
+  assert.strictEqual(initialized.judgeModel, "gemini-3.6-flash");
+  assert.strictEqual(initialized.solverModel, "gemini-3.5-flash-lite");
+  assert.strictEqual(initialized.extractModel, "gemini-3.5-flash-lite");
+});
+
 test("launch defaults never overwrite a restored explicit model choice", () => {
   const draft = {
     ...defaultGuidedRegenerationDraft(),
@@ -224,6 +247,7 @@ test("a restored provider-only override survives delayed launch defaults", () =>
   const selected = {
     ...defaultGuidedRegenerationDraft(),
     modelSelectionMode: "override" as const,
+    modelOverrideTouchedRoles: ["judge" as const],
     judgeProvider: "claude",
     judgeModel: null,
   };
@@ -249,6 +273,35 @@ test("a restored provider-only override survives delayed launch defaults", () =>
     null,
     "defaults arriving after the provider click must not complete a different pair",
   );
+});
+
+test("a hidden provider-only override survives Settings mode and reload", () => {
+  const selected = {
+    ...defaultGuidedRegenerationDraft(),
+    modelSelectionMode: "settings" as const,
+    modelOverrideTouchedRoles: ["judge"],
+    judgeProvider: "claude",
+    judgeModel: null,
+  };
+  const storage = memoryStorage();
+  assert.strictEqual(saveRegenerationDraft(storage, selected).warning, null);
+  const { draft, warning } = loadRegenerationDraft(storage);
+  assert.strictEqual(warning, null);
+
+  const initialized = initializeDraftModel(draft, {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+  });
+
+  assert.deepStrictEqual(initialized.modelOverrideTouchedRoles, ["judge"]);
+  assert.strictEqual(initialized.judgeProvider, "claude");
+  assert.strictEqual(initialized.judgeModel, null);
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -382,6 +435,7 @@ test("a draft with impossible field values decodes to safe defaults", () => {
   assert.strictEqual(draft.refreshExtraction, false);
   assert.strictEqual(draft.provider, fallback.provider);
   assert.strictEqual(draft.model, null);
+  assert.deepStrictEqual(draft.modelOverrideTouchedRoles, []);
   assert.strictEqual(draft.publicationVersion, 3);
   assert.strictEqual(draft.publicationVersionMode, "automatic");
   assert.deepStrictEqual(draft.destinationOverrides, [
