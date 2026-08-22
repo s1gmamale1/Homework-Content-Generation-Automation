@@ -992,6 +992,47 @@ async def test_exact_version_creation_freezes_the_reviewed_destination(seeded):
 
 
 @db_only
+async def test_destination_scan_race_names_the_campaign_that_took_the_lineage(
+    seeded, monkeypatch
+):
+    """A campaign may appear while the service is doing its remote Notion scan.
+
+    The second active-lineage check must carry that campaign's id just like the
+    initial check does, otherwise the API can refuse safely but the guided UI
+    cannot offer the operator its recovery action: open the owning campaign.
+    """
+    owner_id = uuid.uuid4()
+    calls = 0
+
+    async def _active_after_destination_review(_session, lineages):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return []
+        toc_entry_id, output_language = lineages[0]
+        return [SimpleNamespace(
+            campaign_id=owner_id,
+            toc_entry_id=toc_entry_id,
+            output_language=output_language,
+        )]
+
+    monkeypatch.setattr(
+        svc.targets_repo,
+        "active_targets_for_lineages",
+        _active_after_destination_review,
+    )
+
+    with pytest.raises(svc.ActiveLineageConflict) as exc:
+        await _service().create_campaign(
+            _spec(seeded, publication_version=3)
+        )
+
+    assert calls == 2
+    assert exc.value.campaign_ids == (owner_id,)
+    assert await _versioned_campaigns() == []
+
+
+@db_only
 async def test_changed_destination_digest_leaves_no_campaign_row(seeded):
     with pytest.raises(svc.DestinationReviewChanged):
         await _service().create_campaign(_spec(

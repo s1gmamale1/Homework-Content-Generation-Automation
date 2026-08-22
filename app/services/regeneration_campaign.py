@@ -1102,7 +1102,8 @@ class RegenerationCampaignService:
             active = await targets_repo.active_targets_for_lineages(session, lineages)
             if active:
                 raise ActiveLineageConflict(
-                    [(target.toc_entry_id, target.output_language) for target in active]
+                    [(target.toc_entry_id, target.output_language) for target in active],
+                    campaign_ids=[target.campaign_id for target in active],
                 )
             conflicts = await sources_repo.publication_version_conflicts(
                 session,
