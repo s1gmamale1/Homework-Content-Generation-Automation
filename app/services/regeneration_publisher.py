@@ -74,6 +74,7 @@ from typing import Callable, Literal, Mapping, Optional, Union
 from uuid import UUID
 
 from loguru import logger
+from notion_client.errors import APIErrorCode, APIResponseError
 from sqlalchemy.exc import IntegrityError
 
 from app.config import settings
@@ -784,7 +785,17 @@ class RegenerationPublisher:
                     inputs.subject_page_id, notion_archive.CONTAINER_TITLE
                 )["id"])
 
-        lesson_children = client.get_child_pages(container_id)
+        try:
+            lesson_children = client.get_child_pages(container_id)
+        except APIResponseError as exc:
+            if (
+                inputs.notion_container_policy == "reuse"
+                and exc.code == APIErrorCode.ObjectNotFound
+            ):
+                raise ReviewedDestinationChanged(
+                    "the approved container no longer exists or is inaccessible"
+                ) from exc
+            raise
         if inputs.notion_parent_policy == "reuse":
             lesson_id = inputs.reviewed_lesson_page_id
             if not lesson_id or not any(
