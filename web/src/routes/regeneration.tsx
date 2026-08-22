@@ -750,10 +750,7 @@ export function RegenerationPage() {
               <GuidedProgress
                 active="canary"
                 highestReachable="canary"
-                onSelect={(step) => {
-                  if (step === "canary") return;
-                  setSelectedId(null);
-                }}
+                readOnly
               />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
