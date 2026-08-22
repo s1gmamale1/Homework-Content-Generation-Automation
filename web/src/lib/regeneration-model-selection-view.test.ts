@@ -357,3 +357,55 @@ test("a failed Settings-default request is visible and retryable", () => {
   assert.match(html, /Settings defaults could not be loaded/);
   assert.doesNotMatch(html, /Settings defaults are still loading/);
 });
+
+test("a restored Review draft can retry a failed Settings-default request", () => {
+  const html = renderToStaticMarkup(
+    createElement(RegenerationWizard, {
+      books: [],
+      booksLoading: false,
+      booksError: null,
+      sources: [],
+      ineligible: [],
+      sourcesLoading: false,
+      sourcesError: null,
+      pickBookReason: null,
+      phaseCatalog: ["extract", "reflection"],
+      plan: null,
+      planLoading: false,
+      planError: null,
+      estimate: null,
+      estimateError: null,
+      destinations: null,
+      destinationsChecking: false,
+      destinationError: null,
+      onCheckDestinations: () => undefined,
+      onChooseDestination: () => undefined,
+      manifest,
+      launchDefaults: undefined,
+      launchDefaultsError: {
+        title: "Could not load Settings defaults",
+        message: "The Settings request failed.",
+        details: [],
+        hint: null,
+        code: null,
+        status: 500,
+        campaignIds: [],
+      },
+      onRetryLaunchDefaults: () => undefined,
+      manifestError: null,
+      state: { ...defaultGuidedRegenerationDraft(), step: "review" as const },
+      draftWarning: null,
+      onChange: () => undefined,
+      onDiscard: () => undefined,
+      onCreateAndStart: () => undefined,
+      starting: false,
+      createError: null,
+      onOpenCampaign: () => undefined,
+    }),
+  );
+
+  assert.match(html, /Review before spending/);
+  assert.match(html, /Could not load Settings defaults/);
+  assert.match(html, />Retry Settings defaults</);
+  assert.match(html, /Settings defaults could not be loaded/);
+});

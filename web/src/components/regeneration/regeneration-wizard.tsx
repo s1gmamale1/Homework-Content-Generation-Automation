@@ -161,6 +161,13 @@ export function RegenerationWizard({
         ? "content"
         : "review";
   const go = (next: GuidedRegenerationDraft["step"]) => onChange({ ...state, step: next });
+  const launchDefaultsProblem = launchDefaultsError && state.modelSelectionMode === "settings" && (
+    <RegenerationProblem
+      view={launchDefaultsError}
+      onRetry={onRetryLaunchDefaults}
+      retryLabel="Retry Settings defaults"
+    />
+  );
 
   return (
     <div className={cn(CARD, "space-y-5 p-4 sm:p-5")}>
@@ -216,13 +223,7 @@ export function RegenerationWizard({
             <>
               {planError && <RegenerationProblem view={planError} />}
               {manifestError && <RegenerationProblem view={manifestError} />}
-              {launchDefaultsError && state.modelSelectionMode === "settings" && (
-                <RegenerationProblem
-                  view={launchDefaultsError}
-                  onRetry={onRetryLaunchDefaults}
-                  retryLabel="Retry Settings defaults"
-                />
-              )}
+              {launchDefaultsProblem}
             </>
           }
           onChange={onChange}
@@ -245,6 +246,7 @@ export function RegenerationWizard({
                 <RegenerationProblem view={estimateError} onOpenCampaign={onOpenCampaign} />
               )}
               {destinationError && <RegenerationProblem view={destinationError} />}
+              {launchDefaultsProblem}
               {createError && (
                 <RegenerationProblem view={createError} onOpenCampaign={onOpenCampaign} />
               )}
