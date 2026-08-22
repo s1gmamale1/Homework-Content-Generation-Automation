@@ -8,6 +8,7 @@ import {
   regenerationKeyedLines,
 } from "@/lib/api";
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
+import { regenerationModelSelectionIssue } from "@/lib/regeneration-model-selection";
 import type {
   Book,
   LaunchDefaults,
@@ -143,10 +144,11 @@ export function RegenerationWizard({
   onOpenCampaign: (campaignId: string) => void;
 }) {
   const step = state.step === "canary" ? "review" : state.step;
+  const modelIssue = regenerationModelSelectionIssue(state, launchDefaults, manifest);
   const highestReachable =
     state.selectedTocEntryIds.length === 0
       ? "lessons"
-      : !state.model || !plan
+      : modelIssue !== null || !plan
         ? "content"
         : "review";
   const go = (next: GuidedRegenerationDraft["step"]) => onChange({ ...state, step: next });
@@ -214,6 +216,7 @@ export function RegenerationWizard({
       {step === "review" && (
         <ReviewStep
           draft={state}
+          launchDefaults={launchDefaults}
           estimate={estimate}
           destinations={destinations}
           checking={destinationsChecking}

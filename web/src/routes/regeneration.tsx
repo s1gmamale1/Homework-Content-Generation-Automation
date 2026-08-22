@@ -35,8 +35,13 @@ import {
   pruneRegenerationDraft,
   saveRegenerationDraft,
 } from "@/lib/regeneration-draft";
+import {
+  regenerationLaunchContract,
+  regenerationModelSelectionIssue,
+} from "@/lib/regeneration-model-selection";
 import { createAndStartCanary } from "@/lib/regeneration-state";
 import type {
+  LaunchDefaults,
   RegenerationCampaignDetail,
   RegenerationCampaignDraft,
   RegenerationDestinationCheckRequest,
@@ -145,24 +150,6 @@ function selection(draft: RegenerationDraftState) {
   };
 }
 
-function contract(draft: RegenerationDraftState) {
-  return {
-    provider: draft.provider,
-    model: draft.model,
-    transport: "api" as const,
-    extract_transport: "api" as const,
-    extract_provider: null,
-    extract_model: null,
-    judge_transport: "api" as const,
-    judge_provider: null,
-    judge_model: null,
-    solver_transport: "api" as const,
-    solver_provider: null,
-    solver_model: null,
-    session_limit_strategy: "inherit" as const,
-  };
-}
-
 function destinationOverrides(draft: RegenerationDraftState): RegenerationDestinationOverride[] {
   return draft.destinationOverrides.map((override) => ({
     toc_entry_id: override.tocEntryId,
@@ -184,11 +171,14 @@ function destinationCheckRequest(
 function estimateRequest(
   draft: RegenerationDraftState,
   canonicalPhases: string[],
-): RegenerationEstimateRequest {
+  defaults: LaunchDefaults | undefined,
+): RegenerationEstimateRequest | null {
+  const contract = regenerationLaunchContract(draft, defaults);
+  if (!contract) return null;
   return {
     publication_version: draft.publicationVersion,
     selection: selection(draft),
-    contract: contract(draft),
+    contract,
     selected_phases: selectedPhases(draft, canonicalPhases),
     excluded_affected_phases: draft.excludedPhases,
     refresh_extraction: draft.refreshExtraction,
@@ -203,9 +193,12 @@ function campaignDraft(
   approvedDestinationDigest: string,
   estimateLow: number | null,
   estimateHigh: number | null,
-): RegenerationCampaignDraft {
+  defaults: LaunchDefaults | undefined,
+): RegenerationCampaignDraft | null {
+  const estimate = estimateRequest(draft, canonicalPhases, defaults);
+  if (!estimate) return null;
   return {
-    ...estimateRequest(draft, canonicalPhases),
+    ...estimate,
     destination_overrides: destinationOverrides(draft),
     approved_destination_digest: approvedDestinationDigest,
     // Echoed back so the frozen campaign records the figure that was SHOWN,
@@ -396,12 +389,19 @@ export function RegenerationPage() {
     enabled: Boolean(subject) && hasPhaseSelection,
   });
 
+  const modelIssue = regenerationModelSelectionIssue(draft, launchDefaults.data, manifest.data);
+  const estimateBody = estimateRequest(draft, canonicalPhases, launchDefaults.data);
   const canEstimate =
-    draft.selectedTocEntryIds.length > 0 && hasPhaseSelection && draft.model !== null;
-  const estimateBody = estimateRequest(draft, canonicalPhases);
+    draft.selectedTocEntryIds.length > 0 &&
+    hasPhaseSelection &&
+    modelIssue === null &&
+    estimateBody !== null;
   const estimate = useQuery({
     queryKey: ["regeneration", "estimate", estimateBody],
-    queryFn: () => api.estimateRegeneration(estimateBody),
+    queryFn: () => {
+      if (!estimateBody) throw new Error("regeneration model selection is incomplete");
+      return api.estimateRegeneration(estimateBody);
+    },
     enabled: canEstimate,
   });
 
@@ -730,15 +730,15 @@ export function RegenerationPage() {
               }}
               onCreateAndStart={() => {
                 if (!currentDestinations) return;
-                createMut.mutate(
-                  campaignDraft(
-                    draft,
-                    canonicalPhases,
-                    currentDestinations.destination_digest,
-                    estimate.data?.estimate?.low_usd ?? null,
-                    estimate.data?.estimate?.high_usd ?? null,
-                  ),
+                const body = campaignDraft(
+                  draft,
+                  canonicalPhases,
+                  currentDestinations.destination_digest,
+                  estimate.data?.estimate?.low_usd ?? null,
+                  estimate.data?.estimate?.high_usd ?? null,
+                  launchDefaults.data,
                 );
+                if (body) createMut.mutate(body);
               }}
               starting={createMut.isPending}
               createError={
@@ -748,11 +748,7 @@ export function RegenerationPage() {
             />
           ) : (
             <div className="space-y-4">
-              <GuidedProgress
-                active="canary"
-                highestReachable="canary"
-                readOnly
-              />
+              <GuidedProgress active="canary" highestReachable="canary" readOnly />
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <div>
                   <h2 className="text-sm font-semibold text-white/75">

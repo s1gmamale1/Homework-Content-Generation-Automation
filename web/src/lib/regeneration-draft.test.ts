@@ -459,10 +459,7 @@ test("a storage clear exception returns a warning instead of throwing", () => {
 test("restoring a draft resets acknowledgement and prunes stale lessons", () => {
   const restored = pruneRegenerationDraft(savedDraft, {
     eligibleTocEntryIds: new Set(["kept"]),
-    validModelRefs: new Set([
-      "gemini/gemini-3.6-flash",
-      "gemini/gemini-3.5-flash-lite",
-    ]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
     validPhaseNames: new Set(["reflection"]),
   });
   assert.deepEqual(restored.draft.selectedTocEntryIds, ["kept"]);
@@ -577,10 +574,7 @@ test("pruning clears every retired override model without disturbing valid roles
   const result = pruneRegenerationDraft(savedDraft, {
     eligibleTocEntryIds: new Set(["kept", "gone"]),
     validPhaseNames: new Set(["reflection", "memory-check"]),
-    validModelRefs: new Set([
-      "gemini/gemini-3.6-flash",
-      "gemini/gemini-3.5-flash-lite",
-    ]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
   });
   const retired = {
     ...result.draft,
@@ -640,10 +634,7 @@ test("pruning an extract-only draft leaves it extract-only", () => {
 test("pruning leaves a draft that is still entirely valid alone", () => {
   const inputs = {
     eligibleTocEntryIds: new Set(["kept", "gone"]),
-    validModelRefs: new Set([
-      "gemini/gemini-3.6-flash",
-      "gemini/gemini-3.5-flash-lite",
-    ]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
     validPhaseNames: new Set([
       "reflection",
       "practice-abacus",

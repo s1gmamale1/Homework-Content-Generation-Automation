@@ -1,8 +1,8 @@
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
 import {
+  type RegenerationModelRole,
   effectiveRegenerationModels,
   regenerationModelSelectionIssue,
-  type RegenerationModelRole,
 } from "@/lib/regeneration-model-selection";
 import type { LaunchDefaults, ProviderModelManifest } from "@/lib/types";
 import { FRAME_OFF, FRAME_ON } from "@/lib/ui";
@@ -94,7 +94,7 @@ export function RegenerationModelSelection({
       ) : (
         <div className="grid gap-3 lg:grid-cols-2">
           <RolePicker
-            role="content"
+            modelRole="content"
             provider={draft.provider}
             model={draft.model}
             manifest={manifest}
@@ -102,27 +102,33 @@ export function RegenerationModelSelection({
             onModel={(model) => patch({ model })}
           />
           <RolePicker
-            role="judge"
+            modelRole="judge"
             provider={draft.judgeProvider}
             model={draft.judgeModel}
             manifest={manifest}
-            onProvider={(judgeProvider) => patch({ judgeProvider, judgeModel: null })}
+            onProvider={(judgeProvider) =>
+              patch({ judgeProvider: judgeProvider || null, judgeModel: null })
+            }
             onModel={(judgeModel) => patch({ judgeModel })}
           />
           <RolePicker
-            role="solver"
+            modelRole="solver"
             provider={draft.solverProvider}
             model={draft.solverModel}
             manifest={manifest}
-            onProvider={(solverProvider) => patch({ solverProvider, solverModel: null })}
+            onProvider={(solverProvider) =>
+              patch({ solverProvider: solverProvider || null, solverModel: null })
+            }
             onModel={(solverModel) => patch({ solverModel })}
           />
           <RolePicker
-            role="extract"
+            modelRole="extract"
             provider={draft.extractProvider}
             model={draft.extractModel}
             manifest={manifest}
-            onProvider={(extractProvider) => patch({ extractProvider, extractModel: null })}
+            onProvider={(extractProvider) =>
+              patch({ extractProvider: extractProvider || null, extractModel: null })
+            }
             onModel={(extractModel) => patch({ extractModel })}
           />
         </div>
@@ -138,25 +144,25 @@ export function RegenerationModelSelection({
 }
 
 function RolePicker({
-  role,
+  modelRole,
   provider,
   model,
   manifest,
   onProvider,
   onModel,
 }: {
-  role: RegenerationModelRole;
+  modelRole: RegenerationModelRole;
   provider: string | null;
   model: string | null;
   manifest: ProviderModelManifest | undefined;
   onProvider: (provider: string) => void;
   onModel: (model: string | null) => void;
 }) {
-  const label = ROLE_LABELS[role];
+  const label = ROLE_LABELS[modelRole];
   const providers = Object.keys(manifest?.providers ?? {}).filter(
     (candidate) =>
       manifest?.api_supported[candidate] &&
-      (role !== "extract" || !manifest.api_only[candidate]),
+      (modelRole !== "extract" || !manifest.api_only[candidate]),
   );
   const models = provider ? (manifest?.providers[provider] ?? []) : [];
 

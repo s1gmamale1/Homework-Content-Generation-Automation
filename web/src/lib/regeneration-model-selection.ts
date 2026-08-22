@@ -1,9 +1,5 @@
 import type { GuidedRegenerationDraft } from "./regeneration-draft";
-import type {
-  LaunchDefaults,
-  ProviderModelManifest,
-  RegenerationLaunchContract,
-} from "./types";
+import type { LaunchDefaults, ProviderModelManifest, RegenerationLaunchContract } from "./types";
 
 export type RegenerationModelRole = "content" | "judge" | "solver" | "extract";
 
@@ -82,9 +78,7 @@ export function regenerationModelSelectionIssue(
   return null;
 }
 
-function completePair(
-  pair: RegenerationModelPair,
-): pair is { provider: string; model: string } {
+function completePair(pair: RegenerationModelPair): pair is { provider: string; model: string } {
   return pair.provider !== null && pair.model !== null;
 }
 

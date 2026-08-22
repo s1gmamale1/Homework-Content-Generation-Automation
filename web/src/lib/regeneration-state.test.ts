@@ -946,6 +946,7 @@ assert.ok(
   "report retry/abandon buttons must carry the disabled attribute",
 );
 const routeSrc = source("../routes/regeneration.tsx");
+const modelSelectionSrc = source("regeneration-model-selection.ts");
 assert.ok(
   routeSrc.includes("regenerationPollDecision"),
   "the route must decide polling through regenerationPollDecision()",
@@ -3620,15 +3621,23 @@ assert.ok(
 // regeneration campaign with `non_api_transport` and no UI lever to fix it.
 for (const role of ["extract", "judge", "solver"]) {
   assert.ok(
-    new RegExp(`${role}_transport: "api"`).test(routeSrc),
+    new RegExp(`${role}_transport: "api"`).test(modelSelectionSrc),
     `${role}_transport must be pinned to api, not left to a mutable default`,
   );
   assert.ok(
-    !new RegExp(`${role}_transport: "inherit"`).test(routeSrc),
+    !new RegExp(`${role}_transport: "inherit"`).test(modelSelectionSrc),
     `${role}_transport: "inherit" re-reads launch_defaults at creation time`,
   );
+  assert.ok(
+    !new RegExp(`${role}_provider: null`).test(modelSelectionSrc),
+    `${role} must use the selected Settings default or explicit override, not a hidden null`,
+  );
 }
-assert.ok(/transport: "api"/.test(routeSrc), "the content transport stays api");
+assert.ok(/transport: "api"/.test(modelSelectionSrc), "the content transport stays api");
+assert.ok(
+  routeSrc.includes("regenerationLaunchContract"),
+  "estimate and create payloads must use the tested four-role contract builder",
+);
 
 // minor 2 — no raw solver token on any surface.
 for (const src of [canarySrc, reportSrc]) {
