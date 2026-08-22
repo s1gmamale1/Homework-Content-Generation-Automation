@@ -7,16 +7,20 @@ import {
   regenerationSelectablePhases,
 } from "@/lib/api";
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
+import { regenerationModelSelectionIssue } from "@/lib/regeneration-model-selection";
 import { exclusionWarning } from "@/lib/regeneration-state";
-import type { ProviderModelManifest, RegenerationPhasePlan } from "@/lib/types";
+import type { LaunchDefaults, ProviderModelManifest, RegenerationPhasePlan } from "@/lib/types";
 import { FRAME_OFF, FRAME_ON, GHOST_BTN, PRIMARY_BTN } from "@/lib/ui";
 import { cn, formatPhaseName } from "@/lib/utils";
+import { RegenerationModelSelection } from "./model-selection";
 
 export function ContentStep({
   draft,
   canonicalPhases,
   plan,
   manifest,
+  launchDefaults,
+  launchDefaultsFailed,
   planLoading,
   planErrorView,
   error,
@@ -28,6 +32,8 @@ export function ContentStep({
   canonicalPhases: string[];
   plan: RegenerationPhasePlan | null;
   manifest: ProviderModelManifest | undefined;
+  launchDefaults: LaunchDefaults | undefined;
+  launchDefaultsFailed: boolean;
   planLoading: boolean;
   planErrorView: RegenerationErrorView | null;
   error: React.ReactNode;
@@ -49,7 +55,12 @@ export function ContentStep({
     error: planErrorView,
   });
   const planBlockedReason = regenerationPlanBlockedReason(planStep);
-  const models = manifest?.providers?.[draft.provider] ?? [];
+  const modelIssue = regenerationModelSelectionIssue(
+    draft,
+    launchDefaults,
+    manifest,
+    launchDefaultsFailed,
+  );
   const patch = (next: Partial<GuidedRegenerationDraft>) => onChange({ ...draft, ...next });
   const toggle = (values: string[], value: string) =>
     values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
@@ -120,37 +131,13 @@ export function ContentStep({
         </div>
       )}
 
-      <div className="grid gap-3 sm:grid-cols-2">
-        <label className="space-y-1 text-xs text-white/50">
-          Provider
-          <select
-            value={draft.provider}
-            onChange={(event) => patch({ provider: event.target.value, model: null })}
-            className="block w-full rounded-xl border border-white/[0.1] bg-[#11131b] px-3 py-2 text-sm text-white"
-          >
-            {Object.keys(manifest?.providers ?? {})
-              .filter((provider) => manifest?.api_supported?.[provider])
-              .map((provider) => (
-                <option key={provider}>{provider}</option>
-              ))}
-          </select>
-        </label>
-        <label className="space-y-1 text-xs text-white/50">
-          Model
-          <select
-            value={draft.model ?? ""}
-            onChange={(event) => patch({ model: event.target.value || null })}
-            className="block w-full rounded-xl border border-white/[0.1] bg-[#11131b] px-3 py-2 text-sm text-white"
-          >
-            <option value="">Choose a model</option>
-            {models.map((model) => (
-              <option key={model} value={model}>
-                {model}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <RegenerationModelSelection
+        draft={draft}
+        defaults={launchDefaults}
+        defaultsLoadFailed={launchDefaultsFailed}
+        manifest={manifest}
+        onChange={onChange}
+      />
 
       <details className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-3">
         <summary className="cursor-pointer text-sm font-medium text-white/65">Advanced</summary>
@@ -228,7 +215,7 @@ export function ContentStep({
         <button
           type="button"
           className={PRIMARY_BTN}
-          disabled={!draft.model || planBlockedReason !== null}
+          disabled={modelIssue !== null || planBlockedReason !== null}
           onClick={onContinue}
         >
           Review campaign

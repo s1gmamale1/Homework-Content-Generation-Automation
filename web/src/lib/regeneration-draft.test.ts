@@ -103,6 +103,14 @@ const savedDraft: GuidedRegenerationDraft = {
   canarySize: 2,
   provider: "gemini",
   model: "gemini-3.6-flash",
+  modelSelectionMode: "override",
+  modelOverrideTouchedRoles: ["content", "judge", "solver", "extract"],
+  judgeProvider: "gemini",
+  judgeModel: "gemini-3.6-flash",
+  solverProvider: "gemini",
+  solverModel: "gemini-3.5-flash-lite",
+  extractProvider: "gemini",
+  extractModel: "gemini-3.5-flash-lite",
   destinationOverrides: [
     { tocEntryId: "kept", outputLanguage: "uz", notionLessonPageId: "page-kept" },
     { tocEntryId: "gone", outputLanguage: "uz", notionLessonPageId: "page-gone" },
@@ -132,6 +140,33 @@ test("the default draft picks no model and nothing to publish over", () => {
   assert.strictEqual(draft.acknowledged, false);
   assert.strictEqual(draft.canarySize, 1);
   assert.strictEqual(draft.schemaVersion, 1);
+  assert.strictEqual(draft.modelSelectionMode, "settings");
+  assert.deepStrictEqual(draft.modelOverrideTouchedRoles, []);
+  assert.strictEqual(draft.judgeProvider, null);
+  assert.strictEqual(draft.judgeModel, null);
+  assert.strictEqual(draft.solverProvider, null);
+  assert.strictEqual(draft.solverModel, null);
+  assert.strictEqual(draft.extractProvider, null);
+  assert.strictEqual(draft.extractModel, null);
+});
+
+test("a legacy saved content choice keeps its explicit override meaning", () => {
+  const legacy = {
+    ...defaultGuidedRegenerationDraft(),
+    modelSelectionMode: undefined,
+    provider: "gemini",
+    model: "gemini-3.6-flash",
+  };
+  const storage = memoryStorage({
+    [REGENERATION_DRAFT_KEY]: JSON.stringify(legacy),
+  });
+
+  const { draft, warning } = loadRegenerationDraft(storage);
+
+  assert.strictEqual(warning, null);
+  assert.strictEqual(draft.modelSelectionMode, "override");
+  assert.strictEqual(draft.provider, "gemini");
+  assert.strictEqual(draft.model, "gemini-3.6-flash");
 });
 
 test("a new draft adopts the operator launch-default content model", () => {
@@ -142,6 +177,55 @@ test("a new draft adopts the operator launch-default content model", () => {
   });
   assert.strictEqual(initialized.provider, "gemini");
   assert.strictEqual(initialized.model, "gemini-3.6-flash");
+});
+
+test("a new override copy is prefilled from all four Settings defaults", () => {
+  const initialized = initializeDraftModel(defaultGuidedRegenerationDraft(), {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+  });
+
+  assert.deepStrictEqual(
+    {
+      content: [initialized.provider, initialized.model],
+      judge: [initialized.judgeProvider, initialized.judgeModel],
+      solver: [initialized.solverProvider, initialized.solverModel],
+      extract: [initialized.extractProvider, initialized.extractModel],
+    },
+    {
+      content: ["gemini", "gemini-3.6-flash"],
+      judge: ["gemini", "gemini-3.6-flash"],
+      solver: ["gemini", "gemini-3.5-flash-lite"],
+      extract: ["gemini", "gemini-3.5-flash-lite"],
+    },
+  );
+});
+
+test("an untouched Override mode still seeds when defaults arrive late", () => {
+  const initialized = initializeDraftModel(
+    { ...defaultGuidedRegenerationDraft(), modelSelectionMode: "override" },
+    {
+      content_provider: "gemini",
+      content_model: "gemini-3.6-flash",
+      judge_provider: "gemini",
+      judge_model: "gemini-3.6-flash",
+      solver_provider: "gemini",
+      solver_model: "gemini-3.5-flash-lite",
+      extract_provider: "gemini",
+      extract_model: "gemini-3.5-flash-lite",
+    },
+  );
+
+  assert.strictEqual(initialized.model, "gemini-3.6-flash");
+  assert.strictEqual(initialized.judgeModel, "gemini-3.6-flash");
+  assert.strictEqual(initialized.solverModel, "gemini-3.5-flash-lite");
+  assert.strictEqual(initialized.extractModel, "gemini-3.5-flash-lite");
 });
 
 test("launch defaults never overwrite a restored explicit model choice", () => {
@@ -157,6 +241,67 @@ test("launch defaults never overwrite a restored explicit model choice", () => {
     }),
     draft,
   );
+});
+
+test("a restored provider-only override survives delayed launch defaults", () => {
+  const selected = {
+    ...defaultGuidedRegenerationDraft(),
+    modelSelectionMode: "override" as const,
+    modelOverrideTouchedRoles: ["judge" as const],
+    judgeProvider: "claude",
+    judgeModel: null,
+  };
+  const storage = memoryStorage();
+  assert.strictEqual(saveRegenerationDraft(storage, selected).warning, null);
+  const { draft, warning } = loadRegenerationDraft(storage);
+  assert.strictEqual(warning, null);
+
+  const initialized = initializeDraftModel(draft, {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+  });
+
+  assert.strictEqual(initialized.judgeProvider, "claude");
+  assert.strictEqual(
+    initialized.judgeModel,
+    null,
+    "defaults arriving after the provider click must not complete a different pair",
+  );
+});
+
+test("a hidden provider-only override survives Settings mode and reload", () => {
+  const selected = {
+    ...defaultGuidedRegenerationDraft(),
+    modelSelectionMode: "settings" as const,
+    modelOverrideTouchedRoles: ["judge"],
+    judgeProvider: "claude",
+    judgeModel: null,
+  };
+  const storage = memoryStorage();
+  assert.strictEqual(saveRegenerationDraft(storage, selected).warning, null);
+  const { draft, warning } = loadRegenerationDraft(storage);
+  assert.strictEqual(warning, null);
+
+  const initialized = initializeDraftModel(draft, {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+  });
+
+  assert.deepStrictEqual(initialized.modelOverrideTouchedRoles, ["judge"]);
+  assert.strictEqual(initialized.judgeProvider, "claude");
+  assert.strictEqual(initialized.judgeModel, null);
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -290,6 +435,7 @@ test("a draft with impossible field values decodes to safe defaults", () => {
   assert.strictEqual(draft.refreshExtraction, false);
   assert.strictEqual(draft.provider, fallback.provider);
   assert.strictEqual(draft.model, null);
+  assert.deepStrictEqual(draft.modelOverrideTouchedRoles, []);
   assert.strictEqual(draft.publicationVersion, 3);
   assert.strictEqual(draft.publicationVersionMode, "automatic");
   assert.deepStrictEqual(draft.destinationOverrides, [
@@ -398,7 +544,7 @@ test("a storage clear exception returns a warning instead of throwing", () => {
 test("restoring a draft resets acknowledgement and prunes stale lessons", () => {
   const restored = pruneRegenerationDraft(savedDraft, {
     eligibleTocEntryIds: new Set(["kept"]),
-    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
     validPhaseNames: new Set(["reflection"]),
   });
   assert.deepEqual(restored.draft.selectedTocEntryIds, ["kept"]);
@@ -509,6 +655,31 @@ test("pruning clears a model the manifest no longer offers", () => {
   assert.strictEqual(offered.draft.model, "gemini-3.6-flash");
 });
 
+test("pruning clears every retired override model without disturbing valid roles", () => {
+  const result = pruneRegenerationDraft(savedDraft, {
+    eligibleTocEntryIds: new Set(["kept", "gone"]),
+    validPhaseNames: new Set(["reflection", "memory-check"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
+  });
+  const retired = {
+    ...result.draft,
+    judgeModel: "retired-judge",
+    solverModel: "retired-solver",
+    extractModel: "retired-extract",
+  };
+
+  const pruned = pruneRegenerationDraft(retired, {
+    eligibleTocEntryIds: new Set(["kept", "gone"]),
+    validPhaseNames: new Set(["reflection", "memory-check"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+  }).draft;
+
+  assert.strictEqual(pruned.model, "gemini-3.6-flash");
+  assert.strictEqual(pruned.judgeModel, null);
+  assert.strictEqual(pruned.solverModel, null);
+  assert.strictEqual(pruned.extractModel, null);
+});
+
 test("a selective draft pruned down to no phases falls back to full mode", () => {
   // With the extract refresh OFF, an empty selection is unlaunchable.
   const restored = pruneRegenerationDraft(
@@ -548,7 +719,7 @@ test("pruning an extract-only draft leaves it extract-only", () => {
 test("pruning leaves a draft that is still entirely valid alone", () => {
   const inputs = {
     eligibleTocEntryIds: new Set(["kept", "gone"]),
-    validModelRefs: new Set(["gemini/gemini-3.6-flash"]),
+    validModelRefs: new Set(["gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]),
     validPhaseNames: new Set([
       "reflection",
       "practice-abacus",

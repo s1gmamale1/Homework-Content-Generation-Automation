@@ -187,7 +187,9 @@ def test_a_valid_token_with_the_flag_on_reaches_the_state_gate(monkeypatch):
     monkeypatch.setattr(auth_module, "valid_auth_tokens", lambda: {"s3cret-token"})
     app.dependency_overrides.pop(get_current_user, None)
     monkeypatch.setattr(regen_api, "_service", _fake_service)
-    monkeypatch.setattr(regen_api, "_list_campaigns", AsyncMock(return_value=([], {}, 0)))
+    monkeypatch.setattr(
+        regen_api, "_list_campaigns", AsyncMock(return_value=([], {}, {}, 0))
+    )
 
     response = client.get(
         f"{BASE}/campaigns", headers={"Authorization": "Bearer s3cret-token"}
@@ -312,7 +314,9 @@ def test_reads_and_generation_routes_ignore_the_publisher_flag(
     _notion(monkeypatch, enabled=False)
     app.dependency_overrides[get_current_user] = lambda: {"user_id": "test"}
     monkeypatch.setattr(regen_api, "_service", _fake_service)
-    monkeypatch.setattr(regen_api, "_list_campaigns", AsyncMock(return_value=([], {}, 0)))
+    monkeypatch.setattr(
+        regen_api, "_list_campaigns", AsyncMock(return_value=([], {}, {}, 0))
+    )
     monkeypatch.setattr(
         regen_api.discovery, "list_source_candidates", AsyncMock(return_value=[])
     )

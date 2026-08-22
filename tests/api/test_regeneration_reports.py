@@ -20,7 +20,7 @@ import os
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -398,6 +398,72 @@ def test_campaign_report_labels_exact_and_legacy_versions_explicitly():
     assert legacy.publication_version_label == "Legacy mixed/automatic version"
 
 
+def test_campaign_summary_has_an_empty_display_identity_for_legacy_callers():
+    """A caller without the list query's lesson join must still serialize a
+    truthful, explicitly empty identity instead of reviving phase names as a
+    display fallback."""
+    summary = out.CampaignSummaryOut.from_row(
+        _campaign(publication_version=3),
+        status_counts={"planned": 1},
+    ).model_dump()
+
+    assert summary.get("subjects") == []
+    assert summary.get("grades") == []
+    assert summary.get("lesson_count") == 0
+    assert summary.get("lesson_title") is None
+
+
+@pytest.mark.asyncio
+async def test_campaign_list_deduplicates_lesson_identity_across_languages():
+    """One lesson regenerated in UZ and RU is one lesson name, not two.
+
+    Removing the identity projection or deduping by target rather than TOC row
+    must fail this test.
+    """
+    campaign = _campaign()
+    lesson_id = uuid4()
+
+    campaign_rows = MagicMock()
+    campaign_rows.scalars.return_value.all.return_value = [campaign]
+    count_rows = MagicMock()
+    count_rows.all.return_value = [(campaign.id, "published", 2)]
+    identity_rows = MagicMock()
+    identity_rows.all.return_value = [
+        SimpleNamespace(
+            campaign_id=campaign.id,
+            toc_entry_id=lesson_id,
+            subject="biology",
+            grade="9",
+            lesson_title="Photosynthesis",
+        ),
+        SimpleNamespace(
+            campaign_id=campaign.id,
+            toc_entry_id=lesson_id,
+            subject="biology",
+            grade="9",
+            lesson_title="Photosynthesis",
+        ),
+    ]
+    session = SimpleNamespace(
+        execute=AsyncMock(side_effect=[campaign_rows, count_rows, identity_rows]),
+        scalar=AsyncMock(return_value=1),
+    )
+
+    result = await regen_api._list_campaigns(
+        session, statuses=None, limit=50, offset=0
+    )
+
+    assert len(result) == 4
+    _campaigns, _counts, identities, total = result
+    assert total == 1
+    assert identities[campaign.id] == {
+        "subjects": ["biology"],
+        "grades": ["9"],
+        "lesson_count": 1,
+        "lesson_title": "Photosynthesis",
+    }
+
+
 def test_target_report_separates_reviewed_lesson_from_published_version_page():
     target = _target(
         uuid4(),
@@ -748,13 +814,19 @@ async def test_the_campaign_list_counts_targets_per_campaign(seed):
 
     seeded = await seed()
     async with SessionLocal() as session:
-        campaigns, counts, total = await regen_api._list_campaigns(
+        campaigns, counts, identities, total = await regen_api._list_campaigns(
             session, statuses=None, limit=200, offset=0
         )
 
     assert total >= 1
     assert seeded.campaign_id in {c.id for c in campaigns}
     assert counts[seeded.campaign_id]["published"] == 1
+    assert identities[seeded.campaign_id] == {
+        "subjects": [SUBJECT],
+        "grades": ["5"],
+        "lesson_count": 1,
+        "lesson_title": "Lesson 1",
+    }
 
 
 @_DB
@@ -905,7 +977,7 @@ async def test_the_campaign_list_reports_the_status_as_it_is_now(seed):
             campaign.status = "attention_required"
             await service_session.commit()
 
-        campaigns, _counts, _total = await regen_api._list_campaigns(
+        campaigns, _counts, _identities, _total = await regen_api._list_campaigns(
             session, statuses=["attention_required"], limit=200, offset=0
         )
 

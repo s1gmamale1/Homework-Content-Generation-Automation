@@ -51,6 +51,7 @@ import type {
   RegenerationEstimateRequest,
   RegenerationEstimateResponse,
   RegenerationIneligibleLineage,
+  RegenerationLaunchContract,
   RegenerationOutputLanguage,
   RegenerationPhasePlan,
   RegenerationPhasePlanRequest,
@@ -1020,25 +1021,28 @@ export function regenerationEstimateBody(
  *  Deliberately covers only the fields the server reads: a cosmetic state
  *  change must not silently discard a refusal the operator has not addressed.
  */
-export function regenerationDraftSignature(draft: {
-  bookId: string | null;
-  language: string;
-  selectedTocEntryIds: string[];
-  selectedPhases: string[];
-  excludedPhases: string[];
-  refreshExtraction: boolean;
-  acknowledged: boolean;
-  canarySize: number;
-  provider: string;
-  model: string | null;
-  mode: "full" | "selective";
-  publicationVersion: number;
-  destinationOverrides: Array<{
-    tocEntryId: string;
-    outputLanguage: string;
-    notionLessonPageId: string;
-  }>;
-}): string {
+export function regenerationDraftSignature(
+  draft: {
+    bookId: string | null;
+    language: string;
+    selectedTocEntryIds: string[];
+    selectedPhases: string[];
+    excludedPhases: string[];
+    refreshExtraction: boolean;
+    acknowledged: boolean;
+    canarySize: number;
+    provider: string;
+    model: string | null;
+    mode: "full" | "selective";
+    publicationVersion: number;
+    destinationOverrides: Array<{
+      tocEntryId: string;
+      outputLanguage: string;
+      notionLessonPageId: string;
+    }>;
+  },
+  contract: RegenerationLaunchContract | null,
+): string {
   return JSON.stringify([
     draft.bookId,
     draft.language,
@@ -1048,8 +1052,7 @@ export function regenerationDraftSignature(draft: {
     draft.refreshExtraction,
     draft.acknowledged,
     draft.canarySize,
-    draft.provider,
-    draft.model,
+    contract,
     draft.mode,
     draft.publicationVersion,
     [...draft.destinationOverrides]
@@ -2577,7 +2580,61 @@ export interface RegenerationCampaignListView {
   /** The single line that replaces the rows, or null when rows render. */
   message: string | null;
   /** Whatever the cache still holds — a failed refresh hides nothing. */
-  campaigns: RegenerationCampaignSummary[];
+  campaigns: RegenerationCampaignListItem[];
+}
+
+export interface RegenerationCampaignIdentity {
+  title: string;
+  subtitle: string;
+}
+
+export interface RegenerationCampaignListItem extends RegenerationCampaignSummary {
+  identity: RegenerationCampaignIdentity;
+}
+
+function uniqueTrimmed(values: string[] | undefined): string[] {
+  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
+}
+
+function campaignGradeLabel(values: string[] | undefined): string {
+  const grades = uniqueTrimmed(values).sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true }),
+  );
+  if (grades.length === 0) return "Grade not recorded";
+  if (grades.length === 1) return `Grade ${grades[0]}`;
+  if (grades.length === 2) return `Grades ${grades[0]} & ${grades[1]}`;
+  return `Grades ${grades.slice(0, -1).join(", ")} & ${grades.at(-1)}`;
+}
+
+/** The stable, human curriculum identity shown in Previous campaigns.
+ *
+ * Phase names describe work performed, not what the campaign is about. The
+ * list endpoint therefore projects subject/grade/lesson metadata and this
+ * formatter turns it into a compact title pair. Historical rows with missing
+ * joins stay explicit rather than silently reverting to phase names.
+ */
+export function regenerationCampaignIdentity(
+  campaign: RegenerationCampaignSummary,
+): RegenerationCampaignIdentity {
+  const subjects = uniqueTrimmed(campaign.subjects);
+  const subject =
+    subjects.length === 0
+      ? "Subject unavailable"
+      : subjects.length === 1
+        ? subjectLabel(subjects[0])
+        : "Mixed subjects";
+  const hasCurriculumIdentity = subjects.length > 0 || uniqueTrimmed(campaign.grades).length > 0;
+  const title = hasCurriculumIdentity
+    ? `${subject} · ${campaignGradeLabel(campaign.grades)}`
+    : "Campaign details unavailable";
+  const lessonTitle = (campaign.lesson_title ?? "").trim();
+  const subtitle =
+    campaign.lesson_count === 1 && lessonTitle
+      ? lessonTitle
+      : campaign.lesson_count > 1
+        ? `${campaign.lesson_count} lessons`
+        : `${campaign.target_count} ${campaign.target_count === 1 ? "target" : "targets"}`;
+  return { title, subtitle };
 }
 
 /**
@@ -2599,7 +2656,10 @@ export function regenerationCampaignListView(input: {
   isLoading: boolean;
   error: unknown;
 }): RegenerationCampaignListView {
-  const campaigns = input.campaigns ?? [];
+  const campaigns = (input.campaigns ?? []).map((campaign) => ({
+    ...campaign,
+    identity: regenerationCampaignIdentity(campaign),
+  }));
   if (input.error) {
     return { mode: "error", error: regenerationErrorView(input.error), message: null, campaigns };
   }

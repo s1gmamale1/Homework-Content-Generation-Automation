@@ -111,10 +111,10 @@ export function CampaignList({
             >
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-sm font-medium text-white">
-                  {c.requested_phases.length > 0
-                    ? c.requested_phases.join(", ")
-                    : "extract refresh"}
-                  {c.refresh_extraction && c.requested_phases.length > 0 ? " + extract" : ""}
+                  {c.identity.title}
+                </span>
+                <span className="mt-0.5 block truncate text-xs text-white/60">
+                  {c.identity.subtitle}
                 </span>
                 <span className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[0.64rem] text-white/40">
                   <span className="inline-flex items-center gap-1">

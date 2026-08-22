@@ -1,7 +1,9 @@
 import { clampCanarySize } from "@/lib/api";
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
+import { effectiveRegenerationModels } from "@/lib/regeneration-model-selection";
 import { formatUsd, lessonCountLabel, reviewGate } from "@/lib/regeneration-state";
 import type {
+  LaunchDefaults,
   RegenerationDestinationCheckResponse,
   RegenerationEstimateResponse,
   RegenerationOutputLanguage,
@@ -10,6 +12,8 @@ import { GHOST_BTN, PRIMARY_BTN } from "@/lib/ui";
 
 export function ReviewStep({
   draft,
+  launchDefaults,
+  modelIssue,
   estimate,
   destinations,
   checking,
@@ -22,6 +26,8 @@ export function ReviewStep({
   onStart,
 }: {
   draft: GuidedRegenerationDraft;
+  launchDefaults: LaunchDefaults | undefined;
+  modelIssue: string | null;
   estimate: RegenerationEstimateResponse | null;
   destinations: RegenerationDestinationCheckResponse | null;
   checking: boolean;
@@ -41,11 +47,17 @@ export function ReviewStep({
     destinations?.ok && destinations.checked_target_count === destinations.target_count,
   );
   const gate = reviewGate({
+    modelIssue,
     estimateReady: estimate !== null,
     workerOk: estimate?.worker_executability.ok ?? false,
     destinationsOk: destinationReady,
   });
   const totals = estimate?.estimate;
+  const models = effectiveRegenerationModels(draft, launchDefaults);
+  const displayModel = (role: keyof typeof models) => {
+    const pair = models[role];
+    return pair.provider && pair.model ? `${pair.provider}/${pair.model}` : "Not configured";
+  };
   return (
     <section className="space-y-5">
       <div>
@@ -65,7 +77,14 @@ export function ReviewStep({
             totals ? `${formatUsd(totals.low_usd)} – ${formatUsd(totals.high_usd)}` : "Calculating…"
           }
         />
-        <ReviewValue label="Model" value={`${draft.provider}/${draft.model ?? "not selected"}`} />
+        <ReviewValue
+          label="Model source"
+          value={draft.modelSelectionMode === "settings" ? "Settings defaults" : "Overrides"}
+        />
+        <ReviewValue label="Content model" value={displayModel("content")} />
+        <ReviewValue label="Judge model" value={displayModel("judge")} />
+        <ReviewValue label="Solver model" value={displayModel("solver")} />
+        <ReviewValue label="Extract model" value={displayModel("extract")} />
         <ReviewValue
           label="Extraction"
           value={draft.refreshExtraction ? "Refresh source text" : "Reuse source text"}

@@ -690,27 +690,51 @@ assert.strictEqual(formatUsd(0.4251), "$0.43");
  * ──────────────────────────────────────────────────────────────────── */
 
 assert.deepStrictEqual(
-  reviewGate({ estimateReady: false, workerOk: false, destinationsOk: false }),
+  reviewGate({
+    modelIssue: null,
+    estimateReady: false,
+    workerOk: false,
+    destinationsOk: false,
+  }),
   {
     ok: false,
     reason: "Wait for the campaign estimate before reviewing destinations.",
   },
 );
 assert.deepStrictEqual(
-  reviewGate({ estimateReady: true, workerOk: false, destinationsOk: false }),
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: false, destinationsOk: false }),
   {
     ok: false,
     reason: "No active worker can run this campaign's frozen model contract.",
   },
 );
-assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: false }), {
-  ok: false,
-  reason: "Check and resolve every Notion destination before starting the canary.",
-});
-assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: true }), {
-  ok: true,
-  reason: null,
-});
+assert.deepStrictEqual(
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: true, destinationsOk: false }),
+  {
+    ok: false,
+    reason: "Check and resolve every Notion destination before starting the canary.",
+  },
+);
+assert.deepStrictEqual(
+  reviewGate({ modelIssue: null, estimateReady: true, workerOk: true, destinationsOk: true }),
+  {
+    ok: true,
+    reason: null,
+  },
+);
+assert.deepStrictEqual(
+  reviewGate({
+    modelIssue: "Judge model retired-flash is no longer available for gemini.",
+    estimateReady: true,
+    workerOk: true,
+    destinationsOk: true,
+  }),
+  {
+    ok: false,
+    reason: "Judge model retired-flash is no longer available for gemini.",
+  },
+  "a cached estimate and destination check must not enable paid creation after models change",
+);
 
 assert.deepStrictEqual(nextCreateCanaryAction({ campaignId: null, canaryStarted: false }), {
   kind: "create-and-launch",
@@ -946,6 +970,7 @@ assert.ok(
   "report retry/abandon buttons must carry the disabled attribute",
 );
 const routeSrc = source("../routes/regeneration.tsx");
+const modelSelectionSrc = source("regeneration-model-selection.ts");
 assert.ok(
   routeSrc.includes("regenerationPollDecision"),
   "the route must decide polling through regenerationPollDecision()",
@@ -2494,6 +2519,71 @@ function apiBook(over: Partial<Book> = {}): Book {
   assert.strictEqual(refreshing.message, null);
 }
 
+/* ── campaign rows are named by curriculum identity, never phase names ── */
+{
+  const oneLesson = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology"],
+        grades: ["9"],
+        lesson_count: 1,
+        lesson_title: "Photosynthesis",
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual((oneLesson.campaigns[0] as unknown as { identity?: unknown }).identity, {
+    title: "Biology · Grade 9",
+    subtitle: "Photosynthesis",
+  });
+
+  const severalLessons = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology"],
+        grades: ["9"],
+        lesson_count: 3,
+        lesson_title: null,
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual(
+    (severalLessons.campaigns[0] as unknown as { identity?: unknown }).identity,
+    { title: "Biology · Grade 9", subtitle: "3 lessons" },
+  );
+
+  const mixed = regenerationCampaignListView({
+    campaigns: [
+      apiDetail({
+        subjects: ["biology", "math-algebra"],
+        grades: ["9", "8"],
+        lesson_count: 2,
+        lesson_title: null,
+      } as Partial<RegenerationCampaignDetail>),
+    ],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual((mixed.campaigns[0] as unknown as { identity?: unknown }).identity, {
+    title: "Mixed subjects · Grades 8 & 9",
+    subtitle: "2 lessons",
+  });
+
+  const legacy = regenerationCampaignListView({
+    campaigns: [apiDetail({ target_count: 2 })],
+    isLoading: false,
+    error: null,
+  });
+  assert.deepStrictEqual(
+    (legacy.campaigns[0] as unknown as { identity?: unknown }).identity,
+    { title: "Campaign details unavailable", subtitle: "2 targets" },
+    "legacy metadata must not fall back to a phase list",
+  );
+}
+
 /* ── minor 3: 404 prose — switched off vs genuinely missing ────────── */
 {
   // FastAPI's flag-off guard raises the literal string "Not Found".
@@ -3620,15 +3710,23 @@ assert.ok(
 // regeneration campaign with `non_api_transport` and no UI lever to fix it.
 for (const role of ["extract", "judge", "solver"]) {
   assert.ok(
-    new RegExp(`${role}_transport: "api"`).test(routeSrc),
+    new RegExp(`${role}_transport: "api"`).test(modelSelectionSrc),
     `${role}_transport must be pinned to api, not left to a mutable default`,
   );
   assert.ok(
-    !new RegExp(`${role}_transport: "inherit"`).test(routeSrc),
+    !new RegExp(`${role}_transport: "inherit"`).test(modelSelectionSrc),
     `${role}_transport: "inherit" re-reads launch_defaults at creation time`,
   );
+  assert.ok(
+    !new RegExp(`${role}_provider: null`).test(modelSelectionSrc),
+    `${role} must use the selected Settings default or explicit override, not a hidden null`,
+  );
 }
-assert.ok(/transport: "api"/.test(routeSrc), "the content transport stays api");
+assert.ok(/transport: "api"/.test(modelSelectionSrc), "the content transport stays api");
+assert.ok(
+  routeSrc.includes("regenerationLaunchContract"),
+  "estimate and create payloads must use the tested four-role contract builder",
+);
 
 // minor 2 — no raw solver token on any surface.
 for (const src of [canarySrc, reportSrc]) {
@@ -3721,21 +3819,56 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     publicationVersion: 3,
     destinationOverrides: [],
   };
-  const sig = regenerationDraftSignature(base);
-  assert.strictEqual(sig, regenerationDraftSignature({ ...base }), "the signature is stable");
+  const contract = {
+    provider: "gemini",
+    model: "gemini-3.6-flash",
+    transport: "api" as const,
+    judge_provider: "gemini",
+    judge_model: "gemini-3.6-flash",
+    judge_transport: "api" as const,
+    solver_provider: "gemini",
+    solver_model: "gemini-3.5-flash-lite",
+    solver_transport: "api" as const,
+    extract_provider: "gemini",
+    extract_model: "gemini-3.5-flash-lite",
+    extract_transport: "api" as const,
+    session_limit_strategy: "inherit" as const,
+  };
+  const sig = regenerationDraftSignature(base, contract);
+  assert.strictEqual(
+    sig,
+    regenerationDraftSignature({ ...base }, contract),
+    "the signature is stable",
+  );
   assert.notStrictEqual(
     sig,
-    regenerationDraftSignature({ ...base, selectedTocEntryIds: ["t1", "t2"] }),
+    regenerationDraftSignature({ ...base, selectedTocEntryIds: ["t1", "t2"] }, contract),
     "picking another lesson makes an `active_lineage_conflict` stale",
   );
   assert.notStrictEqual(
     sig,
-    regenerationDraftSignature({ ...base, selectedPhases: ["reflection"] }),
+    regenerationDraftSignature({ ...base, selectedPhases: ["reflection"] }, contract),
     "changing the phase selection makes a phase-shaped 422 stale",
   );
-  assert.notStrictEqual(sig, regenerationDraftSignature({ ...base, model: "gemini-3.5-flash" }));
+  for (const [role, changed] of [
+    ["content", { ...contract, model: "gemini-3.5-flash-lite" }],
+    ["judge", { ...contract, judge_model: "gemini-3.5-flash-lite" }],
+    ["solver", { ...contract, solver_model: "gemini-3.6-flash" }],
+    ["extract", { ...contract, extract_model: "gemini-3.6-flash" }],
+  ] as const) {
+    assert.notStrictEqual(
+      sig,
+      regenerationDraftSignature(base, changed),
+      `changing the effective ${role} contract makes a model refusal stale`,
+    );
+  }
+  assert.notStrictEqual(
+    sig,
+    regenerationDraftSignature(base, null),
+    "an invalid current contract must hide a refusal from the previously valid contract",
+  );
   assert.strictEqual(
-    regenerationDraftSignature({ ...base, canarySize: 1 }),
+    regenerationDraftSignature({ ...base, canarySize: 1 }, contract),
     sig,
     "an unchanged field must not invalidate the error",
   );

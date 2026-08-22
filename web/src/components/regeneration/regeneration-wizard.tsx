@@ -8,8 +8,10 @@ import {
   regenerationKeyedLines,
 } from "@/lib/api";
 import type { GuidedRegenerationDraft } from "@/lib/regeneration-draft";
+import { regenerationModelSelectionIssue } from "@/lib/regeneration-model-selection";
 import type {
   Book,
+  LaunchDefaults,
   ProviderModelManifest,
   RegenerationDestinationCheckResponse,
   RegenerationEligibleSource,
@@ -95,6 +97,9 @@ export function RegenerationWizard({
   onCheckDestinations,
   onChooseDestination,
   manifest,
+  launchDefaults,
+  launchDefaultsError,
+  onRetryLaunchDefaults,
   manifestError,
   state,
   draftWarning,
@@ -129,6 +134,9 @@ export function RegenerationWizard({
     notionLessonPageId: string,
   ) => void;
   manifest: ProviderModelManifest | undefined;
+  launchDefaults: LaunchDefaults | undefined;
+  launchDefaultsError: RegenerationErrorView | null;
+  onRetryLaunchDefaults: () => void;
   manifestError: RegenerationErrorView | null;
   state: GuidedRegenerationDraft;
   draftWarning: string | null;
@@ -140,13 +148,26 @@ export function RegenerationWizard({
   onOpenCampaign: (campaignId: string) => void;
 }) {
   const step = state.step === "canary" ? "review" : state.step;
+  const modelIssue = regenerationModelSelectionIssue(
+    state,
+    launchDefaults,
+    manifest,
+    launchDefaultsError !== null,
+  );
   const highestReachable =
     state.selectedTocEntryIds.length === 0
       ? "lessons"
-      : !state.model || !plan
+      : modelIssue !== null || !plan
         ? "content"
         : "review";
   const go = (next: GuidedRegenerationDraft["step"]) => onChange({ ...state, step: next });
+  const launchDefaultsProblem = launchDefaultsError && state.modelSelectionMode === "settings" && (
+    <RegenerationProblem
+      view={launchDefaultsError}
+      onRetry={onRetryLaunchDefaults}
+      retryLabel="Retry Settings defaults"
+    />
+  );
 
   return (
     <div className={cn(CARD, "space-y-5 p-4 sm:p-5")}>
@@ -194,12 +215,15 @@ export function RegenerationWizard({
           canonicalPhases={phaseCatalog}
           plan={plan}
           manifest={manifest}
+          launchDefaults={launchDefaults}
+          launchDefaultsFailed={launchDefaultsError !== null}
           planLoading={planLoading}
           planErrorView={planError}
           error={
             <>
               {planError && <RegenerationProblem view={planError} />}
               {manifestError && <RegenerationProblem view={manifestError} />}
+              {launchDefaultsProblem}
             </>
           }
           onChange={onChange}
@@ -210,6 +234,8 @@ export function RegenerationWizard({
       {step === "review" && (
         <ReviewStep
           draft={state}
+          launchDefaults={launchDefaults}
+          modelIssue={modelIssue}
           estimate={estimate}
           destinations={destinations}
           checking={destinationsChecking}
@@ -220,6 +246,7 @@ export function RegenerationWizard({
                 <RegenerationProblem view={estimateError} onOpenCampaign={onOpenCampaign} />
               )}
               {destinationError && <RegenerationProblem view={destinationError} />}
+              {launchDefaultsProblem}
               {createError && (
                 <RegenerationProblem view={createError} onOpenCampaign={onOpenCampaign} />
               )}

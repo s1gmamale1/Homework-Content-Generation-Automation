@@ -1280,6 +1280,10 @@ export interface RegenerationCampaignSummary {
   exclusion_acknowledged: boolean;
   requested_phases: string[];
   excluded_phases: string[];
+  subjects: string[];
+  grades: string[];
+  lesson_count: number;
+  lesson_title: string | null;
   publication_version: number | null;
   publication_version_label: string;
   app_git_revision: string | null;
