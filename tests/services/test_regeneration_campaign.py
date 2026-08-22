@@ -1270,7 +1270,7 @@ async def test_creation_refuses_an_active_lineage_owned_by_another_campaign(seed
     with pytest.raises(svc.ActiveLineageConflict) as exc:
         await service.create_campaign(_spec(seeded))
     assert seeded["toc_ids"][0] in [t for t, _ in exc.value.lineages]
-    assert first.id  # the first campaign is untouched
+    assert exc.value.campaign_ids == (first.id,)
 
 
 @db_only

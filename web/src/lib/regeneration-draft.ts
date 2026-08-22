@@ -34,15 +34,12 @@
  * `regenerationToggleLesson` stay the ONE authority for what a scope change
  * clears, and this module never restates their rules.
  *
- * KNOWN DUPLICATION: `provider`, `model` and `refreshExtraction` are declared
- * both here and on the old wizard's `RegenerationDraftState`
- * (`components/regeneration/regeneration-wizard.tsx`). The shared scope half is
- * one type, so TypeScript catches drift there — these three it cannot. Hoisting
- * `RegenerationDraftState` into `api.ts` and extending it is the real fix and
- * belongs with the guided route that replaces that wizard.
+ * The UI consumes this type directly. There is no second wizard-shaped draft,
+ * so persistence, narrowing and API payloads cannot drift into parallel models.
  */
 import { type RegenerationScopeState, clampCanarySize } from "./api";
 import {
+  type LaunchDefaults,
   REGENERATION_OUTPUT_LANGUAGES,
   type RegenerationEligibleSource,
   type RegenerationOutputLanguage,
@@ -90,10 +87,7 @@ export interface GuidedRegenerationDraft extends RegenerationScopeState {
   refreshExtraction: boolean;
   provider: string;
   model: string | null;
-  /** NOT on the wire yet: `CreateCampaignRequest` is `extra="forbid"` and
-   *  declares no `publication_version` on this branch, so folding this into
-   *  `regenerationCampaignBody` before plan Task 2 adds the field 422s every
-   *  create. It is operator input, held here until the contract grows it. */
+  /** Exact campaign-wide destination version, frozen by create. */
   publicationVersion: number;
   publicationVersionMode: "automatic" | "manual";
   destinationOverrides: DestinationOverrideDraft[];
@@ -154,13 +148,26 @@ export function defaultGuidedRegenerationDraft(): GuidedRegenerationDraft {
     // deliberate choice.
     refreshExtraction: false,
     provider: "gemini",
-    // Never defaulted for the operator: the server refuses a campaign with no
-    // content model precisely so nobody freezes a campaign onto whatever
-    // happens to be first in the manifest.
+    // Initialized once from the operator-controlled launch default at the
+    // route boundary; a restored or edited choice is never overwritten.
     model: null,
     publicationVersion: INITIAL_PUBLICATION_VERSION,
     publicationVersionMode: "automatic",
     destinationOverrides: [],
+  };
+}
+
+/** Apply the operator-controlled launch default only while the draft has no
+ * explicit model. A restored or newly edited choice is authoritative. */
+export function initializeDraftModel(
+  draft: GuidedRegenerationDraft,
+  defaults: Pick<LaunchDefaults, "content_provider" | "content_model">,
+): GuidedRegenerationDraft {
+  if (draft.model !== null || !defaults.content_provider || !defaults.content_model) return draft;
+  return {
+    ...draft,
+    provider: defaults.content_provider,
+    model: defaults.content_model,
   };
 }
 
@@ -262,22 +269,23 @@ function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
   const selectedTocEntryIds = textList(raw.selectedTocEntryIds);
   const selectedPhases = textList(raw.selectedPhases);
   const refreshExtraction = flag(raw.refreshExtraction, fallback.refreshExtraction);
+  const mode = modeForPhases(
+    known(REGENERATION_MODES, raw.mode, fallback.mode),
+    selectedPhases,
+    refreshExtraction,
+  );
   return {
     schemaVersion: SCHEMA_VERSION,
     step: known(WIZARD_STEPS, raw.step, fallback.step),
-    mode: modeForPhases(
-      known(REGENERATION_MODES, raw.mode, fallback.mode),
-      selectedPhases,
-      refreshExtraction,
-    ),
+    mode,
     subjectFilter: nullableText(raw.subjectFilter),
     gradeFilter: nullableText(raw.gradeFilter),
     bookId: nullableText(raw.bookId),
     language: known(REGENERATION_OUTPUT_LANGUAGES, raw.language, fallback.language),
     selectedTocEntryIds,
-    selectedPhases,
-    excludedPhases: textList(raw.excludedPhases),
-    acknowledged: flag(raw.acknowledged, fallback.acknowledged),
+    selectedPhases: mode === "full" ? [] : selectedPhases,
+    excludedPhases: mode === "full" ? [] : textList(raw.excludedPhases),
+    acknowledged: mode === "full" ? false : flag(raw.acknowledged, fallback.acknowledged),
     // Clamped on the way in as well as on the way out: `canary_size` is POSTed
     // from state, and the server's refusal is a bare `ge=1`/`le=target_count`
     // validation payload rather than anything an operator can act on.
@@ -432,14 +440,9 @@ export function pruneRegenerationDraft(
       // it because "narrowing already cleared the selection" reintroduces the
       // bug this filter was fixed for.
       //
-      // NOT enforced end-to-end yet, in the same sense `publicationVersion`
-      // above is not: `_Strict` is `extra="forbid"` and neither
-      // `EstimateRequest` nor `CreateCampaignRequest` declares an override
-      // field on this branch, so an override cannot reach the server today.
-      // Once the contract grows the field the server revalidates the chosen
-      // page against the reviewed language container, which is what will make
-      // a stale override a refusal; this filter is the browser's half of that
-      // same rule, kept honest ahead of it.
+      // The server revalidates every override against the reviewed language
+      // container. This filter is the browser half of that same rule: it keeps
+      // a known-stale page choice out of the next destination review request.
       destinationOverrides: draft.destinationOverrides.filter(
         (override) =>
           selectedTocEntryIdSet.has(override.tocEntryId) &&

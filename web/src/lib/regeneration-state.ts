@@ -203,6 +203,22 @@ export interface ReportAction {
   hint: string;
 }
 
+export interface GuidedReviewGateInput {
+  estimateReady: boolean;
+  workerOk: boolean;
+  destinationsOk: boolean;
+}
+
+export interface GuidedReviewGate {
+  ok: boolean;
+  reason: string | null;
+}
+
+export type CreateCanaryAction =
+  | { kind: "create-and-launch" }
+  | { kind: "launch-existing-canary"; campaignId: string }
+  | { kind: "open-campaign"; campaignId: string };
+
 /* ── Small shared helpers ────────────────────────────────────────────── */
 
 function plural(n: number, one: string, many: string): string {
@@ -221,6 +237,71 @@ export function formatUsd(n: number): string {
  */
 export function lessonCountLabel(count: number): string {
   return `${count} ${plural(count, "lesson", "lessons")}`;
+}
+
+/** The review step can advance only when every server authority has answered. */
+export function reviewGate(input: GuidedReviewGateInput): GuidedReviewGate {
+  if (!input.estimateReady) {
+    return { ok: false, reason: "Wait for the campaign estimate before reviewing destinations." };
+  }
+  if (!input.workerOk) {
+    return {
+      ok: false,
+      reason: "No active worker can run this campaign's frozen model contract.",
+    };
+  }
+  if (!input.destinationsOk) {
+    return {
+      ok: false,
+      reason: "Check and resolve every Notion destination before starting the canary.",
+    };
+  }
+  return { ok: true, reason: null };
+}
+
+/** Once create succeeds, every retry addresses that exact campaign. */
+export function nextCreateCanaryAction(input: {
+  campaignId: string | null;
+  canaryStarted: boolean;
+}): CreateCanaryAction {
+  if (input.campaignId === null) return { kind: "create-and-launch" };
+  if (!input.canaryStarted) {
+    return { kind: "launch-existing-canary", campaignId: input.campaignId };
+  }
+  return { kind: "open-campaign", campaignId: input.campaignId };
+}
+
+export interface CreateCanaryResult<Campaign> {
+  campaign: Campaign;
+  canaryStarted: boolean;
+  canaryError: unknown | null;
+}
+
+/**
+ * Create once, expose that durable campaign to the caller before attempting
+ * the first paid action, then address only that campaign on failure/retry.
+ */
+export async function createAndStartCanary<Request, Campaign extends { id: string }>(input: {
+  request: Request;
+  create: (request: Request) => Promise<Campaign>;
+  onCampaignCreated: (campaign: Campaign) => void;
+  launch: (campaignId: string) => Promise<Campaign>;
+}): Promise<CreateCanaryResult<Campaign>> {
+  const campaign = await input.create(input.request);
+  input.onCampaignCreated(campaign);
+  const action = nextCreateCanaryAction({ campaignId: campaign.id, canaryStarted: false });
+  if (action.kind !== "launch-existing-canary") {
+    throw new Error("created campaign did not resolve to its existing canary action");
+  }
+  try {
+    return {
+      campaign: await input.launch(action.campaignId),
+      canaryStarted: true,
+      canaryError: null,
+    };
+  } catch (canaryError) {
+    return { campaign, canaryStarted: false, canaryError };
+  }
 }
 
 /** "A", "A and B", "A, B and C" — for naming phases inside a sentence. */
@@ -475,8 +556,7 @@ export function approvalGate(campaign: Campaign): ApprovalGate {
   let approveLabel: string;
   let approveDetail: string;
   if (singleTarget) {
-    // The version is read off the target, never hardcoded: a V2 source publishes V3.
-    approveLabel = `Approve canary and publish V${campaign.targets[0].nextVersion}`;
+    approveLabel = "Approve and publish this lesson";
     approveDetail = NO_BULK_STEP_DETAIL;
   } else if (targetCount === 0) {
     approveLabel = "Nothing to approve";

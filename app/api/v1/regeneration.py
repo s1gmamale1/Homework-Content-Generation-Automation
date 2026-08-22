@@ -293,6 +293,7 @@ def _lineage_conflict(exc: ActiveLineageConflict) -> HTTPException:
         "active_lineage_conflict",
         str(exc),
         count=len(exc.lineages),
+        campaign_ids=[str(campaign_id) for campaign_id in exc.campaign_ids],
         lineages=[
             {"toc_entry_id": str(toc), "output_language": language}
             for toc, language in exc.lineages

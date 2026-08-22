@@ -65,8 +65,8 @@ import type {
   SaKeyAssignment,
   SessionLimitStrategy,
   Subject,
-  TeacherDeck,
   TOCEntry,
+  TeacherDeck,
   Transport,
   Worker,
   WorkerStatusResponse,
@@ -115,7 +115,10 @@ async function authFetch(url: string, init: RequestInit = {}): Promise<Response>
  * way, while keeping the full parsed `detail` on the error for callers that
  * need the structured payload (e.g. the candidate list).
  */
-function extractErrorMessage(text: string, fallback: string): { message: string; detail?: unknown } {
+function extractErrorMessage(
+  text: string,
+  fallback: string,
+): { message: string; detail?: unknown } {
   if (!text) return { message: fallback };
   try {
     const parsed = JSON.parse(text) as { detail?: unknown };
@@ -210,7 +213,12 @@ export const api = {
     return unwrap<CoverageResponse>(res);
   },
 
-  async uploadBook(file: File, subject: Subject, grade?: string, sourceLanguage?: OutputLanguage): Promise<Book> {
+  async uploadBook(
+    file: File,
+    subject: Subject,
+    grade?: string,
+    sourceLanguage?: OutputLanguage,
+  ): Promise<Book> {
     const fd = new FormData();
     fd.append("file", file);
     fd.append("subject", subject);
@@ -229,9 +237,7 @@ export const api = {
     if (outputLanguage) params.set("output_language", outputLanguage);
     if (kind) params.set("kind", kind);
     const qs = params.toString();
-    const res = await authFetch(
-      `/api/v1/books/${encodeURIComponent(bookId)}${qs ? `?${qs}` : ""}`,
-    );
+    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}${qs ? `?${qs}` : ""}`);
     return unwrap<Book>(res);
   },
 
@@ -367,11 +373,13 @@ export const api = {
   },
 
   async updateLaunchDefaults(patch: Partial<LaunchDefaults>): Promise<LaunchDefaults> {
-    return unwrap<LaunchDefaults>(await authFetch("/api/v1/settings/launch-defaults", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(patch),
-    }));
+    return unwrap<LaunchDefaults>(
+      await authFetch("/api/v1/settings/launch-defaults", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      }),
+    );
   },
 
   async getAgentStats(): Promise<AgentStats> {
@@ -402,24 +410,25 @@ export const api = {
    * path is `generate(..., { force: true })` from the section page.
    */
   async retryJob(jobId: string): Promise<Job> {
-    const res = await authFetch(
-      `/api/v1/jobs/${encodeURIComponent(jobId)}/retry`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/retry`, {
+      method: "POST",
+    });
     return unwrap<Job>(res);
   },
 
   /** Re-attempt the best-effort Notion archive for a `done` job whose push
    *  previously failed — see `POST /api/v1/jobs/<id>/retry-archive`. */
   async retryArchiveJob(jobId: string): Promise<Job> {
-    const res = await authFetch(
-      `/api/v1/jobs/${encodeURIComponent(jobId)}/retry-archive`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/${encodeURIComponent(jobId)}/retry-archive`, {
+      method: "POST",
+    });
     return unwrap<Job>(res);
   },
 
-  async retryArchiveBatch(batchId: string, opts?: { stale?: boolean }): Promise<BatchRearchiveResponse> {
+  async retryArchiveBatch(
+    batchId: string,
+    opts?: { stale?: boolean },
+  ): Promise<BatchRearchiveResponse> {
     const qs = opts?.stale ? "?stale=true" : "";
     const res = await authFetch(
       `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/retry-archive${qs}`,
@@ -434,10 +443,9 @@ export const api = {
    * `retryJob`: reuses the same book row and returns the updated `Book`.
    */
   async retryBookToc(bookId: string): Promise<Book> {
-    const res = await authFetch(
-      `/api/v1/books/${encodeURIComponent(bookId)}/toc/retry`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}/toc/retry`, {
+      method: "POST",
+    });
     return unwrap<Book>(res);
   },
 
@@ -447,10 +455,9 @@ export const api = {
    * See `POST /api/v1/books/<id>/toc/accept`.
    */
   async acceptToc(bookId: string): Promise<Book> {
-    const res = await authFetch(
-      `/api/v1/books/${encodeURIComponent(bookId)}/toc/accept`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/books/${encodeURIComponent(bookId)}/toc/accept`, {
+      method: "POST",
+    });
     return unwrap<Book>(res);
   },
 
@@ -523,10 +530,18 @@ export const api = {
     return (await unwrap<{ jobs: BatchLessonRow[] }>(res)).jobs;
   },
   async launchBatch(body: {
-    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
-    extract_transport?: RoleTransport; judge_transport?: RoleTransport; force?: boolean;
-    extract_provider?: string | null; extract_model?: string | null;
-    judge_provider?: string | null; judge_model?: string | null;
+    book_id: string;
+    toc_entry_ids?: string[];
+    provider?: string;
+    model?: string | null;
+    transport?: Transport;
+    extract_transport?: RoleTransport;
+    judge_transport?: RoleTransport;
+    force?: boolean;
+    extract_provider?: string | null;
+    extract_model?: string | null;
+    judge_provider?: string | null;
+    judge_model?: string | null;
     relaunch_mode?: "resume" | "discard";
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
@@ -536,7 +551,9 @@ export const api = {
     kind?: JobKind;
   }): Promise<BatchLaunchResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
     });
     return unwrap(res);
   },
@@ -547,17 +564,25 @@ export const api = {
    * Equivalent to `launchBatch({ ...body, preview: true })` but narrowly typed.
    */
   async previewBatch(body: {
-    book_id: string; toc_entry_ids?: string[]; provider?: string; model?: string | null; transport?: Transport;
-    extract_transport?: RoleTransport; judge_transport?: RoleTransport;
-    extract_provider?: string | null; extract_model?: string | null;
-    judge_provider?: string | null; judge_model?: string | null;
+    book_id: string;
+    toc_entry_ids?: string[];
+    provider?: string;
+    model?: string | null;
+    transport?: Transport;
+    extract_transport?: RoleTransport;
+    judge_transport?: RoleTransport;
+    extract_provider?: string | null;
+    extract_model?: string | null;
+    judge_provider?: string | null;
+    judge_model?: string | null;
     session_limit_strategy?: SessionLimitStrategy;
     output_language?: OutputLanguage | null;
     include_classes?: string[];
     kind?: JobKind;
   }): Promise<BatchPreviewResponse> {
     const res = await authFetch("/api/v1/jobs/batch", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ...body, preview: true }),
     });
     return unwrap<BatchPreviewResponse>(res);
@@ -569,10 +594,9 @@ export const api = {
    * down within heartbeat_seconds, then settles to `cancelled`).
    */
   async cancelBatch(batchId: string): Promise<BatchCancelResponse> {
-    const res = await authFetch(
-      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/cancel`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/batch/${encodeURIComponent(batchId)}/cancel`, {
+      method: "POST",
+    });
     return unwrap<BatchCancelResponse>(res);
   },
 
@@ -581,28 +605,25 @@ export const api = {
    * outputs so only unfinished phases re-run. Mirrors `retryJob` at batch scope.
    */
   async resumeBatch(batchId: string): Promise<BatchResumeResponse> {
-    const res = await authFetch(
-      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/resume`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/batch/${encodeURIComponent(batchId)}/resume`, {
+      method: "POST",
+    });
     return unwrap<BatchResumeResponse>(res);
   },
 
   /** Pause a batch — sets paused_at/paused_reason="manual"; claim gate skips it. */
   async pauseBatch(batchId: string): Promise<BatchPauseResponse> {
-    const res = await authFetch(
-      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/pause`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/batch/${encodeURIComponent(batchId)}/pause`, {
+      method: "POST",
+    });
     return unwrap<BatchPauseResponse>(res);
   },
 
   /** Unpause a batch — clears paused_at/paused_reason; claim gate re-includes it. */
   async unpauseBatch(batchId: string): Promise<BatchPauseResponse> {
-    const res = await authFetch(
-      `/api/v1/jobs/batch/${encodeURIComponent(batchId)}/unpause`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/jobs/batch/${encodeURIComponent(batchId)}/unpause`, {
+      method: "POST",
+    });
     return unwrap<BatchPauseResponse>(res);
   },
 
@@ -619,19 +640,17 @@ export const api = {
 
   /** Drain a worker — sets status "draining"; worker finishes in-flight jobs then stops claiming. */
   async drainWorker(pcId: string): Promise<WorkerStatusResponse> {
-    const res = await authFetch(
-      `/api/v1/workers/${encodeURIComponent(pcId)}/drain`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/workers/${encodeURIComponent(pcId)}/drain`, {
+      method: "POST",
+    });
     return unwrap<WorkerStatusResponse>(res);
   },
 
   /** Undrain a worker — reverts status to "online"; claim gate re-includes it. */
   async undrainWorker(pcId: string): Promise<WorkerStatusResponse> {
-    const res = await authFetch(
-      `/api/v1/workers/${encodeURIComponent(pcId)}/undrain`,
-      { method: "POST" },
-    );
+    const res = await authFetch(`/api/v1/workers/${encodeURIComponent(pcId)}/undrain`, {
+      method: "POST",
+    });
     return unwrap<WorkerStatusResponse>(res);
   },
 
@@ -862,22 +881,18 @@ export const api = {
   },
 
   async assignSaKey(hostname: string, keyId: string): Promise<void> {
-    const res = await authFetch(
-      `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`,
-      {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ key_id: keyId }),
-      },
-    );
+    const res = await authFetch(`/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key_id: keyId }),
+    });
     if (!res.ok) throw new Error((await res.json()).detail ?? "assign failed");
   },
 
   async unassignSaKey(hostname: string): Promise<void> {
-    const res = await authFetch(
-      `/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`,
-      { method: "DELETE" },
-    );
+    const res = await authFetch(`/api/v1/sa-keys/assignments/${encodeURIComponent(hostname)}`, {
+      method: "DELETE",
+    });
     // authFetch does NOT throw on 4xx/5xx — check res.ok so the caller's
     // success toast can't fire on a failed unassign (matches assignSaKey).
     if (!res.ok) throw new Error((await res.json()).detail ?? "unassign failed");
@@ -1039,9 +1054,7 @@ export function regenerationDraftSignature(draft: {
     draft.publicationVersion,
     [...draft.destinationOverrides]
       .sort((a, b) =>
-        `${a.tocEntryId}:${a.outputLanguage}`.localeCompare(
-          `${b.tocEntryId}:${b.outputLanguage}`,
-        ),
+        `${a.tocEntryId}:${a.outputLanguage}`.localeCompare(`${b.tocEntryId}:${b.outputLanguage}`),
       )
       .map((item) => [item.tocEntryId, item.outputLanguage, item.notionLessonPageId]),
   ]);
@@ -1061,11 +1074,7 @@ export function regenerationDestinationSignature(
           `${b.toc_entry_id}:${b.output_language}`,
         ),
       )
-      .map((item) => [
-        item.toc_entry_id,
-        item.output_language,
-        item.notion_lesson_page_id,
-      ]),
+      .map((item) => [item.toc_entry_id, item.output_language, item.notion_lesson_page_id]),
   ]);
 }
 
@@ -2138,10 +2147,7 @@ export function regenerationApprovalGate(detail: RegenerationCampaignDetail): Ap
   let approveLabel: string;
   let approveDetail: string;
   if (singleTarget) {
-    const version = regenerationNextVersion(detail.targets[0]);
-    approveLabel = version
-      ? `Approve canary and publish V${version}`
-      : "Approve canary and publish the next version";
+    approveLabel = "Approve and publish this lesson";
     approveDetail = REGENERATION_NO_BULK_STEP_DETAIL;
   } else if (targetCount === 0) {
     approveLabel = "Nothing to approve";
@@ -2522,9 +2528,7 @@ export function regenerationPlanStepView(input: {
  *  saying the read failed — sends the operator to change something that was
  *  never wrong.
  */
-export function regenerationPlanBlockedReason(
-  planStep: RegenerationPlanStepView,
-): string | null {
+export function regenerationPlanBlockedReason(planStep: RegenerationPlanStepView): string | null {
   switch (planStep.mode) {
     case "ready":
       return null;
@@ -2750,6 +2754,8 @@ export interface RegenerationErrorView {
   hint: string | null;
   code: string | null;
   status: number | null;
+  /** Existing campaigns the operator can open to resolve a lineage conflict. */
+  campaignIds: string[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -2833,6 +2839,7 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
         hint: null,
         code: null,
         status,
+        campaignIds: [],
       };
     }
     return {
@@ -2845,6 +2852,7 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
         "one that is still there.",
       code: null,
       status,
+      campaignIds: [],
     };
   }
 
@@ -2861,10 +2869,18 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
           : null,
       code: null,
       status,
+      campaignIds: [],
     };
   }
 
-  const base = { message, details: [] as string[], hint: null as string | null, code, status };
+  const base = {
+    message,
+    details: [] as string[],
+    hint: null as string | null,
+    code,
+    status,
+    campaignIds: [] as string[],
+  };
 
   switch (code) {
     case "publisher_disabled":
@@ -2906,6 +2922,7 @@ export function regenerationErrorView(err: unknown): RegenerationErrorView {
       return {
         ...base,
         title: "Another campaign still holds these lessons",
+        campaignIds: stringsOf(detail ?? {}, "campaign_ids"),
         details: rowsOf(detail ?? {}, "lineages").map(
           (row) =>
             `lesson ${text(row, "toc_entry_id")}, output language ${text(row, "output_language")}`,

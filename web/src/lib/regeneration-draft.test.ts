@@ -37,6 +37,7 @@ import {
   defaultGuidedRegenerationDraft,
   displayedPublicationVersion,
   effectiveSelectedPhases,
+  initializeDraftModel,
   loadRegenerationDraft,
   pruneRegenerationDraft,
   saveRegenerationDraft,
@@ -131,6 +132,31 @@ test("the default draft picks no model and nothing to publish over", () => {
   assert.strictEqual(draft.acknowledged, false);
   assert.strictEqual(draft.canarySize, 1);
   assert.strictEqual(draft.schemaVersion, 1);
+});
+
+test("a new draft adopts the operator launch-default content model", () => {
+  const draft = defaultGuidedRegenerationDraft();
+  const initialized = initializeDraftModel(draft, {
+    content_provider: "gemini",
+    content_model: "gemini-3.6-flash",
+  });
+  assert.strictEqual(initialized.provider, "gemini");
+  assert.strictEqual(initialized.model, "gemini-3.6-flash");
+});
+
+test("launch defaults never overwrite a restored explicit model choice", () => {
+  const draft = {
+    ...defaultGuidedRegenerationDraft(),
+    provider: "gemini",
+    model: "gemini-3.5-flash",
+  };
+  assert.deepStrictEqual(
+    initializeDraftModel(draft, {
+      content_provider: "gemini",
+      content_model: "gemini-3.6-flash",
+    }),
+    draft,
+  );
 });
 
 /* ════════════════════════════════════════════════════════════════════
@@ -327,6 +353,19 @@ test("a decoded extract-only draft keeps its empty phase list and its mode", () 
     [],
     "an extract-only draft must regenerate NO phase",
   );
+});
+
+test("a restored full rebuild cannot retain selective exclusions", () => {
+  const raw = JSON.stringify({
+    ...savedDraft,
+    mode: "full",
+    excludedPhases: ["reflection"],
+    acknowledged: true,
+  });
+  const { draft } = loadRegenerationDraft(memoryStorage({ [REGENERATION_DRAFT_KEY]: raw }));
+  assert.deepStrictEqual(draft.selectedPhases, []);
+  assert.deepStrictEqual(draft.excludedPhases, []);
+  assert.strictEqual(draft.acknowledged, false);
 });
 
 /* ════════════════════════════════════════════════════════════════════

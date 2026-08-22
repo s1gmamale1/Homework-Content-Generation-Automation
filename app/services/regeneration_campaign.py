@@ -230,8 +230,9 @@ class ActiveLineageConflict(CampaignError):
     by the losing side of a real race.
     """
 
-    def __init__(self, lineages):
+    def __init__(self, lineages, *, campaign_ids=()):
         self.lineages = [(toc, lang) for toc, lang in lineages]
+        self.campaign_ids = tuple(dict.fromkeys(campaign_ids))
         listed = ", ".join(f"{toc}/{lang}" for toc, lang in self.lineages[:5])
         super().__init__(
             "a non-terminal regeneration target already owns "
@@ -903,7 +904,8 @@ class RegenerationCampaignService:
             active = await targets_repo.active_targets_for_lineages(session, lineages)
             if active:
                 raise ActiveLineageConflict(
-                    [(target.toc_entry_id, target.output_language) for target in active]
+                    [(target.toc_entry_id, target.output_language) for target in active],
+                    campaign_ids=[target.campaign_id for target in active],
                 )
             conflicts = await sources_repo.publication_version_conflicts(
                 session,
@@ -1166,7 +1168,11 @@ class RegenerationCampaignService:
                 await session.commit()
             except IntegrityError as exc:
                 await session.rollback()
-                raise ActiveLineageConflict(lineages) from exc
+                owners = await targets_repo.active_targets_for_lineages(session, lineages)
+                raise ActiveLineageConflict(
+                    lineages,
+                    campaign_ids=[target.campaign_id for target in owners],
+                ) from exc
             return campaign
 
     async def _create_campaign_legacy(
@@ -1228,7 +1234,8 @@ class RegenerationCampaignService:
             )
             if conflicts:
                 raise ActiveLineageConflict(
-                    [(t.toc_entry_id, t.output_language) for t in conflicts]
+                    [(t.toc_entry_id, t.output_language) for t in conflicts],
+                    campaign_ids=[t.campaign_id for t in conflicts],
                 )
 
             if spec.publication_version is not None:
@@ -1301,7 +1308,11 @@ class RegenerationCampaignService:
                 # block is guarded. The index is the authority; this is only its
                 # readable form.
                 await session.rollback()
-                raise ActiveLineageConflict(lineages) from exc
+                owners = await targets_repo.active_targets_for_lineages(session, lineages)
+                raise ActiveLineageConflict(
+                    lineages,
+                    campaign_ids=[target.campaign_id for target in owners],
+                ) from exc
             logger.info(
                 f"regeneration campaign {campaign.id}: drafted "
                 f"{len(created)} target(s), {canary_size} canary"

@@ -906,6 +906,26 @@ def test_create_campaign_maps_each_service_refusal(
     assert response.json()["detail"]["message"]
 
 
+def test_active_lineage_conflict_names_the_campaign_the_operator_must_open(monkeypatch):
+    owner_id = uuid4()
+    _install_service(
+        monkeypatch,
+        _fake_service(
+            create_campaign=AsyncMock(
+                side_effect=campaign_service.ActiveLineageConflict(
+                    [(uuid4(), "uz")], campaign_ids=[owner_id]
+                )
+            )
+        ),
+    )
+    _install_detail(monkeypatch)
+
+    response = client.post(f"{BASE}/campaigns", json=_create_body())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["campaign_ids"] == [str(owner_id)]
+
+
 def test_create_campaign_maps_an_unacknowledged_exclusion_to_422(monkeypatch):
     from app.services.regeneration_planner import ExclusionAcknowledgementRequired
 

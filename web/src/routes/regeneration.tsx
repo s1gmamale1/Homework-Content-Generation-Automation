@@ -1,11 +1,10 @@
 import { CampaignList } from "@/components/regeneration/campaign-list";
-import { CampaignReport } from "@/components/regeneration/campaign-report";
-import { CanaryReview } from "@/components/regeneration/canary-review";
+import { CanaryStep } from "@/components/regeneration/canary-step";
+import { GuidedProgress } from "@/components/regeneration/guided-progress";
 import {
   type RegenerationDraftState,
   RegenerationProblem,
   RegenerationWizard,
-  defaultRegenerationDraft,
 } from "@/components/regeneration/regeneration-wizard";
 import { SpaceBackdrop } from "@/components/space-backdrop";
 import {
@@ -26,7 +25,17 @@ import {
   regenerationRetryAudit,
   regenerationSelectablePhases,
 } from "@/lib/api";
-import { effectiveSelectedPhases } from "@/lib/regeneration-draft";
+import {
+  clearRegenerationDraft,
+  defaultGuidedRegenerationDraft,
+  displayedPublicationVersion,
+  effectiveSelectedPhases,
+  initializeDraftModel,
+  loadRegenerationDraft,
+  pruneRegenerationDraft,
+  saveRegenerationDraft,
+} from "@/lib/regeneration-draft";
+import { createAndStartCanary } from "@/lib/regeneration-state";
 import type {
   RegenerationCampaignDetail,
   RegenerationCampaignDraft,
@@ -85,7 +94,7 @@ import { cn } from "@/lib/utils";
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { RefreshCw } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 
 const CAMPAIGNS_KEY = ["regeneration", "campaigns"] as const;
@@ -211,8 +220,16 @@ function campaignDraft(
 
 export function RegenerationPage() {
   const qc = useQueryClient();
-  const [draft, setDraft] = useState<RegenerationDraftState>(defaultRegenerationDraft);
+  const [initialLoad] = useState(() => loadRegenerationDraft(window.localStorage));
+  const [draft, setDraft] = useState<RegenerationDraftState>(initialLoad.draft);
+  const [draftWarning, setDraftWarning] = useState<string | null>(initialLoad.warning);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [createCanaryFailure, setCreateCanaryFailure] = useState<{
+    campaignId: string;
+    message: string;
+  } | null>(null);
+  const launchDefaultsApplied = useRef(false);
+  const lastPrunedInputs = useRef<string | null>(null);
   /** The draft signature a create refusal belongs to. A refusal is rendered
    *  only while the draft still matches it. */
   const [createErrorFor, setCreateErrorFor] = useState<string | null>(null);
@@ -245,9 +262,9 @@ export function RegenerationPage() {
     }));
   };
 
-  /** Books are the bounded first step — ~246 rows, shared with Fleet's cache.
+  /** Books are the bounded first step — ~246 rows, held under a dedicated key.
    *  `/eligible` is asked for ONE book's lessons and nothing wider. */
-  const books = useQuery({ queryKey: ["books"], queryFn: api.listBooks });
+  const books = useQuery({ queryKey: ["books", "all"], queryFn: api.listAllBooks });
 
   const eligibleQuery = regenerationEligibleQuery(draft.bookId);
   const eligible = useQuery({
@@ -270,8 +287,54 @@ export function RegenerationPage() {
   });
 
   const manifest = useQuery({ queryKey: ["agent-models"], queryFn: api.getAgentModels });
+  const launchDefaults = useQuery({
+    queryKey: ["settings", "launch-defaults"],
+    queryFn: api.getLaunchDefaults,
+  });
+
+  useEffect(() => {
+    const saved = saveRegenerationDraft(window.localStorage, draft);
+    if (saved.warning) setDraftWarning(saved.warning);
+  }, [draft]);
+
+  useEffect(() => {
+    if (launchDefaultsApplied.current || !launchDefaults.data) return;
+    launchDefaultsApplied.current = true;
+    setDraft((current) => initializeDraftModel(current, launchDefaults.data));
+  }, [launchDefaults.data]);
 
   const sources = useMemo(() => eligible.data?.sources ?? [], [eligible.data]);
+  const selectedSources = useMemo(
+    () =>
+      sources.filter(
+        (source) =>
+          source.output_language === draft.language &&
+          draft.selectedTocEntryIds.includes(source.toc_entry_id),
+      ),
+    [draft.language, draft.selectedTocEntryIds, sources],
+  );
+  const automaticPublicationVersion = displayedPublicationVersion(draft, selectedSources);
+
+  useEffect(() => {
+    if (!eligible.data) return;
+    if (
+      draft.publicationVersionMode !== "automatic" ||
+      draft.publicationVersion === automaticPublicationVersion
+    ) {
+      return;
+    }
+    setDraft((current) =>
+      current.publicationVersionMode === "automatic"
+        ? { ...current, publicationVersion: automaticPublicationVersion }
+        : current,
+    );
+  }, [
+    automaticPublicationVersion,
+    draft.publicationVersion,
+    draft.publicationVersionMode,
+    eligible.data,
+  ]);
+
   /** The plan is per SUBJECT. Scoping to one book makes that unambiguous: the
    *  selected book's own subject wins, and the eligible rows are the fallback
    *  while the books list is still loading. */
@@ -292,6 +355,38 @@ export function RegenerationPage() {
   });
 
   const canonicalPhases = catalog.data?.canonical_phases ?? [];
+
+  useEffect(() => {
+    if (!draft.bookId || !eligible.data || !catalog.data || !manifest.data) return;
+    const validModelRefs = new Set<string>();
+    for (const [provider, models] of Object.entries(manifest.data.providers)) {
+      if (!manifest.data.api_supported[provider]) continue;
+      for (const model of models) validModelRefs.add(`${provider}/${model}`);
+    }
+    const eligibleTocEntryIds = new Set(eligible.data.sources.map((source) => source.toc_entry_id));
+    const validPhaseNames = new Set(regenerationSelectablePhases(catalog.data.canonical_phases));
+    const signature = JSON.stringify({
+      bookId: draft.bookId,
+      eligible: [...eligibleTocEntryIds].sort(),
+      models: [...validModelRefs].sort(),
+      phases: [...validPhaseNames].sort(),
+    });
+    if (lastPrunedInputs.current === signature) return;
+    lastPrunedInputs.current = signature;
+    setDraft((current) => {
+      const pruned = pruneRegenerationDraft(current, {
+        eligibleTocEntryIds,
+        validModelRefs,
+        validPhaseNames,
+      });
+      if (pruned.removedLessonCount > 0) {
+        setDraftWarning(
+          `${pruned.removedLessonCount} saved lesson${pruned.removedLessonCount === 1 ? " is" : "s are"} no longer eligible and ${pruned.removedLessonCount === 1 ? "was" : "were"} removed from this draft.`,
+        );
+      }
+      return pruned.draft;
+    });
+  }, [catalog.data, draft.bookId, eligible.data, manifest.data]);
   const effectivePhases = selectedPhases(draft, canonicalPhases);
   const hasPhaseSelection = effectivePhases.length > 0 || draft.refreshExtraction;
   const phasePlanBody = planRequest(subject ?? "", draft, canonicalPhases);
@@ -342,17 +437,41 @@ export function RegenerationPage() {
     // describing a draft that no longer exists and blaming a selection that is
     // no longer there.
     onMutate: () => setCreateErrorFor(regenerationDraftSignature(draft)),
-    mutationFn: (body: RegenerationCampaignDraft) => api.createRegenerationCampaign(body),
-    onSuccess: (fresh) => {
-      adopt(fresh);
-      // Freezing a campaign takes an ACTIVE lineage lock on every lesson in
-      // it, so those lessons are no longer eligible. Leaving the cached list
-      // alone lets the operator tick one again and meet an
-      // `active_lineage_conflict` that the screen already knew about.
-      qc.invalidateQueries({ queryKey: ELIGIBLE_KEY });
-      setDestinationReview(null);
-      setSelectedId(fresh.id);
-      toast.success("Campaign frozen. Nothing has been spent or published yet.");
+    mutationFn: (body: RegenerationCampaignDraft) =>
+      createAndStartCanary({
+        request: body,
+        create: api.createRegenerationCampaign,
+        launch: api.launchRegenerationCanary,
+        onCampaignCreated: (fresh) => {
+          const cleared = clearRegenerationDraft(window.localStorage);
+          setDraftWarning(cleared.warning);
+          setDraft(
+            launchDefaults.data
+              ? initializeDraftModel(defaultGuidedRegenerationDraft(), launchDefaults.data)
+              : defaultGuidedRegenerationDraft(),
+          );
+          setCreateCanaryFailure(null);
+          adopt(fresh);
+          qc.invalidateQueries({ queryKey: ELIGIBLE_KEY });
+          setDestinationReview(null);
+          setSelectedId(fresh.id);
+        },
+      }),
+    onSuccess: (result) => {
+      if (result.canaryStarted) {
+        forgetFailures(result.campaign.id);
+        adopt(result.campaign);
+        toast.success("Campaign created and canary started. Review it here when it finishes.");
+      } else {
+        setCreateCanaryFailure({
+          campaignId: result.campaign.id,
+          message:
+            "Campaign created; canary not started. Retry this campaign's canary below — do not create it again.",
+        });
+        toast.error("Campaign created; canary not started.", {
+          description: "Use Retry canary on this campaign. Do not create it again.",
+        });
+      }
     },
   });
 
@@ -374,6 +493,7 @@ export function RegenerationPage() {
   const canaryMut = useMutation({
     mutationFn: (campaignId: string) => api.launchRegenerationCanary(campaignId),
     onSuccess: (fresh) => {
+      setCreateCanaryFailure((current) => (current?.campaignId === fresh.id ? null : current));
       forgetFailures(fresh.id);
       adopt(fresh);
       toast.success("Canary started. It will wait here for your review.");
@@ -530,9 +650,8 @@ export function RegenerationPage() {
           {REGENERATION_NO_SPEND_NOTE}
         </div>
 
-        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-          <div className="space-y-4">
-            <h2 className="text-sm font-semibold text-white/70">New campaign</h2>
+        <div className="space-y-5">
+          {selectedId === null ? (
             <RegenerationWizard
               books={books.data}
               booksLoading={books.isLoading}
@@ -540,9 +659,6 @@ export function RegenerationPage() {
               sources={sources}
               ineligible={eligible.data?.ineligible ?? []}
               sourcesLoading={eligibleQuery.enabled && eligible.isLoading}
-              // The lesson read reports at the step where lessons are picked.
-              // Folded into `planError` it surfaced under "Pick the phases to
-              // rebuild", two steps below the list it had just emptied.
               sourcesError={view(eligible.error)}
               pickBookReason={eligibleQuery.blockedReason}
               phaseCatalog={catalog.data?.canonical_phases ?? []}
@@ -550,7 +666,6 @@ export function RegenerationPage() {
               planLoading={plan.isFetching || catalog.isFetching}
               planError={view(plan.error ?? catalog.error)}
               estimate={estimate.data ?? null}
-              estimateLoading={estimate.isFetching}
               estimateError={view(estimate.error)}
               destinations={currentDestinations}
               destinationsChecking={destinationMut.isPending}
@@ -581,8 +696,19 @@ export function RegenerationPage() {
               manifest={manifest.data}
               manifestError={view(manifest.error)}
               state={draft}
+              draftWarning={draftWarning}
               onChange={setDraft}
-              onCreate={() => {
+              onDiscard={() => {
+                const cleared = clearRegenerationDraft(window.localStorage);
+                setDraft(
+                  launchDefaults.data
+                    ? initializeDraftModel(defaultGuidedRegenerationDraft(), launchDefaults.data)
+                    : defaultGuidedRegenerationDraft(),
+                );
+                setDraftWarning(cleared.warning);
+                setDestinationReview(null);
+              }}
+              onCreateAndStart={() => {
                 if (!currentDestinations) return;
                 createMut.mutate(
                   campaignDraft(
@@ -594,95 +720,104 @@ export function RegenerationPage() {
                   ),
                 );
               }}
-              creating={createMut.isPending}
-              createError={createErrorFor === regenerationDraftSignature(draft) ? view(createMut.error) : null}
+              starting={createMut.isPending}
+              createError={
+                createErrorFor === regenerationDraftSignature(draft) ? view(createMut.error) : null
+              }
+              onOpenCampaign={setSelectedId}
             />
-          </div>
+          ) : (
+            <div className="space-y-4">
+              <GuidedProgress
+                active="canary"
+                highestReachable="canary"
+                onSelect={(step) => {
+                  if (step === "canary") return;
+                  setSelectedId(null);
+                }}
+              />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-sm font-semibold text-white/75">
+                    Canary review and campaign report
+                  </h2>
+                  <p className="mt-1 text-xs text-white/40">
+                    This is the only content approval gate. Successful results publish automatically
+                    after approval.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSelectedId(null)}
+                  className="rounded-xl border border-white/[0.1] bg-white/[0.04] px-3 py-2 text-xs font-medium text-white/70 hover:bg-white/[0.08]"
+                >
+                  New campaign
+                </button>
+              </div>
+              {detailView.error && (
+                <RegenerationProblem view={detailView.error} onRetry={() => detail.refetch()} />
+              )}
+              {detailView.message && (
+                <p className={cn(CARD, "text-xs text-white/40")}>{detailView.message}</p>
+              )}
+              {createCanaryFailure?.campaignId === selectedId && (
+                <p className="rounded-xl border border-amber-300/25 bg-amber-300/[0.07] p-3 text-xs leading-5 text-amber-100/85">
+                  {createCanaryFailure.message}
+                </p>
+              )}
 
-          <div className="space-y-4">
-            <CampaignList
-              campaigns={campaigns.data?.campaigns ?? []}
-              count={campaigns.data?.count ?? null}
-              limit={campaigns.data?.limit ?? 0}
-              offset={campaigns.data?.offset ?? 0}
-              selectedId={selectedId}
-              onSelect={setSelectedId}
-              isLoading={campaigns.isLoading}
-              error={campaigns.error}
-              onRetry={() => campaigns.refetch()}
-            />
+              {selected && (
+                <>
+                  <p className="px-1 text-[0.68rem] leading-5 text-white/35">{poll.reason}</p>
+                  <CanaryStep
+                    campaign={selected}
+                    releasedFailures={mergeReleasedFailures(
+                      selected.released_failures,
+                      releaseFailures[selected.id],
+                    )}
+                    retryAuditByTarget={retryAuditByTarget}
+                    pendingByTarget={pendingByTarget}
+                    onLaunchCanary={() => canaryMut.mutate(selected.id)}
+                    onApprove={() => approveMut.mutate(selected.id)}
+                    onReject={(reason) =>
+                      rejectMut.mutateAsync({ campaignId: selected.id, reason })
+                    }
+                    onTargetAction={(kind, target, reason) =>
+                      targetMut.mutateAsync({ kind, target, reason })
+                    }
+                    onCancel={(reason) =>
+                      cancelMut.mutateAsync({ campaignId: selected.id, reason })
+                    }
+                    launching={canaryView.pending}
+                    approving={approveView.pending}
+                    rejecting={rejectView.pending}
+                    cancelling={cancelView.pending}
+                    actionError={campaignActionError ?? cancelView.error}
+                    targetError={targetError}
+                  />
+                </>
+              )}
+            </div>
+          )}
 
-            {/* A failed READ is offered again — including the failed refresh
-                that renders BESIDE a report the cache still holds. Mutation
-                refusals deliberately get no retry: a 409 is an answer. */}
-            {detailView.error && (
-              <RegenerationProblem view={detailView.error} onRetry={() => detail.refetch()} />
-            )}
-            {detailView.message && (
-              <p className={cn(CARD, "text-xs text-white/40")}>{detailView.message}</p>
-            )}
-
-            {selected && (
-              <>
-                <p className="px-1 text-[0.68rem] leading-5 text-white/35">{poll.reason}</p>
-                {/* KEYED BY CAMPAIGN. Both panels below hold their destructive
-                    confirmations in local state, and they render at a fixed
-                    position in this tree — so React reconciled them across a
-                    change of selection and carried that state over. Nothing
-                    unmounted them either: resident TanStack query data and
-                    `adopt`'s `setQueryData` mean an earlier campaign can answer
-                    from cache on the very
-                    render the selection changes and `selected` is never falsy
-                    in between. Campaign B opened with A's reject panel expanded
-                    and A's reason in the box — one click from being stored as
-                    B's audit record. The key makes a change of campaign a
-                    remount, which is the only reset that cannot be forgotten as
-                    more confirmations are added here.
-
-                    The two keys are PREFIXED because these are siblings under
-                    one fragment. Given the same key, React's reconciliation map
-                    (`mapRemainingChildren`, keyed by `key`) keeps only the last
-                    fiber that claimed it, so on a change of campaign the other
-                    one is never passed to `deleteChild`: it never unmounts, its
-                    cleanup never runs, and its nodes are left behind — which
-                    silently undoes the remount this key exists for. */}
-                <CanaryReview
-                  key={`canary-${selected.id}`}
-                  detail={selected}
-                  onLaunchCanary={() => canaryMut.mutate(selected.id)}
-                  onApprove={() => approveMut.mutate(selected.id)}
-                  // `mutateAsync`, so the panel closes on the SUCCESS and not on
-                  // the click. Identical mutation and cache behaviour — the same
-                  // `onSuccess` runs; it only additionally hands back a promise,
-                  // whose rejection the panel handles.
-                  onReject={(reason) => rejectMut.mutateAsync({ campaignId: selected.id, reason })}
-                  launching={canaryView.pending}
-                  approving={approveView.pending}
-                  rejecting={rejectView.pending}
-                  actionError={campaignActionError}
-                />
-                <CampaignReport
-                  key={`report-${selected.id}`}
-                  detail={selected}
-                  releasedFailures={mergeReleasedFailures(
-                    selected.released_failures,
-                    releaseFailures[selected.id],
-                  )}
-                  retryAuditByTarget={retryAuditByTarget}
-                  pendingByTarget={pendingByTarget}
-                  onAction={(kind, target, reason) =>
-                    targetMut.mutateAsync({ kind, target, reason })
-                  }
-                  onCancelCampaign={(reason) =>
-                    cancelMut.mutateAsync({ campaignId: selected.id, reason })
-                  }
-                  cancelling={cancelView.pending}
-                  actionError={cancelView.error}
-                  targetError={targetError}
-                />
-              </>
-            )}
-          </div>
+          <details className={cn(CARD, "p-4")}>
+            <summary className="cursor-pointer text-sm font-semibold text-white/70">
+              Previous campaigns
+            </summary>
+            <div className="mt-4">
+              <CampaignList
+                campaigns={campaigns.data?.campaigns ?? []}
+                count={campaigns.data?.count ?? null}
+                limit={campaigns.data?.limit ?? 0}
+                offset={campaigns.data?.offset ?? 0}
+                selectedId={selectedId}
+                onSelect={setSelectedId}
+                isLoading={campaigns.isLoading}
+                error={campaigns.error}
+                onRetry={() => campaigns.refetch()}
+              />
+            </div>
+          </details>
         </div>
       </div>
     </div>

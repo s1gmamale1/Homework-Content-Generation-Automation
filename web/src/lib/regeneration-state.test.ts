@@ -92,6 +92,7 @@ import {
   campaignStatusLabel,
   cascadeDisclosure,
   costComparison,
+  createAndStartCanary,
   defaultWizardState,
   estimateSummary,
   exclusionWarning,
@@ -101,11 +102,13 @@ import {
   judgeSignal,
   launchGate,
   lessonCountLabel,
+  nextCreateCanaryAction,
   nextVersionSummary,
   outcomeReason,
   provenanceLabel,
   regeneratedPhases,
   reportActions,
+  reviewGate,
 } from "./regeneration-state";
 import type { Campaign, PhaseSelection, PlanTarget, TargetOutcome } from "./regeneration-state";
 import type {
@@ -419,7 +422,7 @@ function campaign(over: Partial<Campaign> = {}): Campaign {
 // One target: that lesson IS the canary. Exact label required by the brief.
 const single = approvalGate(campaign({ targets: [target()], canarySize: 1 }));
 assert.strictEqual(single.singleTarget, true);
-assert.strictEqual(single.approveLabel, "Approve canary and publish V2");
+assert.strictEqual(single.approveLabel, "Approve and publish this lesson");
 assert.strictEqual(single.showsBulkGenerationGate, false);
 assert.strictEqual(single.canApprove, true);
 assert.strictEqual(single.remainingCount, 0);
@@ -436,7 +439,7 @@ assert.strictEqual(
   false,
   "a one-lesson campaign can never render a bulk-generation gate",
 );
-assert.strictEqual(singleZeroCanary.approveLabel, "Approve canary and publish V2");
+assert.strictEqual(singleZeroCanary.approveLabel, "Approve and publish this lesson");
 
 // A campaign with no lessons must not offer to publish "0 lessons".
 const noTargets = approvalGate(campaign({ targets: [], canarySize: 1 }));
@@ -452,7 +455,7 @@ assert.ok(!/\b0 lessons\b/.test(noTargets.approveLabel), noTargets.approveLabel)
 const singleV3 = approvalGate(
   campaign({ targets: [target({ sourceVersion: 2, nextVersion: 3 })], canarySize: 1 }),
 );
-assert.strictEqual(singleV3.approveLabel, "Approve canary and publish V3");
+assert.strictEqual(singleV3.approveLabel, "Approve and publish this lesson");
 
 // Multi-target with real remainder: a distinct label naming the remainder.
 const multi = approvalGate(campaign());
@@ -683,6 +686,98 @@ assert.strictEqual(formatUsd(1.6), "$1.60");
 assert.strictEqual(formatUsd(0.4251), "$0.43");
 
 /* ────────────────────────────────────────────────────────────────────
+ * 7c. Guided review and create/canary safety
+ * ──────────────────────────────────────────────────────────────────── */
+
+assert.deepStrictEqual(
+  reviewGate({ estimateReady: false, workerOk: false, destinationsOk: false }),
+  {
+    ok: false,
+    reason: "Wait for the campaign estimate before reviewing destinations.",
+  },
+);
+assert.deepStrictEqual(
+  reviewGate({ estimateReady: true, workerOk: false, destinationsOk: false }),
+  {
+    ok: false,
+    reason: "No active worker can run this campaign's frozen model contract.",
+  },
+);
+assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: false }), {
+  ok: false,
+  reason: "Check and resolve every Notion destination before starting the canary.",
+});
+assert.deepStrictEqual(reviewGate({ estimateReady: true, workerOk: true, destinationsOk: true }), {
+  ok: true,
+  reason: null,
+});
+
+assert.deepStrictEqual(nextCreateCanaryAction({ campaignId: null, canaryStarted: false }), {
+  kind: "create-and-launch",
+});
+assert.deepStrictEqual(nextCreateCanaryAction({ campaignId: "campaign-1", canaryStarted: false }), {
+  kind: "launch-existing-canary",
+  campaignId: "campaign-1",
+});
+assert.deepStrictEqual(nextCreateCanaryAction({ campaignId: "campaign-1", canaryStarted: true }), {
+  kind: "open-campaign",
+  campaignId: "campaign-1",
+});
+
+{
+  const events: string[] = [];
+  const result = await createAndStartCanary({
+    request: { frozen: "request" },
+    create: async (request) => {
+      assert.deepStrictEqual(request, { frozen: "request" });
+      events.push("created");
+      return { id: "campaign-1", status: "draft" };
+    },
+    onCampaignCreated: (campaign) => {
+      assert.strictEqual(campaign.id, "campaign-1");
+      events.push("selected");
+    },
+    launch: async (campaignId) => {
+      assert.strictEqual(campaignId, "campaign-1");
+      events.push("launched");
+      return { id: campaignId, status: "canary_running" };
+    },
+  });
+  assert.deepStrictEqual(events, ["created", "selected", "launched"]);
+  assert.strictEqual(result.canaryStarted, true);
+  assert.strictEqual(result.campaign.status, "canary_running");
+}
+
+{
+  const launchFailure = new Error("head unavailable");
+  const created = { id: "campaign-2", status: "draft" };
+  const result = await createAndStartCanary({
+    request: "request",
+    create: async () => created,
+    onCampaignCreated: () => undefined,
+    launch: async () => {
+      throw launchFailure;
+    },
+  });
+  assert.strictEqual(result.campaign, created);
+  assert.strictEqual(result.canaryStarted, false);
+  assert.strictEqual(result.canaryError, launchFailure);
+}
+
+{
+  const ownerCampaignId = "aaaa1111-2222-3333-4444-555566667777";
+  const conflict = regenerationErrorView(
+    new ApiError(409, "another campaign owns this lesson", {
+      error: "active_lineage_conflict",
+      message: "another campaign owns this lesson",
+      campaign_ids: [ownerCampaignId],
+      lineages: [{ toc_entry_id: "lesson-1", output_language: "uz" }],
+    }),
+  );
+  assert.deepStrictEqual(conflict.campaignIds, [ownerCampaignId]);
+}
+
+/* ────────────────────────────────────────────────────────────────────
  * 8. Vocabulary — "Regenerating", never Fleet's "Generating"
  * ──────────────────────────────────────────────────────────────────── */
 
@@ -807,14 +902,18 @@ assert.ok(
   'canary-review must use the shared "Generate canary" label',
 );
 const wizardSrc = source("../components/regeneration/regeneration-wizard.tsx");
-assert.ok(wizardSrc.includes("cascadeFromPlan"), "wizard must render the server's phase plan");
+const guidedContentSrc = source("../components/regeneration/content-step.tsx");
 assert.ok(
-  !/Regenerates \$\{|Regenerates \d/.test(wizardSrc),
-  "wizard must not hand-roll the cascade headline",
+  guidedContentSrc.includes("cascadeFromPlan"),
+  "content step must render the server's phase plan",
 );
 assert.ok(
-  wizardSrc.includes("REGENERATION_NO_SPEND_NOTE"),
-  "the create/estimate steps must state that nothing is spent and nothing is published",
+  !/Regenerates \$\{|Regenerates \d/.test(guidedContentSrc),
+  "content step must not hand-roll the cascade headline",
+);
+assert.ok(
+  source("../routes/regeneration.tsx").includes("REGENERATION_NO_SPEND_NOTE"),
+  "the route must state that composing a campaign spends and publishes nothing",
 );
 // campaign-list had no guard here, which is exactly where a hand-rolled
 // "{n} lessons" (rendering "1 lessons") slipped through review.
@@ -854,6 +953,71 @@ assert.ok(
 assert.ok(
   routeSrc.includes("invalidateQueries"),
   "mutations must invalidate the campaign queries they change",
+);
+
+const guidedProgressSrc = source("../components/regeneration/guided-progress.tsx");
+const lessonStepSrc = source("../components/regeneration/lesson-step.tsx");
+const contentStepSrc = source("../components/regeneration/content-step.tsx");
+const reviewStepSrc = source("../components/regeneration/review-step.tsx");
+const canaryStepSrc = source("../components/regeneration/canary-step.tsx");
+assert.match(guidedProgressSrc, /Lessons/);
+assert.match(guidedProgressSrc, /Content/);
+assert.match(guidedProgressSrc, /Review/);
+assert.match(guidedProgressSrc, /Canary/);
+assert.match(contentStepSrc, /Full rebuild/);
+assert.match(contentStepSrc, /Selective/);
+assert.match(contentStepSrc, /Rebuilds all/);
+assert.match(contentStepSrc, /Advanced/);
+assert.match(reviewStepSrc, /Check Notion destinations/);
+assert.match(reviewStepSrc, /First paid action/);
+assert.match(reviewStepSrc, /publicationVersionMode:\s*"manual"/);
+assert.match(reviewStepSrc, /canarySize/);
+assert.match(canaryStepSrc, /CanaryReview/);
+assert.match(
+  routeSrc,
+  /<GuidedProgress\s+active="canary"/,
+  "an opened campaign must remain visibly on step 4 of the guided flow",
+);
+assert.match(lessonStepSrc, /regenerationToggleLesson/);
+assert.match(routeSrc, /loadRegenerationDraft/);
+assert.match(routeSrc, /saveRegenerationDraft/);
+assert.match(routeSrc, /clearRegenerationDraft/);
+assert.match(routeSrc, /listAllBooks/);
+assert.match(routeSrc, /getLaunchDefaults/);
+assert.match(routeSrc, /createAndStartCanary/);
+assert.match(routeSrc, /lastPrunedInputs/);
+assert.match(
+  routeSrc,
+  /displayedPublicationVersion/,
+  "automatic campaign version must be synchronized from the selected source lineages",
+);
+assert.match(
+  routeSrc,
+  /if \(!eligible\.data\) return;/,
+  "automatic version must not overwrite a restored draft before eligible sources load",
+);
+const automaticVersionEffect = routeSrc.slice(
+  routeSrc.indexOf("const automaticPublicationVersion"),
+  routeSrc.indexOf("/** The plan is per SUBJECT"),
+);
+assert.match(
+  automaticVersionEffect,
+  /\}, \[[^\]]*eligible\.data[^\]]*\]\);/,
+  "automatic version must recompute when eligible sources finish loading",
+);
+for (const frozenDetail of ["Model", "Extraction", "Regenerated phases", "Copied phases"]) {
+  assert.match(
+    reviewStepSrc,
+    new RegExp(frozenDetail),
+    `review must show the frozen ${frozenDetail.toLowerCase()} decision`,
+  );
+}
+assert.match(wizardSrc, /onOpenCampaign/);
+assert.match(routeSrc, /onOpenCampaign=\{setSelectedId\}/);
+assert.strictEqual(
+  wizardSrc.match(/onOpenCampaign=\{onOpenCampaign\}/g)?.length,
+  2,
+  "both estimate-time and create-time lineage conflicts must open their owner campaign",
 );
 
 /* ────────────────────────────────────────────────────────────────────
@@ -1376,7 +1540,7 @@ assert.strictEqual(
   assert.strictEqual(gate.singleTarget, true);
   assert.strictEqual(gate.showsBulkGenerationGate, false);
   assert.strictEqual(gate.remainingCount, 0);
-  assert.strictEqual(gate.approveLabel, "Approve canary and publish V2");
+  assert.strictEqual(gate.approveLabel, "Approve and publish this lesson");
   assert.ok(gate.canApprove);
 
   // Parity with the Task 4 gate for the same campaign expressed as fixtures:
@@ -1410,7 +1574,7 @@ assert.strictEqual(
       targets: [apiTarget({ is_canary: true, source_publication_version: 2 })],
     }),
   );
-  assert.strictEqual(gate.approveLabel, "Approve canary and publish V3");
+  assert.strictEqual(gate.approveLabel, "Approve and publish this lesson");
 }
 
 {
@@ -2172,7 +2336,10 @@ function apiBook(over: Partial<Book> = {}): Book {
     routeSrc.includes("regenerationEligibleQuery"),
     "the eligible query must be gated by regenerationEligibleQuery()",
   );
-  assert.ok(routeSrc.includes("api.listBooks"), "book selection is the bounded first step");
+  assert.ok(
+    routeSrc.includes("api.listAllBooks"),
+    "book selection must use the complete bounded library query",
+  );
   assert.ok(
     /enabled:\s*eligibleQuery\.enabled/.test(routeSrc),
     "the eligible query must be disabled until a book is picked",
@@ -2214,19 +2381,19 @@ function apiBook(over: Partial<Book> = {}): Book {
 
   // I-3 rendering: identity comes from the tested helper, not from inline JSX.
   assert.ok(
-    wizardSrc.includes("regenerationSourceRow"),
-    "wizard lesson rows must render the tested identity helper",
+    lessonStepSrc.includes("regenerationSourceRow"),
+    "lesson step rows must render the tested identity helper",
   );
   assert.ok(
-    wizardSrc.includes("regenerationBookOptions"),
-    "wizard must narrow books before asking for lessons",
+    lessonStepSrc.includes("regenerationBookOptions"),
+    "lesson step must narrow books before asking for lessons",
   );
   assert.ok(
-    wizardSrc.includes("regenerationNarrowScope"),
+    lessonStepSrc.includes("regenerationNarrowScope"),
     "changing subject/grade/book must clear stale selections through the tested helper",
   );
   assert.ok(
-    wizardSrc.includes("clampCanarySize"),
+    routeSrc.includes("clampCanarySize"),
     "M-3: the canary size must be clamped in state before it is posted",
   );
 
@@ -2787,7 +2954,7 @@ assert.ok(/manifestError=\{/.test(routeSrc), "the route must hand the wizard the
 
 // minor 6 — the lesson checkbox goes through the clamping helper.
 assert.ok(
-  wizardSrc.includes("regenerationToggleLesson"),
+  lessonStepSrc.includes("regenerationToggleLesson"),
   "deselecting a lesson must re-clamp the stored canary size",
 );
 
@@ -3439,11 +3606,11 @@ assert.ok(
   "a failed lesson read must not be reported as a failed phase plan",
 );
 assert.ok(
-  /regenerationSourcesView\(\{/.test(wizardSrc),
+  /regenerationSourcesView\(\{/.test(lessonStepSrc),
   "step 2 must decide blocked/loading/error/empty through the tested view",
 );
 assert.ok(
-  !wizardSrc.includes("No lesson in this book"),
+  !lessonStepSrc.includes("No lesson in this book"),
   "the empty-book sentence belongs to the tested view, not to JSX",
 );
 
@@ -3472,10 +3639,10 @@ for (const src of [canarySrc, reportSrc]) {
 }
 
 // minors 4 and 5 — both strings live in the tested layer.
-assert.ok(/regenerationPlanStepView\(\{/.test(wizardSrc));
-assert.ok(/regenerationIneligibleLine\(/.test(wizardSrc));
+assert.ok(/regenerationPlanStepView\(\{/.test(contentStepSrc));
+assert.ok(/regenerationIneligibleLine\(/.test(lessonStepSrc));
 assert.ok(
-  !wizardSrc.includes("Nothing selected yet"),
+  !contentStepSrc.includes("Nothing selected yet"),
   "the step-4 prose belongs to the tested view, not to JSX",
 );
 
@@ -3506,21 +3673,20 @@ assert.ok(
  * a helper nothing renders is not a fix.
  * ════════════════════════════════════════════════════════════════════ */
 
-const acceptanceWizardSrc = readFileSync("src/components/regeneration/regeneration-wizard.tsx", "utf8");
+const acceptanceWizardSrc = readFileSync(
+  "src/components/regeneration/regeneration-wizard.tsx",
+  "utf8",
+);
+const acceptanceContentSrc = readFileSync("src/components/regeneration/content-step.tsx", "utf8");
 const acceptanceListSrc = readFileSync("src/components/regeneration/campaign-list.tsx", "utf8");
 const acceptanceReportSrc = readFileSync("src/components/regeneration/campaign-report.tsx", "utf8");
 const acceptanceCanarySrc = readFileSync("src/components/regeneration/canary-review.tsx", "utf8");
+const acceptanceCanaryStepSrc = readFileSync("src/components/regeneration/canary-step.tsx", "utf8");
 const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
 
 /* ── (a) `extract` is not a selectable phase ─────────────────────────── */
 {
-  const canonical = [
-    "extract",
-    "case-based-preview",
-    "flashcards",
-    "boss-arena",
-    "reflection",
-  ];
+  const canonical = ["extract", "case-based-preview", "flashcards", "boss-arena", "reflection"];
   const offered = regenerationSelectablePhases(canonical);
   assert.ok(
     !offered.includes("extract"),
@@ -3533,8 +3699,8 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
   assert.deepStrictEqual(regenerationSelectablePhases([]), []);
   assert.deepStrictEqual(regenerationSelectablePhases(["reflection"]), ["reflection"]);
   assert.ok(
-    /regenerationSelectablePhases\(/.test(acceptanceWizardSrc),
-    "the wizard must filter the catalog through the tested helper",
+    /regenerationSelectablePhases\(/.test(acceptanceContentSrc),
+    "the content step must filter the catalog through the tested helper",
   );
 }
 
@@ -3612,13 +3778,13 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     sig,
     regenerationDestinationSignature({
       ...base,
-    destination_overrides: [
-      {
-        toc_entry_id: "t1",
-        output_language: "uz",
-        notion_lesson_page_id: "page-1",
-      },
-    ],
+      destination_overrides: [
+        {
+          toc_entry_id: "t1",
+          output_language: "uz",
+          notion_lesson_page_id: "page-1",
+        },
+      ],
     }),
     "choosing a candidate invalidates the prior destination digest",
   );
@@ -3738,7 +3904,7 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
   );
   assert.strictEqual(reason("ready"), null);
   assert.ok(
-    /regenerationPlanBlockedReason\(/.test(acceptanceWizardSrc),
+    /regenerationPlanBlockedReason\(/.test(acceptanceContentSrc),
     "the create gate must state the real reason, not always the selection one",
   );
 }
@@ -3780,8 +3946,7 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
       "says to cancel the draft instead",
   );
   assert.strictEqual(
-    regenerationDecisionGate(at("bulk_running", { approved_at: "2026-08-21T01:00:00Z" }))
-      .canReject,
+    regenerationDecisionGate(at("bulk_running", { approved_at: "2026-08-21T01:00:00Z" })).canReject,
     false,
     "an approved campaign is stopped with cancel, not reject",
   );
@@ -3868,7 +4033,7 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
   /** The key EXPRESSION as written on the tag, `${…}` interpolation included. */
   function keyExpression(tag: string): string {
     const match = new RegExp(`<${tag}\\b[^>]*\\bkey=\\{((?:[^{}]|\\$\\{[^{}]*\\})*)\\}`).exec(
-      acceptanceRouteSrc,
+      acceptanceCanaryStepSrc,
     );
     assert.ok(
       match !== null,
@@ -3885,7 +4050,7 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     const expr = keyExpression(tag);
     // Campaign-derived: a constant key would never remount at all.
     assert.ok(
-      /\bselected\.id\b/.test(expr),
+      /\bcampaign\.id\b/.test(expr),
       `${tag}'s key must be derived from the selected campaign, got: ${expr}`,
     );
     // …and prefixed, so it cannot equal the sibling's key for ANY campaign id.
@@ -3921,9 +4086,7 @@ const acceptanceRouteSrc = readFileSync("src/routes/regeneration.tsx", "utf8");
     "reject callers must be required to return a promise",
   );
   assert.ok(
-    /onCancelCampaign:\s*\(reason:\s*string\)\s*=>\s*Promise<unknown>/.test(
-      acceptanceReportSrc,
-    ),
+    /onCancelCampaign:\s*\(reason:\s*string\)\s*=>\s*Promise<unknown>/.test(acceptanceReportSrc),
     "cancel callers must be required to return a promise",
   );
   assert.ok(
