@@ -23,6 +23,7 @@ from app.db import get_session, SessionLocal
 from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import notion_sources as notion_sources_repo
+from app.repositories import regeneration_targets as targets_repo
 from app.repositories import toc_entries as toc_repo
 from app.schemas import BookOut, TOCEntryOut
 from app.services import events_bus, notion_fetch, pdf_lang, storage, subjects, toc_extractor
@@ -410,6 +411,48 @@ async def get_book(
     return await _book_out_with_toc(session, book_id, output_language, kind=kind)
 
 
+def _regeneration_block(error: str, message: str, targets) -> HTTPException:
+    """A structured 409 for a source-removal blocked by regeneration history.
+
+    A target row records a publication version that is consumed forever, so
+    `regeneration_targets.campaign_id` / `toc_entry_id` and
+    `homework_jobs.revision_of_job_id` / `regeneration_target_id` are all ON
+    DELETE RESTRICT rather than cascading that history away. Those would reach
+    the operator as a raw `ForeignKeyViolation` (a 500, or a book flipped to
+    `failed` with the old TOC still in place), so the routes refuse first and
+    say WHAT blocks them.
+
+    The routes' own guards — not the keys — are what make the refusal complete.
+    `regeneration_targets.source_job_id` is the one deliberate exception at ON
+    DELETE SET NULL (spec §8.3, so a documented child-first purge can retire a
+    source and leave the target as a reporting row), which means the database
+    alone would let a source job go and silently null the link. Each call site
+    below therefore queries the history itself before deleting anything.
+
+    Structured detail (never prose the FE must parse), listing capped at 20 like
+    the `toc_retry_blocked_by_jobs` guard; `count` stays the uncapped total.
+    """
+    return HTTPException(
+        409,
+        {
+            "error": error,
+            "message": message,
+            "count": len(targets),
+            "targets": [
+                {
+                    "id": str(t.id),
+                    "campaign_id": str(t.campaign_id),
+                    "toc_entry_id": str(t.toc_entry_id),
+                    "output_language": t.output_language,
+                    "status": t.status,
+                    "publication_version": t.publication_version,
+                }
+                for t in targets[:20]
+            ],
+        },
+    )
+
+
 @router.post("/{book_id}/toc/retry")
 async def retry_toc_extraction(
     book_id: UUID,
@@ -481,6 +524,22 @@ async def retry_toc_extraction(
                 "count": len(blocking),
                 "jobs": [{"id": str(j.id), "status": j.status} for j in blocking[:20]],
             },
+        )
+    # Regeneration history is a SEPARATE blocker from the jobs above: a
+    # child-first purge can remove a campaign's revision job (nulling
+    # `regeneration_targets.source_job_id`) while the reporting row survives, so
+    # `list_for_book` comes back empty and the re-extract would sail through —
+    # then the clear-before-insert would die on
+    # `fk_regeneration_targets_toc_entry_id` and leave the book `failed` with
+    # its old TOC. Refuse loudly instead; the book keeps its status.
+    regen = await targets_repo.history_for_book(session, book_id)
+    if regen:
+        raise _regeneration_block(
+            "toc_retry_blocked_by_regeneration",
+            f"{len(regen)} regeneration target(s) reference this book's "
+            "sections — re-extracting would replace TOC entries that a "
+            "versioned homework publication is filed against",
+            regen,
         )
     await books_repo.set_status(session, book_id, "toc_extracting", error_message=None)
     await books_repo.clear_toc_validation_and_ready(session, book_id)
@@ -685,6 +744,18 @@ async def delete_book(
             f"book has {active} active job(s) (pending/running/cancelling) — "
             "cancel the active job(s) or their batch first, then delete",
         )
+    # Regeneration history: `books_repo.delete` removes the book's jobs and TOC
+    # entries, both of which regeneration references with RESTRICT keys. Refuse
+    # with a readable 409 rather than letting that reach the operator as a 500.
+    regen = await targets_repo.history_for_book(session, book_id)
+    if regen:
+        raise _regeneration_block(
+            "book_delete_blocked_by_regeneration",
+            f"{len(regen)} regeneration target(s) reference this book's "
+            "sections — deleting the book would destroy the audit trail of "
+            "publication versions that are permanently consumed",
+            regen,
+        )
     deleted = await books_repo.delete(session, book_id)
     if not deleted:
         raise HTTPException(404, "book not found")
@@ -742,6 +813,18 @@ async def delete_toc_entry(
     existing = await toc_repo.get(session, entry_id)
     if existing is None or existing.book_id != book_id:
         raise HTTPException(404, "toc entry not found")
+    # Regeneration history first: this route DELETES the section's jobs before
+    # the entry, and both deletes are blocked by RESTRICT keys (a revision job's
+    # `revision_of_job_id`, and the target's `toc_entry_id`).
+    regen = await targets_repo.history_for_toc_entry(session, entry_id)
+    if regen:
+        raise _regeneration_block(
+            "toc_entry_delete_blocked_by_regeneration",
+            f"{len(regen)} regeneration target(s) reference this section — "
+            "deleting it would destroy the audit trail of publication versions "
+            "that are permanently consumed",
+            regen,
+        )
     # Don't delete a section out from under a worker — refuse while a job for it
     # is in flight (terminal jobs: done/failed/cancelled are fine to clean up).
     active = (

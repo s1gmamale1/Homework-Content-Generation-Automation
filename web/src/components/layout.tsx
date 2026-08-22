@@ -1,7 +1,20 @@
-import { Activity, Gauge, Library, LayoutDashboard, Rocket, Settings } from "lucide-react";
+import {
+  Activity,
+  Gauge,
+  LayoutDashboard,
+  Library,
+  RefreshCw,
+  Rocket,
+  Settings,
+} from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { NavLink, useLocation, useOutlet } from "react-router-dom";
 import { Nameplate } from "./nameplate";
+import {
+  IS_REGENERATION_ENABLED,
+  REGENERATION_NAV_LABEL,
+  REGENERATION_ROUTE_PATH,
+} from "@/lib/regeneration-feature";
 import { cn } from "@/lib/utils";
 import { IS_VIEWER } from "@/lib/viewer";
 
@@ -23,7 +36,8 @@ export function Layout() {
       pathname.startsWith("/library") ||
       pathname.startsWith("/monitor") ||
       pathname.startsWith("/dashboard") ||
-      pathname.startsWith("/deck");
+      pathname.startsWith("/deck") ||
+      (IS_REGENERATION_ENABLED && pathname.startsWith(REGENERATION_ROUTE_PATH));
 
   return (
     <div className="flex min-h-screen flex-col bg-(--color-canvas)">
@@ -59,6 +73,16 @@ export function Layout() {
                 <NavItem to="/settings" icon={<Settings className="size-4" />}>
                   Settings
                 </NavItem>
+                {/* Feature-flagged: with the flag off the nav item is not rendered
+                    at all, matching the route that App.tsx does not register. */}
+                {IS_REGENERATION_ENABLED && (
+                  <NavItem
+                    to={REGENERATION_ROUTE_PATH}
+                    icon={<RefreshCw className="size-4" />}
+                  >
+                    {REGENERATION_NAV_LABEL}
+                  </NavItem>
+                )}
               </nav>
             )}
           </div>

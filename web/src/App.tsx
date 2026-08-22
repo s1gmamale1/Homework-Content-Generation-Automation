@@ -16,7 +16,12 @@ import { PreviewPage } from "@/routes/preview";
 import { SectionPage } from "@/routes/section";
 import { UploadPage } from "@/routes/upload";
 import { SettingsPage } from "@/routes/settings";
+import { RegenerationPage } from "@/routes/regeneration";
 import { UsagePage } from "@/routes/usage";
+import {
+  IS_REGENERATION_ENABLED,
+  REGENERATION_ROUTE_PATH,
+} from "@/lib/regeneration-feature";
 import { IS_VIEWER } from "@/lib/viewer";
 
 const queryClient = new QueryClient({
@@ -67,6 +72,12 @@ export default function App() {
                 <Route path="/preview/:id" element={<PreviewPage />} />
                 <Route path="/deck/:id" element={<DeckPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
+                {/* Feature-flagged: with the flag off the route is never
+                    registered, so /regeneration simply does not exist in the
+                    bundle's router. The backend flag is the real safety gate. */}
+                {IS_REGENERATION_ENABLED && (
+                  <Route path={REGENERATION_ROUTE_PATH} element={<RegenerationPage />} />
+                )}
               </>
             )}
           </Route>

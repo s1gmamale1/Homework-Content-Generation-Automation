@@ -116,6 +116,71 @@ async def create_or_reset(
     )
 
 
+# The exact `phase_outputs` columns a versioned-regeneration copy carries
+# forward from its source row. Stated ONCE, here, and consumed by
+# `copy_for_revision` (and re-exported by `regeneration_snapshot`) so the set
+# cannot drift between the copier and its documentation.
+#
+# Deliberately NOT in the list: `id` and `job_id` (a copy is a new row on a new
+# job), `claim_token` (the SOURCE run's fencing token — a live revision must
+# never appear to be owned by a worker that finished months ago) and
+# `copied_from_phase_output_id` (which POINTS AT the source row rather than
+# being copied from it). `phase_order` is passed in explicitly by the caller,
+# from the order `validate_complete_snapshot` verified.
+REVISION_COPIED_COLUMNS = (
+    "phase_name",
+    "prompt_hash",
+    "model_name",
+    "provider",
+    "output_md",
+    "tokens_input",
+    "tokens_output",
+    "status",
+    "error_message",
+    "validation_warnings",
+    "judge_status",
+    "solver_status",
+    "started_at",
+    "completed_at",
+    "content_json",
+    "authoring_mode",
+    "content_schema_version",
+    "renderer_version",
+)
+
+
+async def copy_for_revision(
+    session: AsyncSession,
+    *,
+    job_id: UUID,
+    source: PhaseOutput,
+    phase_order: int,
+) -> PhaseOutput:
+    """Seed one COPIED phase row on a revision job.
+
+    A verbatim copy of `source` across `REVISION_COPIED_COLUMNS`, placed at the
+    caller's already-verified canonical `phase_order`, with `claim_token=NULL`
+    and `copied_from_phase_output_id` pointing back at the row it came from
+    (RESTRICT, so the snapshot a live revision was built from cannot be deleted
+    underneath it).
+
+    The row keeps its source `status` — `done` for a usable snapshot — which is
+    exactly what makes the ordinary pipeline SKIP it (`pipeline._done_phase_md`)
+    and re-run only the phases the campaign asked for. Nothing is regenerated
+    and nothing is billed.
+    """
+    copy = PhaseOutput(
+        job_id=job_id,
+        phase_order=phase_order,
+        claim_token=None,
+        copied_from_phase_output_id=source.id,
+        **{column: getattr(source, column) for column in REVISION_COPIED_COLUMNS},
+    )
+    session.add(copy)
+    await session.flush()
+    return copy
+
+
 async def list_for_job(session: AsyncSession, job_id: UUID) -> list[PhaseOutput]:
     stmt = (
         select(PhaseOutput)

@@ -1,6 +1,17 @@
 from fastapi import APIRouter, Depends
 
-from app.api.v1 import batch, books, dashboard, health, jobs, notion, sa_keys, settings, workers
+from app.api.v1 import (
+    batch,
+    books,
+    dashboard,
+    health,
+    jobs,
+    notion,
+    regeneration,
+    sa_keys,
+    settings,
+    workers,
+)
 from app.auth import get_current_user, get_current_user_strict
 
 # Health stays public (deployment liveness probes don't need a token).
@@ -22,3 +33,12 @@ api_v1_router.include_router(
     sa_keys.router, dependencies=[Depends(get_current_user_strict)]
 )
 api_v1_router.include_router(dashboard.router, dependencies=[Depends(get_current_user)])
+# Regeneration is an OPERATOR workflow: general auth (the same header/query
+# dependency books/batch/jobs use), never the SA-key-strict one. Mounted with
+# the dependency HERE rather than relying on the router's own feature gate —
+# FastAPI runs an include_router dependency before the sub-router's, so an
+# anonymous request fails authentication without learning whether
+# REGENERATION_ENABLED hid the routes.
+api_v1_router.include_router(
+    regeneration.router, dependencies=[Depends(get_current_user)]
+)

@@ -65,6 +65,16 @@ not `localhost:8000`. (For a bare local run without Traefik, publish port 8000 y
 | `SESSION_LIMIT_STRATEGY` | no | `pause` | Fleet-wide default for what a worker does on a Claude **session-limit** (`fleet-session-limit-autopause-1`, worklog 0089). `pause` = parse the stated reset time, requeue the job (no attempt burned), self-cooldown that worker until reset, auto-resume. `switch` = fail the limited role over to a non-limited model down `FAILOVER_PROVIDER_ORDER` and keep generating. Per-batch `session_limit_strategy` (`pause`/`switch`/`inherit`) overrides this; `inherit` (the batch default) falls back to this env value. Must be `pause` or `switch`. |
 | `SESSION_LIMIT_DEFAULT_TZ` | no | `America/Chicago` | IANA tz used to interpret a session-limit reset clock-time (`resets 12:50am`) when the message states no tz. |
 | `SESSION_LIMIT_DEFAULT_COOLDOWN_SECONDS` | no | `3600` | Fallback worker self-cooldown when a session-limit's reset time can't be parsed. |
+| `REGENERATION_ENABLED` | no | `false` | Master flag for versioned homework regeneration. Off ⇒ every `/api/v1/regeneration*` route returns **404** (deliberately not 403 — a stale SPA must not be able to detect that the routes exist). Head-only; workers need neither regeneration flag. |
+| `REGENERATION_PUBLISHER_ENABLED` | no | `false` | Second, independent flag for the loop that publishes `Homework V{n}` Notion sibling pages. Separate from the flag above so generation can be exercised with delivery dark. **The loop requires BOTH flags AND a usable Notion destination** — `main.py` starts it only under `regeneration_enabled and regeneration_publisher_enabled`, and then only when `NOTION_ENABLED` is true with a `NOTION_API_KEY` shaped `ntn_`/`secret_`; this flag alone (master flag off) starts nothing and logs no start line, while a missing Notion destination logs `Regeneration publisher NOT started: <reason>`. **Enable on the ONE designated head/API process** (the claim protocol is safe if two run it, but don't). `POST /regeneration/campaigns/{id}/approve` and `POST /regeneration/targets/{id}/retry-publication` return `409 publisher_disabled` while this flag is off and `409 notion_unavailable` when the Notion destination is missing — so the flag-on order is schema → Notion prerequisite → `REGENERATION_ENABLED` → this → SPA rebuild (UI last). Drafting, estimation, campaign creation, canary generation and `retry-generation` are ungated and work with delivery dark. |
+| `REGENERATION_PUBLISHER_INTERVAL_SECONDS` | no | `30` | Idle sweep interval. A pass that did work loops straight back, so a backlog drains at Notion's pace, not at this interval. Delivery is **serial** — one pass publishes at most one page. |
+| `REGENERATION_PUBLISHER_LEASE_SECONDS` | no | `300` | Durable publication claim lease; keep well above a realistic Notion write (page + children + PDF upload). On shutdown the publisher gets a **30s** grace to finish the target it is on; a target cancelled past that keeps its lease until this expires, and only then can another pass adopt the half-written page by its marker. Don't expect a restarted head to resume a killed delivery immediately. |
+| `REGENERATION_PUBLISHER_MAX_ATTEMPTS` | no | `5` | Automatic delivery attempts before a target parks in `publication_failed` for an operator. Must be ≥ 1. |
+| `REGENERATION_PUBLISHER_BACKOFF_BASE_SECONDS` / `_MAX_SECONDS` | no | `60` / `3600` | Exponential backoff between delivery attempts, and its ceiling. |
+| `REGENERATION_LAUNCH_WAVE_SIZE` / `_INTERVAL_SECONDS` | no | `4` / `60` | Launch stagger for a campaign's bulk wave. Same mechanism as `BATCH_LAUNCH_WAVE_*`, deliberately more conservative because a regeneration wave re-runs whole snapshots on top of whatever the fleet is already generating. Either at `0` disables the stagger. |
+| `REGENERATION_MAX_CAMPAIGN_TARGETS` | no | `500` | Maximum eligible lesson/language targets one campaign may own. Ineligible discovery rows remain visible but do not count. Split larger work into separately reviewed campaigns. |
+| `REGENERATION_MAX_DISCOVERY_LINEAGES` | no | `1000` | Candidate-lineage workload bound before discovery fans out into indexed per-lineage source checks. The query fetches at most this value + 1 and refuses without silently truncating; narrow by book or lesson. |
+| `APP_GIT_REVISION` | **in a container, yes** (for regeneration) | *(empty)* | The commit this build was made from. Campaign creation stamps an immutable `app_git_revision` and resolves it: explicit request field → **this variable** → the process's own git checkout → structured `409 app_git_revision_unavailable` (refusal, never NULL). Blank counts as absent. The `Dockerfile` declares it as an `ARG` and re-exports it as `ENV`, and CI binds it to the built commit, so a GHCR image from `docker-publish.yml` already carries it. A hand-built image does not. Irrelevant on a bare-metal head from git — and there, a stale value in a shared `.env` **outranks** the checkout and mis-stamps campaigns, so leave it unset. |
 | `MAX_FILE_MB` | no | `50` | Upload size limit. |
 | `ENABLE_DOCS` | no | `false` | Swagger UI at `/docs`. Disable in prod. |
 | `ALLOW_ORIGINS` | no | `*` | Comma-separated CORS allow-list. |
@@ -278,6 +288,7 @@ Behind an ALB, point the target group at the `api` task. Use RDS Postgres. Run `
 - [ ] Worker concurrency tuned to your tier:
       `AGENT_MAX_CONCURRENCY ≤ your_RPM_tier / 4` (the live knob — `agent._effective_concurrency()`; each job makes ~3-4 phase calls in parallel; `GEMINI_MAX_CONCURRENCY` is the deprecated fallback used only when `AGENT_MAX_CONCURRENCY` is left at default)
 - [ ] If horizontally scaling: `WORKER_CONCURRENCY=0` on API pods so they don't double-claim jobs alongside dedicated worker pods
+- [ ] Versioned homework regeneration left **off** unless separately authorized: `REGENERATION_ENABLED=false` and `REGENERATION_PUBLISHER_ENABLED=false`, and the SPA built **without** `VITE_REGENERATION_ENABLED=1`. Verify with a `404` from `GET /api/v1/regeneration/campaigns` and no `Regeneration publisher started` line in the boot log. Migration 0063 may stay applied (the tables are simply unused) — see [the regeneration runbook](./runbooks/versioned-homework-regeneration.md)
 
 ---
 
@@ -355,6 +366,84 @@ retain the complete auth/vault/fence hardening.
 **Gemini cache columns are dead/legacy (no-op).** The `books.gemini_cache_*` columns are leftovers from the removed Gemini *file-cache* SDK era — nothing reads or writes them, there is no server-side cache anymore. They're kept nullable only for backwards-compat. No pod-lifetime concern. (Note: this is only about the legacy cache — `transport=api` *does* use SDKs today, `google-genai` + `anthropic` via `app/services/api_transport.py`.)
 
 **Idempotency-Key in-memory cache** is per-process. With multi-pod API, the same Idempotency-Key sent to two pods will create two jobs (the natural-key + advisory lock still prevent same-section duplicates). For strict cross-pod idempotency, move `_IDEMPOTENCY_CACHE` from `app/api/v1/jobs.py` to a Redis or DB table. For most deployments, the natural-key idempotency is sufficient.
+
+
+**Versioned homework regeneration ships dormant — and the UI flag is build-time.** The
+feature is gated by `REGENERATION_ENABLED` + `REGENERATION_PUBLISHER_ENABLED` (both
+`false`) **and** a third, separate switch on the frontend: the SPA must be built with
+`VITE_REGENERATION_ENABLED=1`. `isRegenerationEnabled` matches the **literal string
+`"1"`** — `true`, `TRUE`, `yes` and `on` all silently leave the nav item and the
+`/regeneration` route out of the bundle, with no warning anywhere, so an operator who
+sets `=true` will report "the feature did not ship". Because it is baked in at build
+time, changing it requires `npm run build` and a reload; editing `.env` and restarting
+the API does nothing for the frontend. Note also that the shipped `Dockerfile` runs a
+plain `npm run build` with **no `ARG`/`ENV` for this variable**, so an image built
+as-is always ships the regeneration UI hidden — on a bare-metal head, build the SPA on
+the host (`cd web && VITE_REGENERATION_ENABLED=1 npm run build`; FastAPI serves
+`web/dist`).
+
+**Regeneration needs the image to know its own commit.** A campaign is an audit record, so
+`POST /regeneration/campaigns` refuses with a structured `409 app_git_revision_unavailable`
+rather than store unknown provenance. The resolution order is: explicit `app_git_revision` in
+the request → the `APP_GIT_REVISION` environment variable → `code_version.GIT_SHA` from a real
+checkout → the refusal. A container has **no `.git` and no git binary**, so inside one only the
+first two can answer. CI already handles this — `.github/workflows/docker-publish.yml` passes
+`APP_GIT_REVISION=${{ github.sha }}` as a build arg and the `Dockerfile` re-exports it as a
+runtime `ENV`. But an image built by hand without `--build-arg`, or one built before this
+existed, ships an empty value and cannot create campaigns at all. **No flag turns this on;** the
+fixes are a rebuild with the build arg, `APP_GIT_REVISION=<sha>` in the running container's
+environment, running from a git checkout, or sending the field on the request. On a bare-metal
+head the checkout answers by itself — and a stale `APP_GIT_REVISION` copied into a shared `.env`
+**overrides** it and silently mis-stamps every campaign, permanently.
+
+**Each output language needs its own Notion subject mapping before a campaign spends.** The
+pre-spend preflight requires every target's `{lang}:{subject}|{grade}` destination to resolve,
+per language — a populated `toc_entries.notion_lesson_page_id` does **not** substitute for one.
+That column is language-blind (whichever lineage archived first owns it), so the publisher treats
+it as a hint and only honours it once a child listing proves it belongs to that language's own
+`Generated Homeworks` container; every delivery is otherwise resolved beneath the target's own
+language subject page. Configure the `ru`/`en` roots before launching a campaign in those
+languages, or the launch is blocked with an actionable list and nothing is spent.
+
+**Regeneration and the cost caps — both scopes.** Revision jobs carry `batch_id=NULL`
+(enforced by CHECK), and the per-batch cap joins usage rows to a batch, so
+`COST_CAP_BATCH_USD` **never applies to a regeneration campaign**, however large. The
+fleet-daily query has no job-kind filter, so regeneration spend **does** count toward
+`COST_CAP_FLEET_DAILY_USD` and a big campaign can trip it and **pause ordinary api
+batches fleet-wide**. Budget and stage campaigns accordingly.
+
+**Regeneration history blocks book/TOC deletion.** A target records a publication
+version consumed forever, so migration 0063's foreign keys are `RESTRICT` — with **one
+intentional exception: `fk_regeneration_targets_source_job_id` is `SET NULL`**. The
+restrictive half of the source-deletion rule is `fk_homework_jobs_revision_of_job_id`
+(RESTRICT), which forces a child-first order: only once a revision job is deleted can
+its source be, and that delete then blanks the target's `source_job_id` rather than
+blocking. While history exists, book delete, TOC-entry delete and `/toc/retry` refuse
+with a structured `409` (`book_delete_blocked_by_regeneration` /
+`toc_entry_delete_blocked_by_regeneration` / `toc_retry_blocked_by_regeneration`) rather
+than a raw FK error — those refusals match **any** target row for the lesson, so the
+`SET NULL` exception does not weaken them. No child-first purge tool ships in this
+release. Cancelling or abandoning a campaign does not erase the audit history and does
+not unblock them.
+
+**Rolling regeneration back** is just: turn both backend flags off and restart the
+head. No publisher loop starts, every route 404s, in-flight revision jobs still finish
+as ordinary jobs and are never archived to the legacy `Homework` page
+(`notion_archive.archive_job` intrinsically refuses any job with
+`revision_of_job_id IS NOT NULL`, regardless of `force` or caller), and **every
+existing `Homework` / `Homework V2` / `Homework V3` page in Notion is untouched** —
+rollback deletes nothing.
+
+**It does, however, strand any lesson caught mid-campaign.**
+`uq_regeneration_targets_active_lineage` allows one **non-terminal** target per
+`(toc_entry_id, output_language)`, and only `published`/`abandoned` are terminal — so a
+target left in any other status keeps holding its lineage, while all four routes that would
+clear it (`retry-generation`, `retry-publication`, `abandon`, and the campaign-level `cancel`,
+which converges every non-terminal target of its campaign) 404 with the feature off.
+No new campaign can touch those lessons until the flags are restored and an operator
+drives each target to `published` or `abandoned`. That is a uniqueness fence, not data
+loss or a Notion change. If a re-launch is expected soon, drain or abandon in-flight
+targets **before** flipping the flags off.
 
 
 ## Dashboard viewer port (worklog 0153)

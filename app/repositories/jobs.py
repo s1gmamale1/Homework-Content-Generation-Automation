@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, case, exists, func, literal, not_, or_, select, text, true, update
@@ -53,7 +53,21 @@ async def create(
     solver_model: Optional[str] = None,
     start_offset_seconds: int = 0,
     kind: str = "homework",
+    revision_of_job_id: Optional[UUID] = None,
+    regeneration_target_id: Optional[UUID] = None,
+    session_limit_strategy: Optional[str] = None,
 ) -> HomeworkJob:
+    """Insert one job row.
+
+    ``revision_of_job_id`` / ``regeneration_target_id`` / ``session_limit_strategy``
+    are the versioned-regeneration columns and are NULL on every ordinary job
+    (so every existing caller is byte-identical). They are passed to the SAME
+    INSERT on purpose: ``ck_homework_jobs_revision_pair`` demands both revision
+    columns or neither, and ``ck_homework_jobs_revision_session_limit_strategy``
+    demands a concrete ``'pause'``/``'switch'`` on a revision — a two-step
+    insert-then-update could not satisfy either, and an unresolved strategy
+    fails loudly at insert instead of silently re-resolving at run time.
+    """
     kwargs: dict[str, Any] = dict(
         book_id=book_id,
         toc_entry_id=toc_entry_id,
@@ -77,6 +91,9 @@ async def create(
     if selected_phases is not None:
         kwargs["selected_phases"] = selected_phases
     for _k, _v in (
+        ("revision_of_job_id", revision_of_job_id),
+        ("regeneration_target_id", regeneration_target_id),
+        ("session_limit_strategy", session_limit_strategy),
         ("extract_provider", extract_provider),
         ("extract_model", extract_model),
         ("judge_provider", judge_provider),
@@ -140,6 +157,13 @@ async def find_active_for_section(
     `kind` scopes the lookup so a 'teacher_material' launch never adopts a
     'homework' job (and vice versa). Default 'homework' keeps every existing
     caller behavior-identical.
+
+    Revision jobs (`revision_of_job_id IS NOT NULL`) are excluded UNCONDITIONALLY.
+    A revision keeps `kind='homework'` and shares its source's book/section/
+    language, so without this it would be the newest match for the lesson and a
+    batch launch would try to ADOPT it — writing `batch_id` onto a row the
+    database forbids from having one (`ck_homework_jobs_revision_no_batch`).
+    Versioned regeneration is published by its own publisher, never by Fleet.
     """
     conds = [
         HomeworkJob.book_id == book_id,
@@ -147,6 +171,7 @@ async def find_active_for_section(
         HomeworkJob.status.in_(["pending", "running", "done"]),
         HomeworkJob.output_language == output_language,
         HomeworkJob.kind == kind,
+        HomeworkJob.revision_of_job_id.is_(None),
     ]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
@@ -370,8 +395,16 @@ async def latest_by_section(
     section's "latest" on the homework TOC-status enrichment (Task 9, mirrors
     `find_active_for_section`/`latest_for_section`). Default 'homework' keeps
     every existing caller behavior-identical.
+
+    Revision jobs are excluded: this feeds the launcher/TOC per-row badge, and a
+    finished V2 must not report the lesson's Fleet state (nor a failed V2 make a
+    delivered lesson look broken).
     """
-    conds = [HomeworkJob.book_id == book_id, HomeworkJob.kind == kind]
+    conds = [
+        HomeworkJob.book_id == book_id,
+        HomeworkJob.kind == kind,
+        HomeworkJob.revision_of_job_id.is_(None),
+    ]
     if output_language is not None:
         conds.append(HomeworkJob.output_language == output_language)
     stmt = (
@@ -397,6 +430,33 @@ async def list_for_book(session: AsyncSession, book_id: UUID) -> list[HomeworkJo
         .order_by(HomeworkJob.created_at)
     )
     return list((await session.execute(stmt)).scalars().all())
+
+
+async def exclude_revisions(
+    session: AsyncSession, job_ids: "list[UUID] | Sequence[UUID]"
+) -> list[UUID]:
+    """Drop any versioned-regeneration revision from a caller-supplied id list.
+
+    Order-preserving, so a staggered/ordered sweep keeps its order. Empty input
+    short-circuits without touching the session.
+
+    Defence in depth for the batch re-archive sweep: a revision can never be a
+    batch member (`ck_homework_jobs_revision_no_batch`), so today the selection
+    cannot return one. This exists so a future widening of the batch link — or a
+    new caller that assembles ids some other way — cannot quietly hand a
+    revision to the LEGACY Notion archive, which writes the immutable V1 page.
+    """
+    if not job_ids:
+        return []
+    revisions = set(
+        (await session.execute(
+            select(HomeworkJob.id).where(
+                HomeworkJob.id.in_(list(job_ids)),
+                HomeworkJob.revision_of_job_id.is_not(None),
+            )
+        )).scalars().all()
+    )
+    return [job_id for job_id in job_ids if job_id not in revisions]
 
 
 async def count_by_book_ids(session: AsyncSession, book_ids: list[UUID]) -> dict[UUID, int]:
@@ -1672,7 +1732,13 @@ async def resume_failed_in_batch(
         select(HomeworkJob)
         .where(
             HomeworkJob.batch_id == batch_id,
-            HomeworkJob.status.in_(["failed", "cancelled"]))
+            HomeworkJob.status.in_(["failed", "cancelled"]),
+            # Defence in depth: `ck_homework_jobs_revision_no_batch` already
+            # makes a revision unreachable through a batch_id filter. Stated
+            # anyway so resume selection carries the same explicit exclusion as
+            # every other Fleet read, and so a future widening of the batch link
+            # cannot silently pull campaign revisions into a Fleet resume.
+            HomeworkJob.revision_of_job_id.is_(None))
         # Deterministic wave assignment: with no ORDER BY the DB may return rows
         # in any order, so which lesson lands in wave 0 would vary run to run.
         .order_by(HomeworkJob.created_at, HomeworkJob.id))
@@ -1710,11 +1776,16 @@ async def latest_for_section(
     `kind` scopes the lookup so a 'teacher_material' relaunch never resumes a
     'homework' job (and vice versa). Default 'homework' keeps every existing
     caller behavior-identical.
+
+    Revision jobs are excluded: a relaunch must never RESUME a campaign's
+    revision as if it were the lesson's own failed Fleet job — that would drag a
+    campaign-owned row into a batch and re-run it under Fleet's launch options.
     """
     conds = [HomeworkJob.book_id == book_id,
              HomeworkJob.toc_entry_id == toc_entry_id,
              HomeworkJob.output_language == output_language,
-             HomeworkJob.kind == kind]
+             HomeworkJob.kind == kind,
+             HomeworkJob.revision_of_job_id.is_(None)]
     if transport is not None:
         conds.append(HomeworkJob.transport == transport)
     stmt = (select(HomeworkJob).where(*conds)

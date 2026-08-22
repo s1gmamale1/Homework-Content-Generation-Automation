@@ -62,6 +62,7 @@ from app.services import (
     operator_auth,
     pipeline,
     providers,
+    regeneration_job_state,
     sa_key_apply,
     sa_key_vault,
 )
@@ -541,6 +542,11 @@ class Worker:
         self._leases: dict[UUID, JobLease] = {}
         # Dedup set so a LeaseLost unwind logs at most once per job id.
         self._lease_lost_logged: set[UUID] = set()
+        # Versioned regeneration: is the claimed job a REVISION? Stashed beside
+        # the lease at claim time (the row is already in hand there) so an
+        # ordinary job can short-circuit in `_execute_job`'s `finally` without
+        # opening a session just to discover it is ordinary.
+        self._revisions: dict[UUID, bool] = {}
 
     async def run(self) -> None:
         """Main loop. Runs until `stop()`."""
@@ -589,6 +595,7 @@ class Worker:
                 if now - self._last_sweep_at > self.sweep_interval:
                     await self._sweep_stuck_jobs()
                     await self._sweep_credential_slots()
+                    await self._sweep_revision_targets()
                     self._last_sweep_at = now
                 if now - self._last_budget_check_at > settings.cost_check_interval_seconds:
                     await self._budget_monitor()
@@ -772,6 +779,7 @@ class Worker:
                 # return value stays the bare job id — the long-standing
                 # contract asserted by the scrub-claim-gate tests).
                 self._leases[job.id] = claimed.lease
+                self._revisions[job.id] = job.revision_of_job_id is not None
                 logger.info(
                     f"worker {self.id} claimed job={job.id} "
                     f"attempt={job.attempts}/{self.max_attempts} priority={job.priority} "
@@ -858,14 +866,23 @@ class Worker:
                 return  # stop heartbeating — we no longer own this job
             # RENEWED — continue.
 
-    async def _execute_job(self, job_id: UUID) -> None:
+    async def _execute_job(
+        self, job_id: UUID, *, is_revision: bool | None = None
+    ) -> None:
         """Run one pipeline. Releases the slot in `finally` so the next
-        iteration of the main loop can claim another job."""
+        iteration of the main loop can claim another job.
+
+        ``is_revision``: normally consumed from the claim-time stash; direct
+        callers (tests) pass the same marker explicitly.
+        """
         RUNNING_JOBS[job_id] = asyncio.current_task()
         # Consume the per-claim lease handed over by _claim_one (None on the
         # direct-call/test path). Every worker-owned write below is fenced with
         # its token so a reclaimed-then-resumed job can never be mutated by us.
         lease = self._leases.pop(job_id, None)
+        stashed_revision = self._revisions.pop(job_id, False)
+        if is_revision is None:
+            is_revision = stashed_revision
         hb = asyncio.create_task(self._heartbeat(job_id, lease))
         try:
             try:
@@ -989,6 +1006,36 @@ class Worker:
             with contextlib.suppress(asyncio.CancelledError):
                 await hb   # let the cancellation settle — avoids a stray "Task destroyed" warning
             self._slots.release()
+            # LAST, and only for a revision (versioned regeneration). Every
+            # branch above is a way a revision job can reach a terminal status —
+            # normal return, hard-return failure, crash/_mark_failed, timeout,
+            # CancelWonSignal, LeaseLostSignal, and the SessionLimitPause /
+            # SlotSaturation requeues whose `_finalize_if_cancelling` can
+            # finalize a concurrent cancellation — so this is the one place that
+            # covers all of them.
+            #
+            # Placed after the cleanup above on purpose: the heartbeat is
+            # already settled and the semaphore permit already back, so a slow
+            # or wedged reconciliation cannot cost this worker a concurrency
+            # slot. `shield` + `except BaseException` mirror the user-cancel
+            # finalize above: a second shutdown cancellation landing here must
+            # neither skip the cleanup that already happened nor escape as a new
+            # job failure, and a regeneration-side error is never fatal to a job
+            # that has already finished (the crash-repair sweep is the backstop).
+            if is_revision:
+                try:
+                    await asyncio.shield(self._reconcile_revision_target(job_id))
+                except BaseException:  # noqa: BLE001 — see above
+                    logger.exception(
+                        f"worker {self.id} job={job_id} revision-target "
+                        f"reconciliation failed (crash-repair sweep will retry)"
+                    )
+
+    async def _reconcile_revision_target(self, job_id: UUID) -> None:
+        """Own session, own transaction — never the job's."""
+        async with SessionLocal() as session:
+            await regeneration_job_state.reconcile_revision_job(session, job_id)
+            await session.commit()
 
     async def _mark_failed(
         self, job_id: UUID, error_message: str, lease: JobLease | None = None
@@ -1245,6 +1292,29 @@ class Worker:
                 )
         except Exception:
             logger.exception(f"worker {self.id} stuck-job sweep failed")
+
+    async def _sweep_revision_targets(self) -> None:
+        """Crash-repair for versioned regeneration — its OWN step, OWN session,
+        OWN try/except, exactly like `_sweep_credential_slots`.
+
+        It deliberately does NOT share `_sweep_stuck_jobs`'s single
+        `session.begin()` transaction: a missing regeneration table (a worker
+        running ahead of the migration) or any other regeneration-side error
+        must never be able to roll back the stuck-job reclaim, the
+        stale-cancelling finalize, the attempts-exhausted sweep or the worker
+        registry maintenance that share that transaction."""
+        try:
+            async with SessionLocal() as session:
+                n = await regeneration_job_state.reconcile_terminal_revision_jobs(
+                    session
+                )
+            if n > 0:
+                logger.info(
+                    f"worker {self.id} reconciled {n} terminal revision job(s) "
+                    f"onto their campaign target(s)"
+                )
+        except Exception:
+            logger.exception(f"worker {self.id} revision-target sweep failed")
 
     async def _sweep_credential_slots(self) -> None:
         """Delete stale `credential_slots` rows (crashed holders that never

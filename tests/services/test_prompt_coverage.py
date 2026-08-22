@@ -14,10 +14,18 @@ _DEAD_VOCAB = [
     "source map", "allowed_assembly_types",
 ]
 
+_ACTIVE_VOCAB_BY_PROMPT = {
+    "practice-rlc.md": {"min_chars"},
+}
 
-def _assert_clean(rendered: str):
+
+def _assert_clean(rendered: str, *, active_vocab: set[str] | None = None):
     low = rendered.lower()
-    hits = [tok for tok in _DEAD_VOCAB if tok.lower() in low]
+    allowed = active_vocab or set()
+    hits = [
+        tok for tok in _DEAD_VOCAB
+        if tok not in allowed and tok.lower() in low
+    ]
     assert not hits, f"dead JSON vocab still present: {hits}"
 
 
@@ -78,8 +86,15 @@ def test_rlc_and_error_detection_clean_with_strip_test():
     ]:
         body = (pathlib.Path(__file__).resolve().parents[2]
                 / "prompts" / "_general" / path).read_text(encoding="utf-8")
-        _assert_clean(_gp(subj, phase))
+        _assert_clean(
+            _gp(subj, phase),
+            active_vocab=_ACTIVE_VOCAB_BY_PROMPT.get(path),
+        )
         assert "strip" in body.lower(), f"{path} missing the Strip Test rule"
+    assert "**Minimum length (min_chars):**" in (
+        pathlib.Path(__file__).resolve().parents[2]
+        / "prompts" / "_general" / "practice-rlc.md"
+    ).read_text(encoding="utf-8")
 
 
 def test_boss_arena_clean_with_adaptation():
@@ -209,7 +224,11 @@ def test_no_dead_json_vocab_anywhere_in_general_prompts():
     offenders = {}
     for p in gdir.glob("*.md"):
         low = p.read_text(encoding="utf-8").lower()
-        hits = [tok for tok in _DEAD_VOCAB if tok.lower() in low]
+        allowed = _ACTIVE_VOCAB_BY_PROMPT.get(p.name, set())
+        hits = [
+            tok for tok in _DEAD_VOCAB
+            if tok not in allowed and tok.lower() in low
+        ]
         if hits:
             offenders[p.name] = hits
     assert not offenders, f"dead JSON vocab remains: {offenders}"

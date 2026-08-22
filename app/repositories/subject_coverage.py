@@ -68,6 +68,12 @@ async def job_status_by_book(
         .where(
             HomeworkJob.output_language == output_language,
             HomeworkJob.kind == "homework",
+            # Versioned-regeneration revisions are not Fleet jobs. They share
+            # the source's (book, toc_entry, language) and are newer, so without
+            # this the dashboard would show a lesson's V2 state — a running
+            # campaign would repaint delivered lessons as "Running", and a failed
+            # revision would repaint them as "Failed".
+            HomeworkJob.revision_of_job_id.is_(None),
         )
         .order_by(
             HomeworkJob.book_id,

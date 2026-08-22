@@ -39,6 +39,13 @@ already gives; create a plausible case only when none exists.
 Emit these sections in exactly this order:
 
 ```
+0. Header              — three lines ABOVE the `#` phase title, one per line and in
+                         the output language: the case type (storytelling OR
+                         question-first), the student role you derived, and the
+                         textbook concept the case is built on. This is where the
+                         `Source concept rule` below is satisfied. It sits outside
+                         the numbered sections, so it is never folded into the
+                         narrative and never dropped by the heading match.
 1. Case setup          — student role, narrative, clear task. Open with a real-life
                          case in ONE of the two approved shapes: **storytelling**
                          (a short concrete situation) OR **question-first** (pose
@@ -62,13 +69,30 @@ Emit these sections in exactly this order:
 ## Checkpoint rules
 
 - **Exactly 3** checkpoints, in order: Identify → Decide → Justify-or-avoid-mistake.
-- Each is a multiple-choice or simple-choice recognition question — low-friction
-  recognition only. Deep reasoning belongs in the DPE, not here.
+- Each is a multiple-choice question — a single click, not a written answer. Keep the
+  FORMAT low-friction; do NOT hollow out the thinking. Picking the right option must
+  require APPLYING the lesson's rule to this case's specifics, not recognising which
+  remembered rule the stem is already describing. Extended *written* reasoning is what
+  belongs in the DPE rather than here.
+- **Never answer the stem inside the stem.** A question must not name the rule, the
+  group/category, the direction of the trend, or any condition its own options exist
+  to discriminate. "Which rule applies when the atomic number increases down group
+  IA?" is a failed stem — it has already stated the answer. Ask what the student must
+  DECIDE ("place both samples in the table and say which is the stronger metal"), and
+  let the options differ on that decision.
 - Each checkpoint states its question, its answer choices, the correct choice, and
   feedback that explains why that choice fits the case.
 - Each checkpoint has **3–4 options, exactly one correct**; **at least one distractor
-  must be the lesson's common mistake**. Keep all options similar in length and format
-  so the answer cannot be guessed from shape (anti-leak).
+  must be the lesson's common mistake**. Anti-leak — all three are required:
+  - **Shape:** keep every option within roughly the same length. The correct option
+    must never be the longest, nor the only one that supplies a mechanism or a reason.
+  - **No lone absolutes:** never confine `mutlaqo` / `faqat` / `har doim` /
+    `hech qachon` ("always", "never", "only") to the distractors — test-wise students
+    eliminate such options on sight. Use them in none of the options, or in several.
+  - **Wrong in exactly one way:** prefer distractors that get everything right but one
+    thing — the correct position with the wrong conclusion, the correct conclusion
+    with the wrong reason, the two given numbers swapped — over options that are
+    plainly unrelated to the stem and eliminable without knowing the lesson.
 - **Complete-rule feedback:** checkpoint feedback must state the lesson's rule in
   full. Never declare a partial condition "sufficient" ("kifoya") when the rule has
   more cases — e.g. for systems of equations, `a₁/a₂ = b₁/b₂` alone decides nothing;
@@ -143,7 +167,8 @@ Close with a feedback section in exactly four parts:
 
 Every checkpoint, learning block, and the simulation must trace to a real concept in
 THIS lesson. Do not invent concepts. Name the case type and student role you derived,
-and note which textbook concept the case is built on.
+and note which textbook concept the case is built on — in the Header block (section 0
+of the canonical structure), never folded into the case narrative.
 
 ## Visual & case framing (family-specific)
 
@@ -156,7 +181,48 @@ and note which textbook concept the case is built on.
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
-title and `##`/`###` for the sections/items described above, in order. For visuals: do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
+title and `##` — one level, never `###` — for the ten sections described above, in
+order. Deeper levels are reserved for content *inside* a section, never for restating
+that section's own title.
+
+**Machine-readable structure (non-negotiable)** — the platform importer matches
+section headings, so heading shape is a contract:
+
+- **One heading per section. Level `##`. Numbered `1.`–`10.`. Output language only.**
+  The leading number is the importer's primary anchor, so it is never optional. Never
+  restate a heading immediately beneath itself (no `##` followed by a `###` saying the
+  same thing, no `**Bold label:**` echoing the heading it sits under), and never
+  append an English gloss to an output-language heading — `## 2. Nazorat nuqtasi 1 —
+  Aniqlash (Checkpoint 1 — Identify)` is wrong twice over. English keywords are NOT
+  required anywhere in a heading: the student reads these, so they follow the output
+  language like every other student-facing string.
+- **Heading keywords** — after the number, the heading must contain, for Uzbek output:
+
+  | # | Section | Heading contains |
+  |---|---|---|
+  | 1 | Case setup | `Vaziyat` |
+  | 2 | Checkpoint 1 | `Nazorat nuqtasi 1` and `Aniqlash` |
+  | 3 | Learning Block 1 | `O'quv bloki 1` |
+  | 4 | Checkpoint 2 | `Nazorat nuqtasi 2` and `Qaror` |
+  | 5 | Learning Block 2 | `O'quv bloki 2` |
+  | 6 | Checkpoint 3 | `Nazorat nuqtasi 3` and `Asoslash` |
+  | 7 | DPE | `Qaror qabul qilish jarayoni` |
+  | 8 | Final simulation | `Yakuniy simulyatsiya` |
+  | 9 | Feedback summary | `Fikr-mulohaza` |
+  | 10 | Redo route | `Qayta urinish` |
+
+  For `en`/`ru` output use that language's natural equivalent of the same label and
+  keep the number. All ten need their heading — a section whose heading is missing or
+  unnumbered is dropped from the student-facing story.
+- Checkpoint options are lettered lines `A) <option>` … (3–4 of them, one per line).
+  After the options, name the correct one on its own line: `**To'g'ri javob:**
+  <letter>` (stripped before the student sees the item). Checkpoint feedback goes
+  AFTER the options, never between the question and the options.
+- **Plain text — no math markup.** Never wrap anything in `$…$`, `\(…\)` or `\[…\]`:
+  there is no math renderer downstream, so the student literally sees the dollar
+  signs. Write `Z = 11`, `Ar = 23`, `a1/a2 = b1/b2` as ordinary text.
+
+**Visuals.** Do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
 OR photo), emit a described placeholder instead — never the visual itself:
 `![visual: <diagram|photo> — <what to depict, with every label, value, and axis> — image gen required](placeholder)`
 The description must be self-sufficient: name the medium and every label/value/axis
@@ -165,10 +231,17 @@ fabricate an image, never invent an image URL.
 
 **Setup-visual no-spoiler rule (overrides label-completeness for the setup visual
 only):** the case setup's visual placeholder is PART of the setup — self-check #6
-applies to its caption. Describe the scene only: place, actors, time, atmosphere.
-Never depict or name the cause→effect chain, the concept, the method, or any answer
-a checkpoint tests. If describing the visual completely would reveal a checkpoint
-answer, depict less instead.
+applies to its caption. Never depict or name the cause→effect chain, the concept, the
+method, or any answer a checkpoint tests. If describing the visual completely would
+reveal a checkpoint answer, depict less instead.
+
+**What the setup visual MAY show — do not over-apply the rule above.** It may depict
+any datum the setup text already states in words: the measured values, the readings,
+the objects on the bench, the symptoms observed. Restating GIVEN data in visual form
+is not a spoiler; only the INFERENCE drawn from it is. So prefer a labelled diagram of
+the given data over a decorative scene photo — a photo that merely sets a mood teaches
+nothing and spends the image budget doing it. Choose a photo only when the case really
+turns on a real-world appearance the student has to look at.
 
 ## Self-check
 
@@ -187,3 +260,10 @@ answer, depict less instead.
 12. ✓ Feedback summary has all four parts, and the completion part describes a
     CONDITIONAL app-owned redo route (no decided pass/fail label)?
 13. ✓ No checkpoint feedback declares a partial condition "sufficient" when the rule has more cases; no "impossible" claims for merely-inconvenient methods; no fake authorities?
+14. ✓ Header block (case type · student role · textbook concept) present above the phase title?
+15. ✓ Exactly ONE heading per section — `##`, numbered `1.`–`10.`, output language only, no English gloss, no `###` or bold restatement underneath?
+16. ✓ All ten sections carry their heading keyword, so none is dropped on import?
+17. ✓ No `$…$` or other math markup anywhere in the output?
+18. ✓ No checkpoint stem names the rule, group, or trend direction its own options exist to discriminate?
+19. ✓ Correct option is not the longest and not the only one giving a reason; no absolutes confined to distractors?
+20. ✓ Setup visual depicts the GIVEN data (labelled diagram preferred over a mood photo) without depicting the inference?

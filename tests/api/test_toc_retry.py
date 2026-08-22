@@ -46,6 +46,8 @@ def _retry(book_id, *, book, pdf_exists=True, blocking_jobs=None):
          patch("app.api.v1.books.storage.book_pdf_path", return_value=pdf_path), \
          patch("app.api.v1.books.jobs_repo.list_for_book",
                AsyncMock(return_value=blocking_jobs or [])), \
+         patch("app.api.v1.books.targets_repo.history_for_book",
+               AsyncMock(return_value=[])), \
          patch("app.api.v1.books.toc_extractor.run", run_spy), \
          patch("app.api.v1.books._book_out_with_toc",
                AsyncMock(return_value=_bookout(book_id, "toc_extracting"))):

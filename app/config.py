@@ -379,6 +379,42 @@ class Settings(BaseSettings):
     agent_limit_clodex_24h: int = 500
     agent_limit_clodex_7d: int = 2500
 
+    # ─── Versioned homework regeneration ──────────────────────────────────
+    # Master flag for the whole regeneration workflow (campaign drafting,
+    # canary, bulk launch). OFF by default: with it off, nothing in this
+    # feature is reachable and the fleet behaves exactly as before.
+    regeneration_enabled: bool = False
+    # Second, independent flag for the publication worker that writes the
+    # immutable `Homework V2/V3/...` Notion siblings. Separate from the flag
+    # above so generation can be exercised with publication still dark.
+    regeneration_publisher_enabled: bool = False
+    # Publisher loop: how often it sweeps for releasable targets.
+    regeneration_publisher_interval_seconds: int = Field(default=30, ge=1)
+    # Durable claim lease. A publisher that dies mid-delivery holds its target
+    # until this expires, then another publisher may take it over. Must stay
+    # well above a realistic Notion write (page + children + PDF upload).
+    regeneration_publisher_lease_seconds: int = Field(default=300, ge=1)
+    # Delivery attempts per target before it parks in `publication_failed` for
+    # an operator. ge=1: 0 would mean "never publish", which is the flag's job.
+    regeneration_publisher_max_attempts: int = Field(default=5, ge=1)
+    # Exponential backoff between delivery attempts, base and ceiling.
+    regeneration_publisher_backoff_base_seconds: int = Field(default=60, ge=1)
+    regeneration_publisher_backoff_max_seconds: int = Field(default=3600, ge=1)
+    # Launch stagger for a campaign's bulk wave — same mechanism as
+    # batch_launch_wave_size/_interval_seconds above, but deliberately more
+    # conservative (4, not 6): a regeneration wave re-runs whole snapshots on
+    # top of whatever normal generation the fleet is already doing. Set either
+    # to 0 to disable staggering entirely (every revision claimable at once).
+    regeneration_launch_wave_size: int = Field(default=4, ge=0)
+    regeneration_launch_wave_interval_seconds: int = Field(default=60, ge=0)
+    # Maximum ELIGIBLE lessons in one campaign. Ineligible discovery rows are
+    # reported to the operator but do not consume campaign capacity.
+    regeneration_max_campaign_targets: int = Field(default=500, ge=1)
+    # Separate workload guard for discovery itself. Discovery performs indexed
+    # per-lineage source checks, so refuse before that fan-out when the initial
+    # bounded SQL query finds more than this many candidate lineages.
+    regeneration_max_discovery_lineages: int = Field(default=1000, ge=1)
+
     # ─── Budget monitor (kill-switch) ─────────────────────────────────────
     # Per-batch api spend cap (USD). 0 = disabled (no per-batch pause).
     cost_cap_batch_usd: float = 0.0

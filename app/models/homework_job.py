@@ -2,7 +2,17 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import CheckConstraint, DateTime, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -56,6 +66,43 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     batch_id: Mapped[Optional[UUID]] = mapped_column(
         ForeignKey("batches.id"), nullable=True
     )
+    # ─── versioned regeneration (revision jobs) ───────────────────────────
+    # NULL on every normal job. A revision job keeps kind="homework" (so it
+    # reuses the whole pipeline/phase/cost/download machinery) and is identified
+    # ONLY by revision_of_job_id IS NOT NULL — one unambiguous exclusion
+    # predicate for every legacy query and archive entry point, without
+    # widening the `kind` flow discriminator.
+    # RESTRICT (not CASCADE): deleting the source out from under a live
+    # revision must fail cleanly rather than shred the regeneration audit
+    # history. See ck_homework_jobs_revision_pair / _revision_no_batch below.
+    revision_of_job_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(
+            "homework_jobs.id",
+            ondelete="RESTRICT",
+            name="fk_homework_jobs_revision_of_job_id",
+        ),
+        nullable=True,
+    )
+    # The campaign target this revision fulfils. UNIQUE — this column IS the
+    # one-to-one link (RegenerationTarget deliberately has no revision_job_id),
+    # so one revision job can never be attached to two targets.
+    regeneration_target_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(
+            "regeneration_targets.id",
+            ondelete="RESTRICT",
+            name="fk_homework_jobs_regeneration_target_id",
+        ),
+        nullable=True,
+    )
+    # NULL on every ORDINARY job: session-limit resolution there is unchanged
+    # (the job's batch, else the fleet-wide `settings.session_limit_strategy`).
+    # A REVISION job must store a concrete 'pause'/'switch'. It has
+    # batch_id IS NULL by construction (ck_homework_jobs_revision_no_batch), so
+    # there is no batch row to read the approved campaign's frozen selection
+    # from. 'inherit' is refused on a revision: it would re-resolve against the
+    # mutable fleet-wide default at run time, which is precisely the silent
+    # no-op this column exists to close.
+    session_limit_strategy: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     current_phase: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     started_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -106,6 +153,11 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
     phase_outputs: Mapped[list["PhaseOutput"]] = relationship(
         back_populates="job", cascade="all, delete-orphan", order_by="PhaseOutput.phase_order"
     )
+    regeneration_target: Mapped[Optional["RegenerationTarget"]] = relationship(
+        "RegenerationTarget",
+        back_populates="revision_job",
+        foreign_keys=[regeneration_target_id],
+    )
 
     __table_args__ = (
         Index("ix_homework_jobs_book_toc", "book_id", "toc_entry_id"),
@@ -146,7 +198,46 @@ class HomeworkJob(Base, UUIDPK, Timestamps):
             "kind IN ('homework','teacher_material')",
             name="ck_homework_jobs_kind",
         ),
+        # A revision is meaningless without its campaign target, and a job
+        # pointing at a target is by definition a revision: both columns or
+        # neither — never half a revision.
+        CheckConstraint(
+            "(revision_of_job_id IS NULL) = (regeneration_target_id IS NULL)",
+            name="ck_homework_jobs_revision_pair",
+        ),
+        # Revision jobs are NOT Fleet jobs: they never join a batch, so batch
+        # rollups, adoption, resume and dedup queries stay untouched by
+        # regeneration. Enforced here rather than trusting every caller.
+        CheckConstraint(
+            "revision_of_job_id IS NULL OR batch_id IS NULL",
+            name="ck_homework_jobs_revision_no_batch",
+        ),
+        # Same names and same SQL text as migration 0063 — the ORM and the
+        # database must never drift on this rule.
+        CheckConstraint(
+            "session_limit_strategy IS NULL OR "
+            "session_limit_strategy IN ('pause','switch','inherit')",
+            name="ck_homework_jobs_session_limit_strategy",
+        ),
+        # The accepted set is IN ('pause','switch'), NOT a bare "IS NOT NULL":
+        # a revision storing 'inherit' would fall back to the mutable
+        # fleet-wide default and discard the operator-approved contract value.
+        # The IS NOT NULL conjunct is NULL-safety, not a weakening — SQL is
+        # three-valued, `NULL IN (...)` is UNKNOWN, and a CHECK is SATISFIED by
+        # UNKNOWN, so without it a revision with NO strategy would commit.
+        CheckConstraint(
+            "revision_of_job_id IS NULL OR "
+            "(session_limit_strategy IS NOT NULL "
+            "AND session_limit_strategy IN ('pause','switch'))",
+            name="ck_homework_jobs_revision_session_limit_strategy",
+        ),
+        UniqueConstraint(
+            "regeneration_target_id",
+            name="uq_homework_jobs_regeneration_target_id",
+        ),
+        Index("ix_homework_jobs_revision_of_job_id", "revision_of_job_id"),
     )
 
 
 from app.models.phase_output import PhaseOutput  # noqa: E402
+from app.models.regeneration_target import RegenerationTarget  # noqa: E402

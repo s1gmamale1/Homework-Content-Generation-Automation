@@ -19,7 +19,14 @@ from app.repositories import budget as budget_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import sa_keys as sa_keys_repo
-from app.services import code_version, events_bus, operator_auth, sa_key_vault
+from app.services import (
+    code_version,
+    events_bus,
+    operator_auth,
+    regeneration_job_state,
+    regeneration_publisher,
+    sa_key_vault,
+)
 from app.services.prompts import load_all as load_prompts
 from app.services.worker import Worker, build_worker_from_settings
 
@@ -72,6 +79,31 @@ async def _reconcile_on_startup(session) -> None:
     await session.commit()
 
 
+async def _reconcile_revision_targets_on_startup() -> None:
+    """Versioned regeneration crash-repair — a SEPARATE startup step.
+
+    Own session, own transaction and its own broad guard, deliberately NOT part
+    of `_reconcile_on_startup`: that one is critical (books, orphaned running
+    jobs, attempts-exhausted pending jobs) and a regeneration-side problem — a
+    head running ahead of the migration, a missing table — must never be able to
+    roll it back or stop the process from starting. Runs after it, so a revision
+    job the reclaim just failed is reconciled in the same boot.
+    """
+    try:
+        async with SessionLocal() as session:
+            n = await regeneration_job_state.reconcile_terminal_revision_jobs(session)
+        if n:
+            log.info(
+                f"Startup: reconciled {n} terminal revision job(s) onto their "
+                f"campaign target(s)"
+            )
+    except Exception:
+        log.exception(
+            "Startup: revision-target reconciliation failed — continuing "
+            "(the worker maintenance sweep will retry)"
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     operator_auth.require_startup_auth(
@@ -93,6 +125,10 @@ async def lifespan(app: FastAPI):
         sa_key_vault.verify_uuid_inventory(expected)
         await _reconcile_on_startup(session)
     log.info("Orphan sweep complete (books + phase_outputs)")
+
+    # Versioned regeneration: separate step, separate session/transaction,
+    # separate guard — see the function's docstring.
+    await _reconcile_revision_targets_on_startup()
 
     # Fleet version floor auto-stamp (fleet-worker-version-gate-1): raise-only —
     # any process starting on newer code fences out every stale worker; a
@@ -145,6 +181,51 @@ async def lifespan(app: FastAPI):
             "expecting standalone worker(s) elsewhere"
         )
 
+    # Versioned regeneration publisher (`Homework V{n}` Notion siblings). TWO
+    # flags, both off by default: the master flag gates the whole regeneration
+    # feature, and the second one gates delivery on its own so generation can be
+    # exercised with publication dark. Started here — after the LISTEN bus and
+    # beside the embedded worker — because it CLAIMS work: starting it before
+    # the startup reconcile and the version floor is the shape those steps exist
+    # to prevent. Production enables it on the designated head/API process only,
+    # but the claim protocol is safe if two processes accidentally run it.
+    #
+    # The flags say an operator WANTS delivery; they do not say this head CAN
+    # deliver. A loop started with no usable Notion destination claims targets
+    # and reserves their version numbers — spent forever — before discovering,
+    # inside the delivery step, that it cannot even build a client. So the
+    # destination is a third condition on starting, and its absence is a WARNING
+    # rather than a silent no-op: the operator asked for a publisher.
+    publisher_stop: Optional[asyncio.Event] = None
+    publisher_task: Optional[asyncio.Task] = None
+    unavailable = None
+    if settings.regeneration_enabled:
+        unavailable = regeneration_publisher.publication_unavailable_reason()
+        if unavailable is not None:
+            log.warning(
+                f"Regeneration publisher/Notion readiness unavailable: {unavailable}. "
+                "DB-only estimation remains available, but destination check, "
+                "campaign creation, canary start and publication are blocked "
+                "until Notion is configured."
+            )
+    if (
+        settings.regeneration_enabled
+        and settings.regeneration_publisher_enabled
+        and unavailable is None
+    ):
+        publisher_stop = asyncio.Event()
+        publisher_task = asyncio.create_task(
+            regeneration_publisher.build_publisher_from_settings().run_forever(
+                publisher_stop
+            ),
+            name="regeneration-publisher",
+        )
+        log.info(
+            "Regeneration publisher started | "
+            f"interval={settings.regeneration_publisher_interval_seconds}s "
+            f"lease={settings.regeneration_publisher_lease_seconds}s"
+        )
+
     try:
         yield
     finally:
@@ -160,6 +241,25 @@ async def lifespan(app: FastAPI):
                 except (asyncio.CancelledError, Exception):
                     pass
             log.info("Embedded worker stopped")
+        if publisher_stop is not None and publisher_task is not None:
+            # Same shutdown shape as the worker: signal, drain, force. The loop
+            # finishes the target it is on rather than being killed mid-delivery,
+            # which is what keeps a half-written Notion page recoverable.
+            publisher_stop.set()
+            try:
+                await asyncio.wait_for(publisher_task, timeout=30.0)
+            except asyncio.TimeoutError:
+                log.warning(
+                    "Regeneration publisher did not stop within 30s; forcing"
+                )
+                publisher_task.cancel()
+                try:
+                    await publisher_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+            except Exception:
+                log.exception("Regeneration publisher exited with an error")
+            log.info("Regeneration publisher stopped")
         await events_bus.stop_listener()
 
 

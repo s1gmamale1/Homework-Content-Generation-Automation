@@ -33,10 +33,12 @@ Write the game as Markdown sections, in this order:
   choice that fills the blank correctly according to the lesson.
 - **Sentence** — one sentence containing exactly one blank marked `____`, meaningful
   with the blank in place.
-- **Choices** — **3 or more** word/phrase choices. Mark which one is correct (exactly
-  one). For each wrong choice, give a brief note of why it fails at the concept level
-  (the note may live in an answer-key section below the choices, not beside each
-  choice on the face). Every choice must be a non-empty string.
+- **Choices** — **3 or more** word/phrase choices, one per line as a plain bulleted
+  list (`- <choice>`). Mark the correct one (exactly one) by ending its line with the
+  tag `(To'g'ri)` — Russian «(Верно)», English `(Correct)`; the tag is stripped
+  before the student sees the choice. For each wrong choice, give a brief note of why
+  it fails at the concept level in the answer-key section below the choices (never
+  beside the choice on its face). Every choice must be a non-empty string.
 - **Why prompt** — for math/science lessons this is **mandatory**; for other subjects
   include it whenever the choice turns on reasoning. ONE open question asking the
   student to explain which concept makes the correct choice right, why the others fail
@@ -50,6 +52,27 @@ Write the game as Markdown sections, in this order:
 - Wrong choices fail for concept-level reasons and are tempting near-misses — never random filler.
 - Terminology aligns with the lesson's Flashcards.
 - Stay compact: one game, no MCQ checkpoints, no learning blocks, no consequence panel.
+
+## Parser contract (non-negotiable)
+
+The platform importer reads this game with fixed rules; violating any of them makes
+the game silently drop or corrupt:
+
+- The blank marker appears ONLY in the Sentence line. Never write a run of 3+
+  underscores anywhere else (title, how-to-play, choices, key section) — the importer
+  takes the FIRST line containing such a run as the sentence.
+- Choices are a plain bulleted list (`- <choice>`). NEVER letter them (`A)`, `B)` …) —
+  lettered lines are not recognized as choices and the whole game is dropped.
+- Exactly one choice line ends with the correctness tag `(To'g'ri)` / «(Верно)» /
+  `(Correct)`. The tag must sit on the choice line itself — a marking that lives only
+  in the answer-key section is not read.
+- Put the wrong-choice notes under a final heading containing the words `Javoblar
+  kaliti` or `Answer key`, e.g. `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` — the
+  whole section under such a heading is removed from all student-facing text.
+- Platform note: today the student plays this as a type-the-answer (free-recall) item
+  built from the sentence plus the tagged correct choice; the untagged choices are not
+  rendered yet. Author the distractors well anyway — the staged word-bank upgrade
+  consumes them.
 
 ## Output format
 

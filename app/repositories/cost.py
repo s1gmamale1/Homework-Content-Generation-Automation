@@ -1,9 +1,25 @@
 """Cost ledger — read-only queries over agent_usages.
 
-All three functions SELECT api-mode usage rows and sum ``pricing.cost_usd``
+Every function SELECTs api-mode usage rows and sums ``pricing.cost_usd``
 in Python (not SQL). The per-provider cached-token semantics that ``cost_usd``
 encodes are non-trivial (gemini prompt INCLUDES cached; claude is disjoint),
 so the pricing logic must live in Python, not SQL aggregation.
+
+**Ordinary Fleet cost and regeneration cost are separate ledgers.** A revision
+job (``revision_of_job_id IS NOT NULL``) re-runs a lesson the operator already
+paid for, deliberately, under an approved campaign budget. So:
+
+* :func:`section_prior_api_cost` — the never-pay-twice / rebill warning — must
+  exclude revisions. Quoting a regeneration's spend as "this section already
+  cost $X" would either wave through or block an ordinary re-launch on a number
+  that has nothing to do with ordinary generation;
+* :func:`campaign_actual_api_cost_usd` is the opposite read: a campaign's real
+  spend is exactly the api usage of its own revision jobs;
+* :func:`fleet_api_cost_usd` deliberately counts BOTH. It backs the fleet-wide
+  daily $ cap, and a revision spends real money on the same credential;
+* :func:`batch_api_cost_usd` needs no filter at all — a revision may not belong
+  to a batch (``ck_homework_jobs_revision_no_batch``), so batch scoping already
+  excludes it, in the database rather than by convention.
 """
 
 from __future__ import annotations
@@ -17,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_usage import AgentUsage
 from app.models.homework_job import HomeworkJob
+from app.models.regeneration_target import RegenerationTarget
 from app.services import pricing
 
 
@@ -85,14 +102,22 @@ async def section_prior_api_cost(
     Consumed by the never-pay-twice budget gate (Task 7): if a section already
     has a done job on this transport, the budget check can apply the prior cost
     rather than estimating from scratch.
+
+    REVISION jobs are excluded (``revision_of_job_id IS NULL``): they are not
+    ordinary Fleet generation. A regenerated lesson is very often the NEWEST
+    done job for its section, so without this the warning would quote the
+    campaign's spend instead of the original launch's — and a section whose
+    only done job is a revision would falsely report ``had_done=True``, i.e.
+    "you already generated this", for a lesson Fleet never generated.
     """
-    # Find the most recent done api job for this (book, section, transport).
+    # Find the most recent done ORDINARY api job for this (book, section, transport).
     job_stmt = (
         select(HomeworkJob)
         .where(HomeworkJob.book_id == book_id)
         .where(HomeworkJob.toc_entry_id == toc_entry_id)
         .where(HomeworkJob.transport == transport)
         .where(HomeworkJob.status == "done")
+        .where(HomeworkJob.revision_of_job_id.is_(None))
         .order_by(HomeworkJob.created_at.desc())
         .limit(1)
     )
@@ -112,3 +137,36 @@ async def section_prior_api_cost(
         for row in rows
     )
     return cost, True
+
+
+async def campaign_actual_api_cost_usd(session: AsyncSession, campaign_id: UUID) -> float:
+    """Total API spend (USD) actually incurred by one regeneration campaign.
+
+    Joins agent_usages → homework_jobs → regeneration_targets and keeps only
+    api rows of the campaign's own REVISION jobs — the mirror image of
+    ``section_prior_api_cost``'s exclusion. This is what the canary screen
+    compares against the estimate before bulk approval.
+
+    Two things it does NOT need to special-case, because the writers already
+    guarantee them: copied phases clone no usage rows (only row-level
+    provenance), and the copied-extract marker
+    (``agent.record_cached_lesson_extract``) is recorded with ``auth_mode='cli'``
+    and zero tokens, so the api filter drops it. Neither can inflate the
+    campaign's real cost. A Notion publication retry writes no usage row at all.
+    """
+    stmt = (
+        select(AgentUsage)
+        .join(HomeworkJob, AgentUsage.homework_job_id == HomeworkJob.id)
+        .join(
+            RegenerationTarget,
+            HomeworkJob.regeneration_target_id == RegenerationTarget.id,
+        )
+        .where(RegenerationTarget.campaign_id == campaign_id)
+        .where(HomeworkJob.revision_of_job_id.is_not(None))
+        .where(AgentUsage.auth_mode == "api")
+    )
+    rows = list((await session.execute(stmt)).scalars().all())
+    return sum(
+        pricing.cost_usd(row.provider, row.model_name, _row_usage(row))
+        for row in rows
+    )

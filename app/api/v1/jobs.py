@@ -23,7 +23,7 @@ from app.repositories import launch_defaults as launch_defaults_repo
 from app.repositories import toc_entries as toc_repo
 from app.repositories import workers as workers_repo
 from app.schemas import GenerateRequest, JobOut, PhaseOut
-from app.services import events_bus, notion_archive, pricing
+from app.services import events_bus, notion_archive, pricing, regeneration_job_state
 from app.services.agent_models import (
     MODEL_MANIFEST,
     API_ONLY_PROVIDERS,
@@ -390,6 +390,34 @@ async def retry_job(
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    # Versioned regeneration: refuse BEFORE the status guard and before any
+    # status/schedule mutation. This route resets the JOB row only — it knows
+    # nothing about `regeneration_targets.status`, which stays `generation_failed`
+    # while the revision re-runs. Reconciliation lands only once the retried run
+    # is terminal, and `generation_failed -> publication_pending` is not a legal
+    # target transition, so even a SUCCESSFUL generic retry wedges the target
+    # permanently (the crash-repair sweep skips `generation_failed` too). A
+    # revision is re-driven through the regeneration retry workflow, which owns
+    # the target transition back to `generating`.
+    if getattr(job, "revision_of_job_id", None) is not None:
+        raise HTTPException(
+            409,
+            {
+                "error": "regeneration_revision",
+                "message": (
+                    "this job is a regeneration revision — retry it through the "
+                    "regeneration retry workflow, which re-drives its campaign "
+                    "target; a generic retry would leave the target stuck at "
+                    "generation_failed"
+                ),
+                "job_id": str(job_id),
+                "regeneration_target_id": (
+                    str(job.regeneration_target_id)
+                    if getattr(job, "regeneration_target_id", None) is not None
+                    else None
+                ),
+            },
+        )
     if job.status not in ("failed", "cancelled"):
         raise HTTPException(
             409,
@@ -466,6 +494,26 @@ async def retry_archive_job(
     job = await jobs_repo.get(session, job_id)
     if job is None:
         raise HTTPException(404, "job not found")
+    # Versioned regeneration: refuse BEFORE the status/already-archived checks
+    # and before any background task is created. `archive_job` carries the same
+    # guard intrinsically, but it only records a skip reason — which would
+    # answer the operator with a cheerful `{"queued": 1}` receipt for a push
+    # that silently never happens. A revision is delivered by the versioned
+    # publisher; the legacy archive would overwrite the immutable V1 page.
+    if getattr(job, "revision_of_job_id", None) is not None:
+        raise HTTPException(
+            409,
+            {
+                "error": "regeneration_revision",
+                "message": (
+                    "this job is a regeneration revision — it is published as a "
+                    "versioned sibling by the versioned publisher, never through "
+                    "the legacy archive (which would overwrite version 1)"
+                ),
+                "job_id": str(job_id),
+                "skip_reason": notion_archive.REVISION_SKIP_REASON,
+            },
+        )
     if job.status != "done":
         raise HTTPException(
             409, f"only done jobs can be re-archived; current status={job.status!r}")
@@ -499,6 +547,14 @@ async def cancel_job(
     if await jobs_repo.cancel_if_pending(session, job_id):
         await session.commit()
         job = await jobs_repo.get(session, job_id)
+        # Versioned regeneration: a PENDING revision cancelled here never
+        # reaches a worker, so `_execute_job`'s reconciliation never runs for
+        # it. This is the only place its campaign target can converge — without
+        # it the target would sit in `generating` forever and block the lesson's
+        # lineage. Its own transaction, after the cancel has committed.
+        if job is not None and getattr(job, "revision_of_job_id", None) is not None:
+            await regeneration_job_state.reconcile_revision_job(session, job_id)
+            await session.commit()
         return JobOut.model_validate(job)
 
     if await jobs_repo.request_cancel(session, job_id):

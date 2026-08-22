@@ -38,7 +38,9 @@ def _delete(book_id, *, book, active_count=0):
     with patch("app.api.v1.books.books_repo.get", AsyncMock(return_value=book)), \
          patch("app.api.v1.books.books_repo.delete", delete_spy), \
          patch("app.api.v1.books.jobs_repo.count_active_for_book",
-               AsyncMock(return_value=active_count)):
+               AsyncMock(return_value=active_count)), \
+         patch("app.api.v1.books.targets_repo.history_for_book",
+               AsyncMock(return_value=[])):
         r = client.delete(f"/api/v1/books/{book_id}")
     return r, delete_spy
 

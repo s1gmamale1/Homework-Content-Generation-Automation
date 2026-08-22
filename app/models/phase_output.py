@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -40,7 +40,8 @@ class PhaseOutput(Base, UUIDPK):
     # Deterministic validator output for this phase's markdown (list[str]).
     # Warn-only — never blocks generation. Surfaced per-phase in the console.
     validation_warnings: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True)
-    # LLM-judge verdict for this phase: ok | major_shipped | major_regen_failed | unavailable | None (not judged).
+    # LLM-judge verdict for this phase: ok | major_shipped | major_regen_failed |
+    # unavailable | refused | None (not judged).
     judge_status: Mapped[Optional[str]] = mapped_column(String(24), nullable=True)
     # LLM-solver verdict for this phase's answer key (CQ-C):
     # ok | mismatch_regen | mismatch_shipped | mismatch_regen_failed |
@@ -58,10 +59,25 @@ class PhaseOutput(Base, UUIDPK):
     # mirrors HomeworkJob.claim_token so a stale worker's write can be
     # rejected even at phase-row granularity.
     claim_token: Mapped[Optional[UUID]] = mapped_column(PGUUID(as_uuid=True), nullable=True)
+    # Versioned regeneration: this row was COPIED verbatim from an earlier
+    # phase output (a phase the campaign deliberately did not regenerate)
+    # rather than generated. NULL on every generated row. RESTRICT so the
+    # snapshot a live revision was built from cannot be deleted underneath it.
+    copied_from_phase_output_id: Mapped[Optional[UUID]] = mapped_column(
+        ForeignKey(
+            "phase_outputs.id",
+            ondelete="RESTRICT",
+            name="fk_phase_outputs_copied_from_phase_output_id",
+        ),
+        nullable=True,
+    )
 
     job: Mapped["HomeworkJob"] = relationship(back_populates="phase_outputs")
 
-    __table_args__ = (UniqueConstraint("job_id", "phase_order", name="uq_phase_output_job_order"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "phase_order", name="uq_phase_output_job_order"),
+        Index("ix_phase_outputs_copied_from", "copied_from_phase_output_id"),
+    )
 
 
 from app.models.homework_job import HomeworkJob  # noqa: E402

@@ -56,6 +56,21 @@ Write the game as Markdown sections, in this order:
 - Terminology aligns with the lesson's Flashcards.
 - Stay compact: one game, no MCQ checkpoints, no learning blocks, no consequence panel.
 
+## Parser contract (non-negotiable)
+
+The platform importer extracts ONLY the pair lines; everything else (title,
+how-to-play, why prompt) is not shown inside the game. Its pair rules are fixed:
+
+- One pair per bulleted line, exactly `- **<left>** ↔ **<right>**`, using the `↔`
+  separator.
+- No dash or arrow characters inside card text: `-`, `--`, `–`, `—`, `→`, `<->` are
+  all read as pair separators, and the importer splits each pair line at the FIRST
+  one it finds. Uzbek ordinal forms like "3-qonun" silently corrupt the pair — write
+  them out ("uchinchi qonun").
+- Bulleted lines are reserved for pairs. Write Title, How to play, and the Why prompt
+  as plain prose (no list bullets) — a bulleted prose line containing a dash would be
+  mis-read as a pair.
+
 ## Output format
 
 Respond in **Markdown only** (no JSON, no code-fenced JSON). Use `#` for the phase
