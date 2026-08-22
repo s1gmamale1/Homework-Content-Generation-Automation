@@ -1,8 +1,8 @@
 # Guided Regeneration UX and Campaign Version Design
 
-**Date:** 2026-08-21  
-**Status:** User-approved visual design; implementation not started  
-**Base:** `test/regen-v3-local@ace86c0a`  
+**Date:** 2026-08-21
+**Status:** User-approved visual design; implementation not started
+**Base:** `test/regen-v3-local@ace86c0a`
 **Approved mockup direction:** Guided flow A + full-rebuild-first A1
 
 ## Purpose
