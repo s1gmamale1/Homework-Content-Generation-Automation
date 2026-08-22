@@ -396,7 +396,10 @@ def fakes(monkeypatch, tmp_path):
             client_factory=lambda: ns.notion,
         )
 
-    async def _workers(_session, contract):
+    async def _workers(_session, contract, *, stale_after_seconds):
+        from app.config import settings
+
+        assert stale_after_seconds == settings.worker_registry_stale_seconds
         required = tuple(sorted({
             contract.provider,
             contract.extract_provider,

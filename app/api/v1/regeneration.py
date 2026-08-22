@@ -1074,7 +1074,11 @@ async def estimate(
             request_shaped=True,
         )
 
-    worker_executability = await _check_active_workers(session, contract)
+    worker_executability = await _check_active_workers(
+        session,
+        contract,
+        stale_after_seconds=settings.worker_registry_stale_seconds,
+    )
 
     priced = await _estimate_regeneration(
         session,

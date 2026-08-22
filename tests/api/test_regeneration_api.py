@@ -630,6 +630,12 @@ def test_estimate_is_read_only_and_carries_preflight_and_incompleteness(monkeypa
 def test_estimate_returns_exact_version_and_worker_readiness_without_notion_io(
     monkeypatch,
 ):
+    # A checker that is called without the configured liveness window is not
+    # the production checker at all: its real signature makes that policy
+    # keyword mandatory.  Keep the route double visible so this test catches
+    # the exact integration break that otherwise surfaces as an operator-facing
+    # 500 before a campaign can be estimated.
+    worker_checker = regen_api._check_active_workers
     source = _source()
     monkeypatch.setattr(
         discovery, "list_source_candidates", AsyncMock(return_value=[_candidate(source)])
@@ -666,6 +672,9 @@ def test_estimate_returns_exact_version_and_worker_readiness_without_notion_io(
     }
     assert "destination_digest" not in body
     assert remote.await_count == 0
+    assert worker_checker.await_args.kwargs == {
+        "stale_after_seconds": settings.worker_registry_stale_seconds,
+    }
 
 
 def test_estimate_warns_when_refresh_pdf_is_missing_on_the_head(

@@ -915,7 +915,11 @@ class RegenerationCampaignService:
             if conflicts:
                 raise RequestedPublicationVersionConflict(conflicts)
 
-            worker = await self._worker_checker(session, contract)
+            worker = await self._worker_checker(
+                session,
+                contract,
+                stale_after_seconds=settings.worker_registry_stale_seconds,
+            )
             if not worker.ok:
                 raise WorkerPreflightBlocked(worker)
 
@@ -1112,7 +1116,11 @@ class RegenerationCampaignService:
             )
             if conflicts:
                 raise RequestedPublicationVersionConflict(conflicts)
-            worker = await self._worker_checker(session, prepared.contract)
+            worker = await self._worker_checker(
+                session,
+                prepared.contract,
+                stale_after_seconds=settings.worker_registry_stale_seconds,
+            )
             if not worker.ok:
                 raise WorkerPreflightBlocked(worker)
 
@@ -1377,7 +1385,11 @@ class RegenerationCampaignService:
                 raise IllegalCampaignAction(
                     f"campaign {campaign_id} has no targets to launch"
                 )
-            worker = await self._worker_checker(session, contract)
+            worker = await self._worker_checker(
+                session,
+                contract,
+                stale_after_seconds=settings.worker_registry_stale_seconds,
+            )
             if not worker.ok:
                 raise WorkerPreflightBlocked(worker)
             selection_json = dict(campaign.selection_spec or {})
@@ -1489,7 +1501,11 @@ class RegenerationCampaignService:
             failures = await self._preflight(session, locked_targets)
             if failures:
                 raise PreflightBlocked(failures)
-            worker = await self._worker_checker(session, contract)
+            worker = await self._worker_checker(
+                session,
+                contract,
+                stale_after_seconds=settings.worker_registry_stale_seconds,
+            )
             if not worker.ok:
                 raise WorkerPreflightBlocked(worker)
             wave = await self._prepare_wave(

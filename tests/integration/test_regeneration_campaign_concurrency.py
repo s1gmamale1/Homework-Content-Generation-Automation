@@ -186,7 +186,10 @@ def _reviewed_service():
             checked_target_count=len(resolutions),
         )
 
-    async def _workers(_session, _contract):
+    async def _workers(_session, _contract, *, stale_after_seconds):
+        from app.config import settings
+
+        assert stale_after_seconds == settings.worker_registry_stale_seconds
         return svc.WorkerExecutability(
             ok=True,
             workers_online=1,
