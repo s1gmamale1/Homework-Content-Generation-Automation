@@ -281,6 +281,45 @@ async def test_v1_sources_and_versions_are_isolated_per_language():
         await _purge(book.id)
 
 
+@pytest.mark.asyncio
+async def test_legacy_archive_identity_is_proven_per_language_on_real_rows():
+    """The TOC pointers are language-blind, while publication history is not.
+
+    Both languages were archived, but the stored page/id pair belongs to UZ.
+    UZ may auto-follow that exact page; RU must be classified as published but
+    unproven and therefore require an explicit destination review.
+    """
+    from app.db import SessionLocal
+    from app.repositories import regeneration_sources as repo
+
+    async with SessionLocal() as s:
+        book, toc = await _seed_book(s)
+        uz = await _add_job(
+            s, book=book, toc=toc, output_language="uz",
+            notion_archived_at=_now(),
+        )
+        await _add_job(
+            s, book=book, toc=toc, output_language="ru",
+            notion_archived_at=_now(),
+        )
+        toc.notion_homework_page_id = "legacy-homework-uz"
+        toc.notion_archived_job_id = uz.id
+        await s.commit()
+    try:
+        async with SessionLocal() as s:
+            lineages = await repo.candidate_lineages(
+                s, book_ids=[book.id], toc_entry_ids=None,
+                output_languages=None,
+            )
+        by_language = {lineage.output_language: lineage for lineage in lineages}
+        assert by_language["uz"].notion_homework_lineage_verified is True
+        assert by_language["uz"].lineage_previously_published is True
+        assert by_language["ru"].notion_homework_lineage_verified is False
+        assert by_language["ru"].lineage_previously_published is True
+    finally:
+        await _purge(book.id)
+
+
 # ─────────────────── published-source selection / versions ───────────
 
 
@@ -434,6 +473,7 @@ async def test_discovery_prefers_the_published_revision_over_the_original():
             assert sources[0].source_publication_version == 2
             assert sources[0].next_expected_version == 3
             assert sources[0].source_is_revision is True
+            assert sources[0].lineage_previously_published is True
             assert sources[0].grade == "7"
 
             resolved = await discovery.resolve_default_source(

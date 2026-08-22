@@ -295,9 +295,9 @@ async def test_an_operator_can_select_a_candidate_for_an_unproven_published_line
     resolver, notion
 ):
     container = _container(notion)
-    lesson = notion.seed(container, _TITLE, "candidate-lesson")
+    lesson = notion.seed(container, "Legacy renamed lesson", "candidate-lesson")
     item = source(
-        pointer=None,
+        pointer=lesson,
         homework_pointer="pointer-owned-by-another-language",
         homework_lineage_verified=False,
         lineage_previously_published=True,
@@ -318,6 +318,32 @@ async def test_an_operator_can_select_a_candidate_for_an_unproven_published_line
     assert _one(approved).status == "reuse"
     assert _one(approved).lesson_page_id == lesson
     assert approved.ok is True
+
+
+async def test_an_override_cannot_supersede_a_verified_v1_lineage(
+    resolver, notion
+):
+    container = _container(notion)
+    exact_lesson = notion.seed(container, "Old exact title", "exact-lesson")
+    homework = notion.seed(exact_lesson, "Homework", "exact-homework")
+    override_lesson = notion.seed(container, _TITLE, "override-lesson")
+    item = source(
+        homework_pointer=homework,
+        homework_lineage_verified=True,
+        lineage_previously_published=True,
+    )
+
+    with pytest.raises(ValueError, match="lineage-proven"):
+        await resolver.resolve(
+            sources=[item],
+            overrides=[dest.DestinationOverride(
+                toc_entry_id=item.toc_entry_id,
+                output_language=item.output_language,
+                notion_lesson_page_id=override_lesson,
+            )],
+        )
+
+    assert resolver.factory_calls == 0
 
 
 async def test_a_deleted_verified_v1_pointer_blocks_instead_of_title_matching(
@@ -374,6 +400,41 @@ async def test_a_verified_lineage_with_an_existing_version_blocks_without_mappin
     blocked = _one(result)
     assert blocked.status == "blocked"
     assert "Homework V3 already exists" in (blocked.reason or "")
+    assert blocked.container_page_id == container
+    assert blocked.lesson_page_id == lesson
+    assert result.ok is False
+
+
+async def test_a_verified_lesson_deleted_during_version_scan_blocks_permanently(
+    resolver, notion, monkeypatch
+):
+    container = notion.seed("legacy-subject", _CONTAINER, "legacy-container")
+    lesson = notion.seed(container, "Old title", "legacy-lesson")
+    homework = notion.seed(lesson, "Homework", "legacy-homework")
+    real_children = notion.get_child_pages
+
+    def lesson_disappeared(page_id: str):
+        if page_id == lesson:
+            raise APIResponseError(
+                code=APIErrorCode.ObjectNotFound,
+                status=404,
+                message="Could not find page",
+                headers=httpx.Headers(),
+                raw_body_text="",
+            )
+        return real_children(page_id)
+
+    monkeypatch.setattr(notion, "get_child_pages", lesson_disappeared)
+
+    result = await resolver.resolve(sources=[source(
+        homework_pointer=homework,
+        homework_lineage_verified=True,
+        lineage_previously_published=True,
+    )])
+
+    blocked = _one(result)
+    assert blocked.status == "blocked"
+    assert "no longer exists" in (blocked.reason or "")
     assert blocked.container_page_id == container
     assert blocked.lesson_page_id == lesson
     assert result.ok is False

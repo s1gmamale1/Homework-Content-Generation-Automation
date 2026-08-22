@@ -457,8 +457,13 @@ async def test_languages_are_independent_lineages(monkeypatch):
     }
     assert by_lang["uz"].source_job_id == uz.id
     assert by_lang["uz"].next_expected_version == 2
+    assert by_lang["uz"].lineage_previously_published is False
     assert by_lang["ru"].source_job_id == ru_revision.id
     assert by_lang["ru"].next_expected_version == 4
+    assert by_lang["ru"].lineage_previously_published is True, (
+        "a lineage published only as a regeneration revision must never fall "
+        "back into the never-published page-creation path"
+    )
 
 
 @pytest.mark.asyncio

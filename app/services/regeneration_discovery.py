@@ -374,6 +374,7 @@ async def list_source_candidates(
                     ),
                     lineage_previously_published=(
                         lineage.lineage_previously_published
+                        or job.revision_of_job_id is not None
                     ),
                 ),
                 reasons=(),

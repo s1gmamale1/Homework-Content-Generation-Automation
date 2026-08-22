@@ -212,10 +212,26 @@ def _scan_destinations(
                 ))
                 continue
 
+            try:
+                lesson_children = children(lesson_id)
+            except APIResponseError as exc:
+                if exc.code != APIErrorCode.ObjectNotFound:
+                    raise
+                resolutions.append(_blocked(
+                    source,
+                    "the lineage-proven Lesson Topic no longer exists or is "
+                    "inaccessible; refusing to create a replacement",
+                    container_policy="reuse",
+                    container_page_id=container_id,
+                    lesson_policy="reuse",
+                    lesson_page_id=lesson_id,
+                ))
+                continue
+
             version_exists = any(
                 _normalize(str(page.get("title", "")))
                 == _normalize(expected_version_title)
-                for page in children(lesson_id)
+                for page in lesson_children
             )
             if version_exists:
                 resolutions.append(_blocked(
@@ -303,13 +319,28 @@ def _scan_destinations(
 
         container_id = str(containers[0]["id"])
         lesson_children = children(container_id)
-        candidates = tuple(
+        title_candidates = tuple(
             DestinationCandidate(page_id=str(page["id"]),
                                  title=str(page.get("title", "")))
             for page in lesson_children
             if _normalize(str(page.get("title", "")))
             == _normalize(source.lesson_title)
         )
+        hint = (source.notion_lesson_page_id or "").strip()
+        child_by_id = {
+            str(page.get("id")): page for page in lesson_children
+        }
+        candidates = title_candidates
+        if (
+            source.lineage_previously_published
+            and hint in child_by_id
+            and hint not in {candidate.page_id for candidate in candidates}
+        ):
+            page = child_by_id[hint]
+            candidates = (*candidates, DestinationCandidate(
+                page_id=hint,
+                title=str(page.get("title", "")),
+            ))
 
         chosen_id: Optional[str] = None
         if override is not None:
@@ -325,11 +356,7 @@ def _scan_destinations(
                 continue
             chosen_id = override
         else:
-            hint = (source.notion_lesson_page_id or "").strip()
-            child_ids = {str(page.get("id")) for page in lesson_children}
-            if hint and hint in child_ids:
-                chosen_id = hint
-            elif source.lineage_previously_published:
+            if source.lineage_previously_published:
                 resolutions.append(_blocked(
                     source,
                     "this lineage was previously published, but no stored page "
@@ -341,6 +368,8 @@ def _scan_destinations(
                     status="ambiguous" if candidates else "blocked",
                 ))
                 continue
+            if hint and hint in child_by_id:
+                chosen_id = hint
             if chosen_id is None and len(candidates) == 1:
                 chosen_id = candidates[0].page_id
             elif chosen_id is None and len(candidates) > 1:
@@ -426,6 +455,10 @@ async def resolve_destinations(
         raise ValueError(f"duplicate destination lineage {duplicate[0]}:{duplicate[1]}")
 
     source_key_set = set(source_keys)
+    source_by_key = {
+        (source.toc_entry_id, source.output_language): source
+        for source in sources
+    }
     override_map: dict[LineageKey, str] = {}
     for override in overrides:
         key = (override.toc_entry_id, override.output_language)
@@ -435,6 +468,11 @@ async def resolve_destinations(
         if key not in source_key_set:
             raise ValueError(
                 f"destination override {key[0]}:{key[1]} is not under review"
+            )
+        if source_by_key[key].notion_homework_lineage_verified:
+            raise ValueError(
+                f"destination override {key[0]}:{key[1]} is not allowed for "
+                "a lineage-proven V1 destination"
             )
         if key in override_map:
             raise ValueError(f"duplicate destination override for {key[0]}:{key[1]}")
