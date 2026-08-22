@@ -68,9 +68,11 @@ const INITIAL_PUBLICATION_VERSION = 3;
 
 export type RegenerationWizardStep = "lessons" | "content" | "review" | "canary";
 export type RegenerationMode = "full" | "selective";
+export type RegenerationModelSelectionMode = "settings" | "override";
 
 const WIZARD_STEPS: RegenerationWizardStep[] = ["lessons", "content", "review", "canary"];
 const REGENERATION_MODES: RegenerationMode[] = ["full", "selective"];
+const MODEL_SELECTION_MODES: RegenerationModelSelectionMode[] = ["settings", "override"];
 const PUBLICATION_VERSION_MODES: ("automatic" | "manual")[] = ["automatic", "manual"];
 
 /** One lesson published somewhere other than where the resolver would put it. */
@@ -87,6 +89,13 @@ export interface GuidedRegenerationDraft extends RegenerationScopeState {
   refreshExtraction: boolean;
   provider: string;
   model: string | null;
+  modelSelectionMode: RegenerationModelSelectionMode;
+  judgeProvider: string | null;
+  judgeModel: string | null;
+  solverProvider: string | null;
+  solverModel: string | null;
+  extractProvider: string | null;
+  extractModel: string | null;
   /** Exact campaign-wide destination version, frozen by create. */
   publicationVersion: number;
   publicationVersionMode: "automatic" | "manual";
@@ -151,23 +160,79 @@ export function defaultGuidedRegenerationDraft(): GuidedRegenerationDraft {
     // Initialized once from the operator-controlled launch default at the
     // route boundary; a restored or edited choice is never overwritten.
     model: null,
+    modelSelectionMode: "settings",
+    judgeProvider: null,
+    judgeModel: null,
+    solverProvider: null,
+    solverModel: null,
+    extractProvider: null,
+    extractModel: null,
     publicationVersion: INITIAL_PUBLICATION_VERSION,
     publicationVersionMode: "automatic",
     destinationOverrides: [],
   };
 }
 
-/** Apply the operator-controlled launch default only while the draft has no
- * explicit model. A restored or newly edited choice is authoritative. */
+/** Seed missing override pairs from the operator-controlled launch defaults.
+ * A restored or newly edited pair is authoritative. Settings mode reads the
+ * live defaults directly; these values are its ready-to-edit override copy. */
 export function initializeDraftModel(
   draft: GuidedRegenerationDraft,
-  defaults: Pick<LaunchDefaults, "content_provider" | "content_model">,
+  defaults: Pick<
+    LaunchDefaults,
+    | "content_provider"
+    | "content_model"
+    | "judge_provider"
+    | "judge_model"
+    | "solver_provider"
+    | "solver_model"
+    | "extract_provider"
+    | "extract_model"
+  >,
 ): GuidedRegenerationDraft {
-  if (draft.model !== null || !defaults.content_provider || !defaults.content_model) return draft;
+  const pair = (
+    provider: string | null,
+    model: string | null,
+    defaultProvider: string | null,
+    defaultModel: string | null,
+  ): [string | null, string | null] =>
+    model !== null || !defaultProvider || !defaultModel
+      ? [provider, model]
+      : [defaultProvider, defaultModel];
+  const [provider, model] = pair(
+    draft.provider,
+    draft.model,
+    defaults.content_provider,
+    defaults.content_model,
+  );
+  const [judgeProvider, judgeModel] = pair(
+    draft.judgeProvider,
+    draft.judgeModel,
+    defaults.judge_provider,
+    defaults.judge_model,
+  );
+  const [solverProvider, solverModel] = pair(
+    draft.solverProvider,
+    draft.solverModel,
+    defaults.solver_provider,
+    defaults.solver_model,
+  );
+  const [extractProvider, extractModel] = pair(
+    draft.extractProvider,
+    draft.extractModel,
+    defaults.extract_provider,
+    defaults.extract_model,
+  );
   return {
     ...draft,
-    provider: defaults.content_provider,
-    model: defaults.content_model,
+    provider: provider ?? draft.provider,
+    model,
+    judgeProvider,
+    judgeModel,
+    solverProvider,
+    solverModel,
+    extractProvider,
+    extractModel,
   };
 }
 
@@ -296,6 +361,17 @@ function decodeDraft(raw: Record<string, unknown>): GuidedRegenerationDraft {
     refreshExtraction,
     provider: text(raw.provider, fallback.provider),
     model: nullableText(raw.model),
+    modelSelectionMode: known(
+      MODEL_SELECTION_MODES,
+      raw.modelSelectionMode,
+      nullableText(raw.model) ? "override" : fallback.modelSelectionMode,
+    ),
+    judgeProvider: nullableText(raw.judgeProvider),
+    judgeModel: nullableText(raw.judgeModel),
+    solverProvider: nullableText(raw.solverProvider),
+    solverModel: nullableText(raw.solverModel),
+    extractProvider: nullableText(raw.extractProvider),
+    extractModel: nullableText(raw.extractModel),
     publicationVersion: decodePublicationVersion(raw.publicationVersion),
     publicationVersionMode: known(
       PUBLICATION_VERSION_MODES,
@@ -405,6 +481,10 @@ export function pruneRegenerationDraft(
   const excludedPhases = draft.excludedPhases.filter((phase) => inputs.validPhaseNames.has(phase));
   const modelIsOffered =
     draft.model !== null && inputs.validModelRefs.has(`${draft.provider}/${draft.model}`);
+  const roleModel = (provider: string | null, model: string | null) =>
+    provider !== null && model !== null && inputs.validModelRefs.has(`${provider}/${model}`)
+      ? model
+      : null;
 
   return {
     draft: {
@@ -418,6 +498,9 @@ export function pruneRegenerationDraft(
       acknowledged: false,
       canarySize: clampCanarySize(draft.canarySize, selectedTocEntryIds.length),
       model: modelIsOffered ? draft.model : null,
+      judgeModel: roleModel(draft.judgeProvider, draft.judgeModel),
+      solverModel: roleModel(draft.solverProvider, draft.solverModel),
+      extractModel: roleModel(draft.extractProvider, draft.extractModel),
       // An override names one lesson's publication destination inside ONE
       // language's Notion container, so it belongs to the draft only while
       // BOTH halves of that pair still hold: the lesson is still ticked after
