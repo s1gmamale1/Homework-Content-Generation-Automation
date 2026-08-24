@@ -31,8 +31,9 @@ blocks, MCQ checkpoints, state meters, or a final consequence panel.
   Wrong cells must be plausible and tempting — a fast-but-unsupported action, an
   overly broad action, a wrong-order action, a plausible-but-incomplete action, a
   surface-clue-only action, or a common-mistake distractor — never obviously silly.
-  No cell may be answerable by sentence length or a hedge word ("kamida"), and no
-  answer key may be printed with the grid the student sees.
+  No cell may be answerable by sentence length or a hedge word ("kamida"), no
+  answer key may be printed with the grid the student sees, and the Why prompt
+  never names which cells are correct.
 
 ## What to produce
 
@@ -45,13 +46,15 @@ Write the game as Markdown sections, in this order:
   Number or letter the cells so the answer can be referenced. At least one cell is a
   correct application (typically 1–3 correct cells); the rest are tempting wrong
   applications. For each wrong cell, give a brief note of why it fails (it may be
-  hidden in an answer-key section below the board, not on the cell face). Since this
+  hidden in an answer-key section below the board, not on the cell face — and that
+  section must open with the marker "(O'quvchiga ko'rinmaydi)" in the output
+  language so it is never shown to the student). Since this
   phase ships as study text, write the 9 cells and their why-notes as prose that
   reads as coherent study notes — each cell a claim about the lesson concept, each
   note the didactic reason it holds or fails.
 - **Why prompt** — **mandatory** (this is a math/science-style decision game). ONE
   open question asking the student to explain which concept they applied to mark the
-  correct cell(s), why those cells satisfy the concept while the others do not, and
+  cells they chose, why those cells satisfy the concept while the others do not, and
   what mistake a student relying on intuition rather than the concept would make. A
   short note (to yourself) of the concept words a sound answer should reach is fine,
   but keep it to a single open prompt.
