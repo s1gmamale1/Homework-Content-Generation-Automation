@@ -138,12 +138,18 @@ The student writes 2–4 sentences answering all three of:
 three present), **Partial** (one or two present), or **Retry** (none present) — partial
 credit is allowed.
 
+Where the family rules give subject-specific phrasings of these three questions,
+use them — they re-flavor, never replace, the three components, and the scoring
+above is unchanged.
+
 **Required closing line (non-negotiable):** the DPE section MUST end with one
 explicit evaluation note, written in the output language, stating that this answer
 is NOT auto-passed — it is evaluated by reading the student's reasoning for the
 concept, the method, and the mistake. Omitting this note violates the contract.
-Placing the DPE AFTER the consequence is forbidden (the student would rationalise
-backwards).
+The note must assert this evaluation — never defer it to a human, never deny it:
+"o'qituvchi tomonidan baholanadi", "avtomatik tekshirilmaydi" and equivalents in
+any output language are banned. Placing the DPE AFTER the consequence is
+forbidden (the student would rationalise backwards).
 
 ## Final simulation rules
 
@@ -267,3 +273,5 @@ turns on a real-world appearance the student has to look at.
 18. ✓ No checkpoint stem names the rule, group, or trend direction its own options exist to discriminate?
 19. ✓ Correct option is not the longest and not the only one giving a reason; no absolutes confined to distractors?
 20. ✓ Setup visual depicts the GIVEN data (labelled diagram preferred over a mood photo) without depicting the inference?
+21. ✓ Closing note asserts the evaluation — no deferral to a human, no denial?
+22. ✓ Family case-shape and distractor-dimension requirements for this subject met?

@@ -15,6 +15,44 @@ lesson content:
   vocabulary trick or an idiom they wouldn't know).
 - **Labelled diagram** — the blocks are the labels on the diagram.
 
+What the planted error IS for this {{SUBJECT}} — condition the slip on the
+subject, and keep it demonstrably wrong for its slot in every case (a block a
+well-taught student could defend as correct under another reading is a solver
+failure, not extra difficulty):
+
+- When {{SUBJECT}} is a mathematics lesson (algebra and geometry included), the
+  error is the wrong path EXECUTED TO A VALUE the student must catch — never a
+  described or restated mistake. `3/5 × 3 = 9/5` sitting where `3/5 ÷ 3 = 1/5`
+  belongs is an error item; a sentence describing a mistake is not.
+- When {{SUBJECT}} is a history lesson, the error is a TRUE fact offered as
+  evidence for a claim it does not bear on — a relevance error, never a false
+  fact. Prefer the sentence / sequence-of-steps shape, with the blocks forming
+  a short claim-and-evidence chain in which exactly one block is a
+  true-but-irrelevant "evidence"; its correct version states what the block
+  should have offered (relevant evidence).
+- When {{SUBJECT}} is a chemistry lesson, the error is a classification made
+  from appearance instead of the deciding criterion.
+- When {{SUBJECT}} is a biology lesson, the error is a fluent explanation at
+  the wrong level ("the heart puts oxygen into the blood" — fluent, confident,
+  wrong) or purpose language presented as fact ("…uchun hosil qildi") — never a
+  misspelled organelle name.
+- When {{SUBJECT}} is a physics lesson, the blocks describe a situation and the
+  qualitative claim (which quantity changes, which does not) is where the error
+  lives; if a worked equation is used, the error sits in the physical setup
+  line, not the arithmetic.
+- When {{SUBJECT}} is an economics lesson, the error is a modal-verb upgrade
+  ("kamayishi mumkin" → "kamayadi"), a missing standpoint, or an
+  everyday/technical conflation (narx ≠ qiymat, foyda ≠ daromad); the
+  correction restores the hedge or the term, and the accepted-wordings note in
+  **The correct version** lists hedged variants so a synonymous hedge is never
+  rejected.
+- When {{SUBJECT}} is a language lesson (English, Russian, Ona tili,
+  literature), the error is a grammar pattern the student has been taught —
+  never a vocabulary trick — preferring the common mistake this lesson itself
+  treats; state the acceptance policy once in **The correct version**.
+- For other subjects, keep the general rule above: any real, source-anchored
+  mistake a {{SUBJECT}} student actually makes.
+
 ## What to produce
 
 Write the task as Markdown sections, in this order:
@@ -86,6 +124,14 @@ Write the task as Markdown sections, in this order:
   general parallelogram unless the condition is stated, remember that a square
   inherits both rectangle and rhombus properties, and do not reject `(n-2)*180°`
   for a simple concave polygon.
+- **A corrupted chemical formula is never the planted error.** A wrong
+  subscript names a different substance, and displaying it teaches it; formula
+  slips belong to typed-repair contexts, never to a find-the-broken-block list.
+  Every formula-bearing non-broken block must be verbatim-correct.
+- **Never name the broken block outside the answer sections.** No prose in
+  Concepts, the Hint, the Why prompt, or the pre-reveal feedback may name or
+  point to the broken block — it is identified only in **The correct version**
+  and **Reveal**.
 
 ## Visuals
 
@@ -102,6 +148,12 @@ OR photo), emit a described placeholder instead — never the visual itself:
 The description must be self-sufficient: name the medium and every label/value/axis
 so the visual can be produced from the text alone. Never output raw `<svg>`, never
 fabricate an image, never invent an image URL.
+
+Write the section headings in the output language, keeping the heading
+vocabulary the platform recognizes: **The correct version** — Uzbek
+"To'g'ri versiya", Russian «Правильная версия»; **Reveal** — Uzbek "Ochish"
+or "Oshkor", Russian «Раскрытие». Inside those answer sections name the broken
+block by its block id — "Blok N" / "N-blok" (e.g. "Blok 3", "3-blok").
 
 ## Language
 

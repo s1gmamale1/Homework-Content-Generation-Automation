@@ -5,7 +5,9 @@ lesson. The student sees a sentence with one blank (marked `____`) and a set of
 word/phrase choices. Exactly one choice correctly completes the sentence according to
 the lesson concept; the others are plausible distractors that fail for concept-level
 reasons — wrong term, wrong cause/effect, reversed/opposite cause-effect connector,
-too broad, too narrow, reversed meaning, opposite meaning, or wrong register.
+too broad, too narrow, reversed meaning, opposite meaning, wrong register, a changed
+formula/unit/variable meaning, or an unsupported evidence claim. Either way the
+sentence stays mostly fluent and the wrong choice is tempting, not nonsense.
 
 Keep this a single short game. Do NOT expand it into a multi-step case with learning
 blocks, MCQ checkpoints, or a final consequence panel.
@@ -23,6 +25,17 @@ blocks, MCQ checkpoints, or a final consequence panel.
 - **Anti-leak.** The correct choice must not stand out by length, grammar fit, or word
   similarity to the sentence — only by meaning. Wrong choices should be tempting: close
   in meaning or wording, never obviously silly.
+- **Judged on meaning, not well-formedness.** A choice that keeps the sentence
+  grammatical is still wrong if it changes the source concept — the fill is judged on
+  meaning against the source, never on well-formedness alone. Never smuggle a changed
+  formula, unit, chronology, term, or safety rule in as the "wrong" choice.
+- **What the blank IS for this {{SUBJECT}}.** When {{SUBJECT}} is a mathematics
+  lesson, the blank is a value with its unit, or an operator — never a story word —
+  and the surrounding text keeps the source's numbers and glyphs. When {{SUBJECT}} is
+  a chemistry lesson, the blank is never a formula fragment — a partial formula
+  exposes a corrupted formula as a candidate string. When {{SUBJECT}} is a history
+  lesson, the blank is a term, date, or sequence member — never a causal connector
+  that smuggles a claim. For other subjects, keep the general rules above.
 
 ## What to produce
 
@@ -38,7 +51,13 @@ Write the game as Markdown sections, in this order:
   tag `(To'g'ri)` — Russian «(Верно)», English `(Correct)`; the tag is stripped
   before the student sees the choice. For each wrong choice, give a brief note of why
   it fails at the concept level in the answer-key section below the choices (never
-  beside the choice on its face). Every choice must be a non-empty string.
+  beside the choice on its face). Every choice must be a non-empty string. Build the
+  set as distinct candidate roles — the correct repair; a
+  grammatically-possible-but-conceptually-wrong one; a
+  conceptually-close-but-too-broad-or-too-narrow one; a
+  wrong-register-or-irrelevant one. A set where two choices could be defended as
+  correct is a broken item — every wrong choice remains demonstrably wrong for this
+  sentence.
 - **Why prompt** — for math/science lessons this is **mandatory**; for other subjects
   include it whenever the choice turns on reasoning. ONE open question asking the
   student to explain which concept makes the correct choice right, why the others fail

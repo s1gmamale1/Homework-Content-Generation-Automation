@@ -28,6 +28,22 @@ blocks, MCQ checkpoints, or a final consequence panel.
   it has all rectangle/rhombus/square properties, remember that a square inherits
   both rectangle and rhombus properties, and do not reject `(n-2)*180°` for a
   simple concave polygon.
+- **History pairs are pairings, never claims.** When {{SUBJECT}} is a history
+  lesson, a pair is a PAIRING, never a causal claim — term ↔ meaning, event ↔
+  date, figure ↔ role; never event ↔ "because…". For history the cause ↔ effect
+  and historical event ↔ consequence pair types are off the menu: a matching
+  game rehearses its pairs as settled fact, and a contested causal claim must be
+  reasoned (in the scenario and boss phases), never memorized as a card flip.
+  Other subjects keep the full menu.
+- **Biology imagery anchors names.** When {{SUBJECT}} is a biology lesson, a
+  visual placeholder on a card may cue a NAME (structure ↔ name), never explain
+  a process — imagery anchors nomenclature, never mechanism, and mechanism
+  content stays out of card text.
+- **Chemistry pairs match on the criterion.** When {{SUBJECT}} is a chemistry
+  lesson, pairs match on the criterion, never the noun — a substance pairs with
+  its deciding observation ("lakmusni qizartiradi"), never with its bare
+  category label.
+- For any other subject, keep the general pairing rules above.
 
 ## What to produce
 
@@ -41,7 +57,9 @@ Write the game as Markdown sections, in this order:
   source-supported. Across the set the pairs should be distinguishable only by
   understanding the relationship (term ↔ meaning, part ↔ function, step ↔ result,
   cause ↔ effect, symbol ↔ rule, word ↔ correct usage, historical event ↔
-  consequence, formula part ↔ quantity).
+  consequence, formula part ↔ quantity). When {{SUBJECT}} is a history lesson,
+  the cause ↔ effect and historical event ↔ consequence types are off this
+  menu; other subjects keep the full menu.
 - **Why prompt** — for math/science lessons this is **mandatory**; for other
   subjects include it whenever a pair turns on reasoning. ONE open question asking
   the student to explain which concept connects a chosen pair, why those two sides

@@ -70,6 +70,8 @@ Uzbek "Har bir mashq miyangizni kuchaytiradi. Ertaga davom etamiz!"
 
 - ~2 minutes, 5 sections. Not a graded score — emit the debrief *structure* as content.
 - Summary and strong/weak points must reference actual session content.
+- The debrief describes the lesson's own traps, never this student — per-student
+  characterisation belongs to the runtime tutor, never to authored content.
 
 ## Language
 

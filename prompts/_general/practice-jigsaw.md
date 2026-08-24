@@ -38,6 +38,22 @@ blocks, MCQ checkpoints, or a final consequence panel.
   ordering — only from the relationship. Tempting wrong pairings come in three
   flavors: surface-related-but-unsupported, one-correct-node-plus-one-wrong-node,
   and reversed-or-irrelevant pair — so a guesser is drawn to them.
+- **History assembles pairings, never causal claims.** When {{SUBJECT}} is a
+  history lesson, a directed link is a pairing the lesson states outright, never
+  a contested causal claim — an assembly game rehearses its links as settled
+  fact, and a causal claim must be reasoned in the scenario and boss phases,
+  never fixed as a puzzle edge (the history constraint under Relationship types
+  below follows from this).
+- **Biology pieces carry names; relations carry mechanism.** When {{SUBJECT}} is
+  a biology lesson, pieces may carry names, structures, and levels; a visual
+  placeholder cues nomenclature, never a process explanation — mechanism belongs
+  in the directed relation (step→result), never inside a piece's text as a
+  mini-lecture.
+- **Chemistry pieces pair on the criterion.** When {{SUBJECT}} is a chemistry
+  lesson, a substance piece pairs to its deciding observation or criterion,
+  never its category noun; and a formula-bearing piece must be verbatim-correct
+  — no corrupted-formula pieces as tempting wrong nodes.
+- For any other subject, keep the general rules above.
 
 ## What to produce
 
@@ -49,7 +65,11 @@ Write the game as Markdown sections, in this order:
 - **Relationship types** — name the **1–3** relationship types this round uses (chosen
   from concept↔definition, formula↔variable, cause↔effect, evidence↔claim,
   step↔result, term↔example), keeping only the types the lesson's content actually
-  exhibits.
+  exhibits. When {{SUBJECT}} is a history lesson, exclude cause↔effect from the
+  round's chosen types, use evidence↔claim only when the textbook states the
+  support relation in so many words, and default history rounds to
+  concept↔definition / term↔example / step↔result; other subjects choose from
+  the full list.
 - **Pieces** — **6–12** pieces, each a short labelled item (theorem, condition, given
   data, conclusion, step, result, evidence, or claim) drawn from the lesson. Write each
   piece as its own bullet in EXACTLY this form so it can be matched to its partner:

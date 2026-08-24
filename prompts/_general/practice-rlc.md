@@ -25,6 +25,37 @@ appropriate to {{SUBJECT}}.
   the decision succeeds. Remove that concept and the scenario must STOP working
   — the student should be unable to decide correctly. If everyday intuition (or
   swapping a local place name for a generic one) answers it, regenerate.
+- **Condition the scenario on {{SUBJECT}}.** The header sections, the five
+  steps, and the feedback keep their exact shape for every subject; what fills
+  them follows the subject:
+  - When {{SUBJECT}} is an economics lesson, the decision is made under a real
+    constraint, in so'm, with instruments the student could actually meet — a
+    household budget, a bazaar seller, an informal family loan — never credit
+    scores or mortgages. The scenario measures simulated judgement, never
+    conduct: every feedback line judges the call inside the fiction, not the
+    student's character. Keep the Role line on an existing `expert_role` value
+    (e.g. `business_consultant`) — never invent one.
+  - When {{SUBJECT}} is a history lesson, the challenge settles the question
+    through a source: Step 2's tagged-correct info_request is the account or
+    source that resolves the call, and the distracting datum (where the grade
+    band requires one) is specifically a TRUE-but-irrelevant fact the student
+    must discard.
+  - When {{SUBJECT}} is a biology lesson, the scenario is a system under a
+    named change. The Prediction prompt itself asks the student to name the
+    organizational level (cell / organ / system / organism) before predicting —
+    folded into the Prediction wording, never a new step — and Step 1's options
+    differ by level, so the wrong ones are wrong-level reads: each still
+    demonstrably wrong for this call, never a defensible alternative framing.
+  - When {{SUBJECT}} is a physics lesson, the frame is live: Context names who
+    observes, Step 1's decision is the qualitative call (which quantity
+    changes, which does not) committed before any number appears, and numeric
+    readings arrive only as Step 2 info_request material.
+  - For other subjects, keep the general rules above.
+- **Pressure is narrative.** Stakes belong to the in-fiction role ("the stall
+  loses the day's profit"), never to the student's clock or score; urgency
+  lives in the story, never in a mechanic.
+- **Never emit a PISA level or band** — no such level or band label appears
+  anywhere in the output.
 
 ## What to produce
 

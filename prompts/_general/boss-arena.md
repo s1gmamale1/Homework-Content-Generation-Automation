@@ -90,6 +90,31 @@ theorem apply to this situation? **How** do you set up the equation to find the 
 **What** does the answer mean for whether the ladder is safe — and what would change if
 the base were moved farther out?
 
+**Family depth cues** — the three limbs keep their shape for every subject; aim
+them by {{SUBJECT}}:
+
+- When {{SUBJECT}} is a mathematics lesson (algebra and geometry included), the
+  **Why** limb makes the student name the governing rule unprompted and justify
+  it — the question never restates the rule. A Boss question answerable by
+  definition-level recall has failed.
+- When {{SUBJECT}} is a history lesson, the **How** limb is the source, not
+  more narrative: How asks which account or evidence settles the question and
+  how it is used, and the **What** limb's counterfactual asks what would flip
+  the cause.
+- When {{SUBJECT}} is an economics lesson, the question demands the standpoint
+  and the defeater — produced, never selected: the student states their own
+  standpoint and names the strongest consideration against it. The expected
+  standpoint/defeater content lives in the teacher-only subsection, never in
+  student-visible text.
+- When {{SUBJECT}} is a physics lesson and the scenario changes a frame or
+  condition, the **Why** limb has the student name which quantity changed and
+  which did not.
+- When {{SUBJECT}} is a biology lesson, the **How** limb states the
+  organizational level before the mechanism; an answer that explains via
+  purpose ("uchun") belongs to the **Wrong** feedback line, and hints probe the
+  level, never supply it.
+- For other subjects, keep the general Why → How → What rule above.
+
 ## What NOT to do
 
 - No multiple-choice / pick-an-option questions — Boss Arena is open reasoning.

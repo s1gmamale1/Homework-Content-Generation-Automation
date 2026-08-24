@@ -46,7 +46,7 @@ Rules:
   `(n-2)*180°` for a simple concave polygon (only self-intersecting star figures
   need separate treatment).
 
-For an English (L2) lesson: the card front is the English target item (word / phrase / grammar structure); the back, hint, and explanation are the Uzbek bridge (gloss / meaning / usage note). For every other subject, both sides follow the Language rules below.
+For an English (L2) lesson: cards may run either direction. For at least half the deck the front cues the Uzbek meaning and the back is the English form (word / phrase / grammar structure) the student must produce — productive; the rest may cue English → Uzbek, the English target item on the front and its gloss on the back. Hint and explanation stay the Uzbek bridge (gloss / meaning / usage note) either way. For every other subject, both sides follow the Language rules below.
 
 ## What to put on cards for {{SUBJECT}}
 
@@ -113,6 +113,8 @@ evaluate at given values). Then:
 ## Rules
 
 - One concept per card.
+- When a concept earns more than one card, the definition card opens it — a later
+  card should apply or discriminate it, not restate it.
 - Front = cue. Back = definition/function/value. Put any explanation/example/misconception in their own fields, not crammed into `back`.
 - NO practice problems, NO multi-step scenarios, NO hooks, NO stories — scenarios belong in the Case-Based Preview, not on a flashcard.
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions.
