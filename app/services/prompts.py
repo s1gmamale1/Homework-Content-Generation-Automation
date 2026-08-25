@@ -242,7 +242,8 @@ _NOTATION_EXACT = (
     "this format explicitly defines are the only exception. Inside option "
     "text: no \"A)\"-style letter prefixes (the option line's own letter is "
     "the only letter), and never \"to'g'ri\"/\"noto'g'ri\" immediately after "
-    "a dash — rephrase so terms like \"to'g'ri chiziq\" never follow a dash. "
+    "a dash — rephrase so terms like \"to'g'ri chiziq\" never follow a dash, "
+    "and write \"bevosita\" instead of the hyphenated \"to'g'ridan-to'g'ri\". "
     "Any correct-answer text must repeat its option text "
     "character-for-character."
 )
@@ -268,7 +269,8 @@ _NOTATION_PROSE = (
     "start with \"izoh:\", \"asos:\" or a bare \"javob:\" — the answer labels "
     "this format explicitly defines are the only exception. Inside option "
     "text: no \"A)\"-style letter prefixes, never \"to'g'ri\"/\"noto'g'ri\" "
-    "immediately after a dash, and any correct-answer text must repeat its "
+    "immediately after a dash (write \"bevosita\" instead of the hyphenated "
+    "\"to'g'ridan-to'g'ri\"), and any correct-answer text must repeat its "
     "option text character-for-character."
 )
 
