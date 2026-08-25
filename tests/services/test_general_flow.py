@@ -16,6 +16,11 @@ def test_flow_generates_all_seven_gamified_games():
                     "practice-jigsaw", "practice-sentence", "boss-arena"}
     for subject in flows.SUPPORTED_SUBJECTS:
         seq = flows.flow_for(subject)
+        # english prepends the Topic Vocabulary head phase (2026-08-25) — the
+        # one subject-specific deviation from the shared flow.
+        if subject == "english":
+            assert seq[0] == "vocabulary"
+            seq = seq[1:]
         assert len(seq) == 11
         assert seq[:5] == base
         assert seq[5:9] == games        # all four mini-games, deterministic order

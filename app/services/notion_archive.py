@@ -160,6 +160,7 @@ def resolve_lesson_title(section, siblings) -> str:
 
 
 PHASE_TITLES: dict[str, str] = {
+    "vocabulary": "Vocabulary",
     "case-based-preview": "Case-Based Preview",
     "flashcards": "Flashcards",
     "memory-check": "Memory Check",
@@ -182,6 +183,7 @@ PHASE_TITLES: dict[str, str] = {
 # any absent phase is simply skipped.
 _LEAF, _CONTAINER = "leaf", "container"
 _HOMEWORK_LAYOUT: list[dict] = [
+    {"kind": _LEAF, "title": "Vocabulary", "phases": ["vocabulary"]},
     {"kind": _LEAF, "title": "Case-Based Preview", "phases": ["case-based-preview"]},
     {"kind": _LEAF, "title": "Flashcards", "phases": ["flashcards", "memory-check"]},
     {"kind": _CONTAINER, "title": "Gamified Practices", "phases": [

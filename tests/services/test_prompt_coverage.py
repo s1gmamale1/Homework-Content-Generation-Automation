@@ -7,8 +7,10 @@ from app.services.prompts import get_prompt as _gp
 
 _PAIRS = [(s, p) for s in flows.SUPPORTED_SUBJECTS for p in flows.flow_for(s)]
 
+# min_chars left this list 2026-08-25: the Akademiya transplant made it a LIVE
+# machine-facing label (`**Minimum length (min_chars):**` in practice-rlc).
 _DEAD_VOCAB = [
-    "options: null", "eval_mode", "min_chars", "source_concept_ids",
+    "options: null", "eval_mode", "source_concept_ids",
     "interaction_payload", "interaction_mode", "chips[]",
     "expected_reasoning_keywords", "base_damage", "accepted_variants",
     "source map", "allowed_assembly_types",

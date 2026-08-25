@@ -29,6 +29,14 @@ _BASE_PHASES: list[str] = [
     "practice-rlc", "practice-error-detection",
 ]
 
+# English-only head phase (2026-08-25): a Topic Vocabulary glossary that reads
+# BEFORE the Case-Based Preview in the packet. List position controls
+# phase_order / display / archive order only — it has no PHASE_DEPS entry, so
+# the wave scheduler still runs it in wave 1 alongside CBP/flashcards
+# (lesson_context is its only input). The one subject-specific deviation from
+# the single shared flow.
+_ENGLISH_HEAD: list[str] = ["vocabulary"]
+
 # All four interactive mini-games run on EVERY job — the full Gamified Practices
 # set (rlc + error-detection + these four + boss-arena = all 7) is generated,
 # never skipped. Order is fixed here so phase_order / display order is
@@ -43,7 +51,8 @@ _GAMES: list[str] = [
 def flow_for(subject: str) -> list[str]:
     if subject not in SUBJECTS:
         raise KeyError(f"Unsupported subject: {subject}")
-    return [*_BASE_PHASES, *_GAMES, "boss-arena", "reflection"]
+    head = _ENGLISH_HEAD if subject == "english" else []
+    return [*head, *_BASE_PHASES, *_GAMES, "boss-arena", "reflection"]
 
 
 def teacher_material_flow_for(subject: str) -> list[str]:

@@ -686,7 +686,7 @@ practice-jigsaw → practice-sentence → boss-arena → reflection
 **Custom prompts & phase-picker (PR37).** A `/generate` or `/jobs/batch` request can carry
 `custom_prompts` (`{phase: markdown}`, replacing that phase's built-in contract — the judge then
 grades against the custom prompt, but still fact-checks against the lesson source) and/or
-`selected_phases` (run only a chosen subset of the 11 phases, dependency-closure-expanded). A
+`selected_phases` (run only a chosen subset of the flow's phases — 11, or 12 for english with its `vocabulary` head phase — dependency-closure-expanded). A
 custom/subset launch is always generated fresh (never reuses a plain job). Deselecting a phase's
 dependency degrades quality but never deadlocks the scheduler.
 

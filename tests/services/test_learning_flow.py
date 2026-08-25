@@ -15,8 +15,13 @@ def test_general_flow_uses_cbp_and_memory_check_not_legacy() -> None:
     for subject in SUBJECTS:
         seq = flow_for(subject)
         assert not (set(seq) & legacy), f"{subject} still has legacy phases: {seq}"
-        # CBP leads the learning sections; memory-check is present.
-        assert seq[0] == "case-based-preview", f"{subject} should start with CBP"
+        # CBP leads the learning sections (english's Topic Vocabulary glossary
+        # reads before it); memory-check is present.
+        if subject == "english":
+            assert seq[:2] == ["vocabulary", "case-based-preview"], (
+                f"english should lead vocabulary → CBP: {seq}")
+        else:
+            assert seq[0] == "case-based-preview", f"{subject} should start with CBP"
         assert "memory-check" in seq, f"{subject} missing memory-check"
 
 
