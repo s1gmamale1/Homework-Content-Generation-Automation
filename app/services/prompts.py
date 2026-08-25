@@ -201,6 +201,71 @@ def _resolve_language_rule(subject: str, output_language: str) -> str:
 # "default" has no FAMILY_RULES block and falls through to "_default".
 _SUBJECT_FAMILY = {c: d.family for c, d in subjects.REGISTRY.items()}
 
+# --- Notation blocks (injected at {{NOTATION_RULES}}, all 11 phases) ----------
+# The import platform renders homework as PLAIN TEXT (no KaTeX/markdown on the
+# student game surfaces), so every phase prompt carries a render-ready notation
+# contract: Unicode math instead of LaTeX, plus the platform's import/scrubber
+# bans. Two variants: exact sciences get the full math standard; prose subjects
+# a lighter one. Family resolution mirrors FAMILY_RULES ("math"/"sciences" vs
+# the rest).
+
+_NOTATION_EXACT = (
+    "## Notation & rendering (MANDATORY)\n"
+    "\n"
+    "The student app displays this content as PLAIN TEXT — there is no formula "
+    "renderer. Whatever you write is shown character-for-character. LaTeX/TeX is "
+    "FORBIDDEN: never output $ or $$ delimiters and never backslash commands "
+    "(\\frac, \\cdot, \\times, \\neq, \\text, \\sqrt, \\le, \\begin — none of "
+    "them). Write every expression in Unicode text a student reads directly:\n"
+    "- Powers and indices: x², x³, 10⁵, aⁿ; subscripts a₁, b₂, x₀; chemistry "
+    "H₂O, CO₂, Ca(OH)₂.\n"
+    "- Operators: × ÷ ± ≠ ≤ ≥ ≈ → ·. Strict inequalities keep < and > with a "
+    "space on BOTH sides (2 < 5, x > −1); never glue < or > to a letter and "
+    "never wrap words in angle brackets (<so'z>) — that reads as an HTML tag "
+    "and gets destroyed. Never a bare & — write \"va\".\n"
+    "- Roots: √16, √(x + 1) — parenthesize multi-term radicands; π stays π; "
+    "degrees 45°.\n"
+    "- Fractions on ONE line with a slash and parentheses: (2x − 6)/(9 − x²), "
+    "a₁/a₂ ≠ b₁/b₂. Never stack or nest fractions — restructure into sequential "
+    "steps instead.\n"
+    "- Systems of equations: one equation per line, each line starting with "
+    "\"{ \".\n"
+    "- Thousands with spaces (4 500 000); units as plain words/symbols "
+    "(so'm, kg, m/s).\n"
+    "- Money: NEVER the $ symbol — write \"5 dollar\", \"5 000 so'm\".\n"
+    "\n"
+    "Output hygiene (hard bans in the OUTPUT): no double underscores (__); no "
+    "✓ ✔ ✅ marks; no line may start with \"izoh:\", \"asos:\" or a bare "
+    "\"javob:\" — the answer labels this format explicitly defines are the only "
+    "exception. Inside option text: no \"A)\"-style letter prefixes (the option "
+    "line's own letter is the only letter), and never \"to'g'ri\"/\"noto'g'ri\" "
+    "immediately after a dash — rephrase so terms like \"to'g'ri chiziq\" never "
+    "follow a dash. Any correct-answer text must repeat its option text "
+    "character-for-character."
+)
+
+_NOTATION_PROSE = (
+    "## Notation & rendering (MANDATORY)\n"
+    "\n"
+    "The student app displays this content as PLAIN TEXT — there is no formula "
+    "or symbol renderer. LaTeX/TeX is FORBIDDEN: never output $ or $$ "
+    "delimiters or backslash commands. Write numbers, percentages, dates and "
+    "simple expressions as plain text (×, ÷, ±, ≠, ≤, ≥, →, x², H₂O); "
+    "thousands with spaces (4 500 000).\n"
+    "- Money: NEVER the $ symbol — write \"5 dollar\", \"10 funt\", "
+    "\"5 000 so'm\".\n"
+    "- Never wrap words in angle brackets (<so'z>) and never a bare & — "
+    "angle-bracket runs read as HTML tags and get destroyed; if a comparison "
+    "sign is needed keep spaces on both sides (2 < 5).\n"
+    "\n"
+    "Output hygiene (hard bans in the OUTPUT): no double underscores (__); no "
+    "✓ ✔ ✅ marks; no line may start with \"izoh:\", \"asos:\" or a bare "
+    "\"javob:\" — the answer labels this format explicitly defines are the only "
+    "exception. Inside option text: no \"A)\"-style letter prefixes, never "
+    "\"to'g'ri\"/\"noto'g'ri\" immediately after a dash, and any correct-answer "
+    "text must repeat its option text character-for-character."
+)
+
 # --- Case-Based Preview family blocks (injected at {{FAMILY_RULES}}) ---------
 # Each ~12-25 lines: visual policy + case framing + family forbids. Ported from
 # docs/Infra_prompts/Case-Based Preview/*. Humanities has no CBP spec — authored
@@ -594,16 +659,24 @@ def _raw(dirname: str, phase_name: str) -> tuple[str, str]:
 
 
 def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
-    """Shared `{{SUBJECT}}` / `{{LANGUAGE_RULES}}` substitution.
+    """Shared `{{SUBJECT}}` / `{{LANGUAGE_RULES}}` / `{{NOTATION_RULES}}`
+    substitution.
 
     Used by both `get_prompt` (the markdown evaluation contract) and
     `get_structured_prompt` (the JSON-authoring contract) so the two can never
-    drift apart on how these two tokens resolve. `{{FAMILY_RULES}}` is NOT
+    drift apart on how these tokens resolve. `{{FAMILY_RULES}}` is NOT
     handled here — it's phase-family-specific and only `get_prompt` needs it.
+    `{{NOTATION_RULES}}` resolves by subject family: exact sciences get the
+    full Unicode-math standard, prose subjects the light variant (both defined
+    next to `_SUBJECT_FAMILY` above).
     """
     body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
     body = body.replace("{{LANGUAGE_RULES}}",
                         _resolve_language_rule(subject, output_language))
+    family = _SUBJECT_FAMILY.get(subject)
+    body = body.replace("{{NOTATION_RULES}}",
+                        _NOTATION_EXACT if family in ("math", "sciences")
+                        else _NOTATION_PROSE)
     return body
 
 

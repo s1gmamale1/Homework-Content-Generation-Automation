@@ -102,3 +102,5 @@ fabricate an image, never invent an image URL.
 ## Language
 
 {{LANGUAGE_RULES}}
+
+{{NOTATION_RULES}}

@@ -275,3 +275,5 @@ turns on a real-world appearance the student has to look at.
 20. ✓ Setup visual depicts the GIVEN data (labelled diagram preferred over a mood photo) without depicting the inference?
 21. ✓ Closing note asserts the evaluation — no deferral to a human, no denial?
 22. ✓ Family case-shape and distractor-dimension requirements for this subject met?
+
+{{NOTATION_RULES}}

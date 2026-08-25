@@ -76,3 +76,5 @@ Uzbek "Har bir mashq miyangizni kuchaytiradi. Ertaga davom etamiz!"
 ## Language
 
 {{LANGUAGE_RULES}}
+
+{{NOTATION_RULES}}

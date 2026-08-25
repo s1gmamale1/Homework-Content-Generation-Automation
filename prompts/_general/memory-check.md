@@ -84,3 +84,5 @@ never the integer `60`).
 8. ✓ Every item has a "why" reasoning prompt with the key ideas the answer should mention (REQUIRED when {{SUBJECT}} is a science)?
 9. ✓ Every wrong option encodes a real misconception (the flawed reasoning that tempts a half-learned student) — no joke or nonsense distractors?
 10. ✓ No option (right or wrong) is correct under another framing, uses purpose language (science), or leaks by formatting?
+
+{{NOTATION_RULES}}
