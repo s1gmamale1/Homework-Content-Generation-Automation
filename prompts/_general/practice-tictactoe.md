@@ -52,7 +52,10 @@ Write the game as Markdown sections, in this order:
   language so it is never shown to the student). In that key, each cell's verdict
   tag is EXACTLY `(To'g'ri)` / `(Noto'g'ri)` for Uzbek output, or `(Correct)` /
   `(Incorrect)` for English/Russian output — these exact words are machine-parsed;
-  never substitute synonyms like "Valid/Invalid" or "OK/Wrong". Since this
+  never substitute synonyms like "Valid/Invalid" or "OK/Wrong". Each key line
+  begins with the cell NUMBER inside the bold marker, number first:
+  `- **1-katak (To'g'ri):** reason` / `- **1 (Correct):** reason` — never a word
+  before the number (`**Cell 1**` breaks the parser). Since this
   phase ships as study text, write the 9 cells and their why-notes as prose that
   reads as coherent study notes — each cell a claim about the lesson concept, each
   note the didactic reason it holds or fails.
