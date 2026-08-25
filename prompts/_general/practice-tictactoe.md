@@ -43,7 +43,10 @@ Write the game as Markdown sections, in this order:
 - **How to play** — 1–2 sentences: the student selects every cell on the 3×3 board
   that correctly applies the lesson concept.
 - **Board** — **exactly 9 cells** laid out as a 3×3 grid (a markdown table is fine).
-  Number or letter the cells so the answer can be referenced. At least one cell is a
+  Number or letter the cells so the answer can be referenced. Each table cell
+  carries its number AND its statement together in that one cell — `**1.**
+  <statement>` — never a separate number-only row above a statement row (the
+  importer binds number to text within a single cell). At least one cell is a
   correct application (typically 1–3 correct cells); the rest are tempting wrong
   applications. For each wrong cell, give a brief note of why it fails (it may be
   hidden in an answer-key section below the board, not on the cell face — and that
