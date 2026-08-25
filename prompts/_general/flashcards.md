@@ -86,20 +86,27 @@ evaluate at given values). Then:
 
 ## Examples
 
-> **id:** card_1  
-> **front:** Fotosintez  
-> **back:** O'simliklar quyosh energiyasi yordamida CO₂ va suvdan shakar va kislorod hosil qiladi.  
-> **type:** process_step  
-> **difficulty:** medium  
-> **explanation:** Jarayon xloroplastning tilakoidlarida boradi.  
-> **example:** CO₂ + H₂O → C₆H₁₂O₆ + O₂
+**Field lines are machine-parsed: every `**field:** value` line starts at the very
+beginning of its line — no `-` bullet, no `>` quote, no indentation, nothing before
+the first `**`.** A separate `### Card N` heading between cards is fine; decorating
+the field lines themselves breaks the importer.
 
-> **id:** card_2  
-> **front:** Mitoxondriya  
-> **back:** Hujayra organoidasi — ATP ko'rinishida energiya ishlab chiqaradi.  
-> **type:** definition  
-> **difficulty:** easy  
-> **hint:** "Hujayraning elektr stansiyasi" deb ataladi.
+### Card 1
+**id:** card_1
+**front:** Fotosintez
+**back:** O'simliklar quyosh energiyasi yordamida CO₂ va suvdan shakar va kislorod hosil qiladi.
+**type:** process_step
+**difficulty:** medium
+**explanation:** Jarayon xloroplastning tilakoidlarida boradi.
+**example:** CO₂ + H₂O → C₆H₁₂O₆ + O₂
+
+### Card 2
+**id:** card_2
+**front:** Mitoxondriya
+**back:** Hujayra organoidasi — ATP ko'rinishida energiya ishlab chiqaradi.
+**type:** definition
+**difficulty:** easy
+**hint:** "Hujayraning elektr stansiyasi" deb ataladi.
 
 > **id:** card_3  
 > **front:** Amyoba  

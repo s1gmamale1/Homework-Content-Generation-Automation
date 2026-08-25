@@ -207,22 +207,29 @@ section headings, so heading shape is a contract:
   | # | Section | Heading contains |
   |---|---|---|
   | 1 | Case setup | `Vaziyat` |
-  | 2 | Checkpoint 1 | `Nazorat nuqtasi 1` and `Aniqlash` |
+  | 2 | Checkpoint 1 | `Nazorat nuqtasi 1 (Checkpoint 1)` and `Aniqlash` |
   | 3 | Learning Block 1 | `O'quv bloki 1` |
-  | 4 | Checkpoint 2 | `Nazorat nuqtasi 2` and `Qaror` |
+  | 4 | Checkpoint 2 | `Nazorat nuqtasi 2 (Checkpoint 2)` and `Qaror` |
   | 5 | Learning Block 2 | `O'quv bloki 2` |
-  | 6 | Checkpoint 3 | `Nazorat nuqtasi 3` and `Asoslash` |
+  | 6 | Checkpoint 3 | `Nazorat nuqtasi 3 (Checkpoint 3)` and `Asoslash` |
   | 7 | DPE | `Qaror qabul qilish jarayoni` |
   | 8 | Final simulation | `Yakuniy simulyatsiya` |
   | 9 | Feedback summary | `Fikr-mulohaza` |
   | 10 | Redo route | `Qayta urinish` |
 
   For `en`/`ru` output use that language's natural equivalent of the same label and
-  keep the number. All ten need their heading — a section whose heading is missing or
-  unnumbered is dropped from the student-facing story.
+  keep the number; the parenthetical `(Checkpoint N)` in the checkpoint headings is a
+  machine-parsed key — keep it verbatim in every non-English output (in English
+  output the heading is simply `Checkpoint N — …`). All ten need their heading — a
+  section whose heading is missing or unnumbered is dropped from the student-facing
+  story.
 - Checkpoint options are lettered lines `A) <option>` … (3–4 of them, one per line).
   After the options, name the correct one on its own line: `**To'g'ri javob:**
-  <letter>` (stripped before the student sees the item). Checkpoint feedback goes
+  <letter>` (stripped before the student sees the item). This label is a
+  machine-parsed key: EXACTLY `**To'g'ri javob:**` at every level and in every
+  output language — including B1+ all-English lessons — never "Correct answer" or
+  any translation. The three checkpoints must not all share one correct letter —
+  vary the position of the correct option across them. Checkpoint feedback goes
   AFTER the options, never between the question and the options.
 - **Plain text — no math markup.** Never wrap anything in `$…$`, `\(…\)` or `\[…\]`:
   there is no math renderer downstream, so the student literally sees the dollar

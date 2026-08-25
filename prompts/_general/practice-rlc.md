@@ -63,6 +63,15 @@ Write the scenario as Markdown sections, in this order.
 
 ### Header sections (before the steps)
 
+**Label language:** the student-read label WORDS — Role, Task, Context, Prediction,
+Why, Confidence, and the phase title — render in the OUTPUT language whenever the
+lesson's level is below B1 or the medium is Uzbek/Russian: `**Rol (expert_role):**`,
+`**Vazifa:**`, `**Vaziyat:**`, `**Bashorat:**`, `**Nega:**`, `**Ishonch:**` (Russian
+medium uses its natural equivalents). English labels stay only in B1+ all-English
+lessons. The parenthesized machine keys — `expert_role`, `kind: …`,
+`min_chars` — and their values stay EXACTLY as this format defines them, in English,
+at every level.
+
 - **Role** — put the machine-readable expert role on its own line as
   `**Role (expert_role):** <value> — <named human role>`, where `<value>` is
   EXACTLY one of: `fire_inspector`, `structural_engineer`, `business_consultant`,
@@ -95,7 +104,10 @@ reveal the answer by option length, position, or wording, and never write
 "to'g'ri javob"/"правильный ответ" inside an option label itself.
 
 - `### Step 1 — Decision (kind: decision)` — the first call the expert must make.
-  - **3–4 options** as a bulleted list. Exactly ONE carries the correctness tag.
+  - **3–4 options**, one per line, each formatted `A) <option>` … `D) <option>`
+    (capital letter + `)` — the letters are machine-parsed; a leading `-` bullet
+    before the letter is allowed but nothing else). Exactly ONE carries the
+    correctness tag.
     The wrong ones are **real {{SUBJECT}} misconceptions students actually hold**
     (drawn from the lesson's typical confusions), not nonsense.
   - A mandatory **Why** prompt — the student justifies the call in 1–2 sentences.

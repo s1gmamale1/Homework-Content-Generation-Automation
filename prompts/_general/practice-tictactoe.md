@@ -49,7 +49,10 @@ Write the game as Markdown sections, in this order:
   hidden in an answer-key section below the board, not on the cell face — and that
   section must open with the marker "(O'quvchiga ko'rinmaydi)" — written with the
   plain ASCII apostrophe `'` exactly as shown — in the output
-  language so it is never shown to the student). Since this
+  language so it is never shown to the student). In that key, each cell's verdict
+  tag is EXACTLY `(To'g'ri)` / `(Noto'g'ri)` for Uzbek output, or `(Correct)` /
+  `(Incorrect)` for English/Russian output — these exact words are machine-parsed;
+  never substitute synonyms like "Valid/Invalid" or "OK/Wrong". Since this
   phase ships as study text, write the 9 cells and their why-notes as prose that
   reads as coherent study notes — each cell a claim about the lesson concept, each
   note the didactic reason it holds or fails.
