@@ -88,6 +88,11 @@ the game silently drop or corrupt:
 - Put the wrong-choice notes under a final heading containing the words `Javoblar
   kaliti` or `Answer key`, e.g. `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` — the
   whole section under such a heading is removed from all student-facing text.
+- Inside the key, name each choice plainly WITHOUT repeating the correctness
+  tag — the single `(To'g'ri)` in the whole output is the one on the choice line.
+- Write the machine-read label strings — `(To'g'ri)`, `Javoblar kaliti`,
+  `(O'quvchiga ko'rinmaydi)` — with the plain ASCII apostrophe `'` exactly as
+  shown, whatever apostrophe style the surrounding prose uses.
 - Platform note: today the student plays this as a type-the-answer (free-recall) item
   built from the sentence plus the tagged correct choice; the untagged choices are not
   rendered yet. Author the distractors well anyway — the staged word-bank upgrade

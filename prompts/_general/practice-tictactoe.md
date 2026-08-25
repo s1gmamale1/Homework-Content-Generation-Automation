@@ -47,7 +47,8 @@ Write the game as Markdown sections, in this order:
   correct application (typically 1–3 correct cells); the rest are tempting wrong
   applications. For each wrong cell, give a brief note of why it fails (it may be
   hidden in an answer-key section below the board, not on the cell face — and that
-  section must open with the marker "(O'quvchiga ko'rinmaydi)" in the output
+  section must open with the marker "(O'quvchiga ko'rinmaydi)" — written with the
+  plain ASCII apostrophe `'` exactly as shown — in the output
   language so it is never shown to the student). Since this
   phase ships as study text, write the 9 cells and their why-notes as prose that
   reads as coherent study notes — each cell a claim about the lesson concept, each

@@ -89,6 +89,11 @@ Write the task as Markdown sections, in this order:
 
 ## Non-negotiables
 
+- **The wrong value propagates.** When the broken block sits mid-chain, every
+  later block continues FROM the planted wrong value, so the chain stays
+  internally consistent and the wrong path reaches its wrong end result. A later
+  block that silently uses the corrected value destroys the exercise — the
+  correct chain exists only in "The correct version".
 - **No inline answer marker.** The blocks list is student-visible; any marker,
   label, or typographic tell identifying the broken block inside it defeats the
   entire exercise.

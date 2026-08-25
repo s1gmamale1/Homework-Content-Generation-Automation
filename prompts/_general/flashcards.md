@@ -113,8 +113,12 @@ evaluate at given values). Then:
 ## Rules
 
 - One concept per card.
-- When a concept earns more than one card, the definition card opens it — a later
-  card should apply or discriminate it, not restate it.
+- When a concept earns more than one card, the definition card opens it — and a
+  later card MUST apply or discriminate it, never restate it. No concept in the
+  deck may end on a bare definition/term card: if a definition card has no
+  apply-or-discriminate follow-up, add one or cut the definition card. (After a
+  card defines rounding, the next asks which of 4 250 000 → 4 000 000 /
+  4 300 000 applies it.)
 - Front = cue. Back = definition/function/value. Put any explanation/example/misconception in their own fields, not crammed into `back`.
 - NO practice problems, NO multi-step scenarios, NO hooks, NO stories — scenarios belong in the Case-Based Preview, not on a flashcard.
 - Include formulas only when the {{SUBJECT}} chapter itself treats them as key facts to recall; otherwise keep cards to terms and definitions.

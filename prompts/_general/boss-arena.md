@@ -90,6 +90,11 @@ theorem apply to this situation? **How** do you set up the equation to find the 
 **What** does the answer mean for whether the ladder is safe — and what would change if
 the base were moved farther out?
 
+**The stem never answers its own Why.** The question text must not state the rule,
+formula, definition, or law the Why limb asks the student to name — a stem that
+prints the rule ("... qoidasi yordamida ...") kills the limb. Describe only the
+situation; the rule's name lives in the teacher-only section as the expected answer.
+
 **Family depth cues** — the three limbs keep their shape for every subject; aim
 them by {{SUBJECT}}:
 

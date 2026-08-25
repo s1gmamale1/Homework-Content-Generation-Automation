@@ -63,7 +63,10 @@ Write each item as a `###` heading that names its kind and the studied card it t
 card 3` — the importer only recognizes items whose heading carries it), then in the
 body include: the question prompt; the answer material (four `A)`–`D)` option lines
 followed by a `**To'g'ri javob:** <letter>` line and a `Noto'g'ri (<letter>): <reason>`
-line per wrong option, OR a `_____` blank with its `**Kutilayotgan javob:**` /
+line per wrong option — write the machine-read labels `**To'g'ri javob:**` and
+`Noto'g'ri (<letter>):` with the plain ASCII apostrophe `'` exactly as shown,
+whatever apostrophe style the prose uses, and never let another word interrupt a
+label — OR a `_____` blank with its `**Kutilayotgan javob:**` /
 `**Muqobil javoblar:**` lines); a short "why" reasoning prompt naming the key ideas
 the answer should mention (required for science); and short correct/wrong feedback
 lines placed AFTER the options. State the pass gate once as **0.60** (decimal form,

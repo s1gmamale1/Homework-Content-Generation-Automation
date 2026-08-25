@@ -74,10 +74,12 @@ Write the scenario as Markdown sections, in this order.
 - **Context** — 2–4 sentences: the situation, the constraints, and the
   information/readings available. Include exact numbers, units, and formulas as
   given when the {{SUBJECT}} lesson involves them. For G7+ include ONE irrelevant
-  datum the student must dismiss, and note (to yourself, in the final summary)
-  that it is the distracting datum (the "red herring") — when you name it in the
-  summary, name it in the OUTPUT LANGUAGE (Uzbek "chalg'ituvchi ma'lumot",
-  Russian «отвлекающий факт»), never the bare English "red herring".
+  datum the student must dismiss. The Context itself NEVER labels or explains
+  it — no "(chalg'ituvchi ma'lumot)", "(red herring)", "(eslatma: ...)" or any
+  other marker beside it; a labeled distractor is no distractor. It is identified
+  only in the Final summary — and there name it in the OUTPUT LANGUAGE (Uzbek
+  "chalg'ituvchi ma'lumot", Russian «отвлекающий факт»), never the bare English
+  "red herring".
 - **Prediction** — a mandatory prompt asking the student what they expect to
   find or happen *before* deciding, e.g. "Hisoblashdan oldin, natija qanday
   chiqishini kutyapsiz?"
