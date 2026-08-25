@@ -20,7 +20,7 @@ Grade scales the retrieval load, never source accuracy.
 
 **The band maximum is a HARD CAP.** Before finishing, COUNT your cards. If the count exceeds the band's maximum, DELETE the lowest-value cards until it fits — never ship an oversized deck.
 
-## Card format — 8 fields
+## Card format
 
 Each card emits these fields:
 - `id` — stable sequential `card_1, card_2, …` (never skip or reuse).
@@ -28,6 +28,11 @@ Each card emits these fields:
 - `back` — the answer (definition / value / rule). **Concise; never over 25 words** (a formula or process step may run longer). **No minimum — a short, complete answer is fine.**
 - `type` — REQUIRED. Core types: `definition`, `term_to_meaning`, `process_step`, `question_answer`, `misconception`, `image_label`. Add `formula` when the lesson is mathematical or scientific (equations, laws); add `grammar` and `vocabulary` when the lesson is a language lesson (`grammar` = pattern → rule, `vocabulary` = L2 word → L1 meaning). These are the canonical types, defined in-prompt; the family rules below say which extensions apply to your subject. (There is no validating schema for these — flashcards are markdown, so the type is a label you set on the card, not a JSON enum.)
 - `difficulty` — REQUIRED. One of: `easy | medium | hard`.
+- `direction` — REQUIRED for language decks (english/russian), optional otherwise.
+  One of: `productive` (the front cues the meaning / L1, the back is the
+  target-language form the student must produce) or `receptive` (the front shows
+  the target form, the back its meaning). At least half of a language deck runs
+  `productive` — count before finishing.
 - `hint` (optional) — a nudge, ≤12 words, never gives away the answer.
 - `explanation` (optional, encouraged) — 1 short sentence on why/how it works.
 - `example` (optional, encouraged) — 1 short concrete example.
@@ -50,7 +55,7 @@ For an English (L2) lesson: cards may run either direction. For at least half th
 
 ## What to put on cards for {{SUBJECT}}
 
-Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this {{SUBJECT}} chapter actually introduces. For each entry, put the cue on the `front` and its definition / value / function / rule on the `back`. Whatever a {{SUBJECT}} student must be able to recall from this chapter belongs in the deck, subject to the deck-size budget below.
+Derive the card content from this lesson's `lesson_context`: cover the specific terms, names, structures, processes, rules, formulas, and classification terms that this {{SUBJECT}} chapter actually introduces. The Case-Based Preview output is in your inputs: reuse its key terms VERBATIM on the cards — at least 60% of the deck's head-terms must also appear in the Preview (adding lesson-critical terms beyond it is welcome; renaming a Preview term is not). For each entry, put the cue on the `front` and its definition / value / function / rule on the `back`. Whatever a {{SUBJECT}} student must be able to recall from this chapter belongs in the deck, subject to the deck-size budget below.
 
 ## Atomise — never pack a whole topic into one back
 

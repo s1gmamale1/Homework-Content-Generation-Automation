@@ -11,8 +11,10 @@ to this lesson.
 > a jigsaw phase is imported as a **`tile_match_config`** — each directed connection
 > becomes one left↔right match pair (source piece on the left, target piece on the
 > right). For that import to succeed the output must obey the tile-match contract:
-> pieces in the exact `- **P1:** …` form below, and **at least 3** directed pairs
-> (the validator rejects a board with fewer). Follow the shapes here precisely, or
+> pieces in the exact `- **P1:** …` form below, and **exactly 3** directed pairs —
+> 6 pieces total (the platform validator rejects fewer than 3 pairs; the content
+> standard caps the board at 6 pieces, so 3 pairs is the one size satisfying
+> both — never emit more). Follow the shapes here precisely, or
 > the phase folds to plain study text instead of a playable board.
 
 Keep this a single short game. Do NOT expand it into a multi-step case with learning

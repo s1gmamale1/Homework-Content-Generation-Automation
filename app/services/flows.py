@@ -81,6 +81,11 @@ SUPPORTED_SUBJECTS: list[str] = sorted(SUBJECTS)
 # because different subjects use different preview phase names; the runtime
 # picks whichever exists in the current job's prior_outputs (one per category).
 PHASE_DEPS: dict[str, list[str]] = {
+    # flashcards waits on CBP (2026-08-25, standards CF-01): the deck must reuse
+    # the Preview's key terms verbatim, so it needs the CBP output in context.
+    # Costs one wave of wall-clock on the critical path; applies to all subjects
+    # (term consistency between Preview and deck is a universal upstream rule).
+    "flashcards":               ["case-based-preview"],
     "memory-check":             ["flashcards"],
     "practice-rlc":             ["case-based-preview", "flashcards"],
     "practice-error-detection": ["case-based-preview", "flashcards", "memory-check"],

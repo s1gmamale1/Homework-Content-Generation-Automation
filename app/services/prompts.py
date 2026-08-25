@@ -386,7 +386,9 @@ _CBP_LANGUAGES = (
     "Zero malformed words in either language — the written form IS the content.\n\n"
     "**Avoid:** options leaking via formality; Russian/English calques.\n\n"
     "**DPE:** L2 — what the reader would take from the other form · what selected "
-    "it · the wrong meaning the common mistake sends; Uzbek L1 — the form or "
+    "it · PRODUCTION: write one NEW sentence using the target form with a word "
+    "this lesson never used (graded on the form, not the topic — explaining the "
+    "form is not producing it); Uzbek L1 — the form or "
     "class the sentence needed · the behaviour that told you · the misreading the "
     "mistake causes."
 )

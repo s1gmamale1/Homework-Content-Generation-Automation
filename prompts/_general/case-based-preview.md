@@ -134,13 +134,21 @@ The student writes 2–4 sentences answering all three of:
 2. Why did you pick this method over the alternatives?
 3. What wrong interpretation would the common mistake have caused?
 
-**Expected components:** concept · method · mistake. Score the answer **Full** (all
-three present), **Partial** (one or two present), or **Retry** (none present) — partial
-credit is allowed.
+**Expected components:** name THIS lesson's three items concretely — the specific
+concept/structure, the specific method/rule that selected the answer, and the
+specific mistake avoided (for language subjects: the produced sentence — see below).
+Never write the bare generic words "tushuncha · usul · xato" as the components line;
+the standard treats that generic triple as an invalid rubric. Score the answer
+**Full** (all three present), **Partial** (one or two present), or **Retry** (none
+present) — partial credit is allowed.
 
 Where the family rules give subject-specific phrasings of these three questions,
-use them — they re-flavor, never replace, the three components, and the scoring
-above is unchanged.
+use them. For language subjects the family rules REPLACE question 3 with a
+PRODUCTION task (the standard's PROVE step): the student writes one NEW sentence
+using the target form with a word this lesson never used — graded on the form,
+not the topic (explaining the form is not producing it; reusing a lesson word
+fails, a surprising topic does not). The third expected component is then that
+produced sentence.
 
 **Required closing line (non-negotiable):** the DPE section MUST end with one
 explicit evaluation note, written in the output language, stating that this answer
@@ -155,7 +163,10 @@ forbidden (the student would rationalise backwards).
 
 Show both paths so the consequence reveals the {{SUBJECT}} content, not just a verdict:
 - **Correct path** — walk through the successful outcome when the student's decision is applied.
-- **Wrong path** — show what the common wrong choice produces instead.
+- **Wrong path** — RENDER the actual failure artifact, never describe it: quote the
+  wrong sentence/message exactly as its reader would see it, run the wrong
+  calculation through to its wrong value, state the mislabeled result. "Readers
+  would notice the error" is a failed wrong path — show the error itself.
 - **Why the wrong path fails** — one required sentence on why it cannot be correct.
 
 ## Feedback summary
@@ -224,6 +235,9 @@ section headings, so heading shape is a contract:
   section whose heading is missing or unnumbered is dropped from the student-facing
   story.
 - Checkpoint options are lettered lines `A) <option>` … (3–4 of them, one per line).
+  At least one distractor per checkpoint embodies the lesson's common mistake, and
+  the checkpoint's feedback NAMES that wrong belief explicitly — not just why the
+  option fails.
   After the options, name the correct one on its own line: `**To'g'ri javob:**
   <letter>` (stripped before the student sees the item). This label is a
   machine-parsed key: EXACTLY `**To'g'ri javob:**` at every level and in every
