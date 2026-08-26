@@ -181,6 +181,14 @@ distractor the packet declares — in the generated homework these are the `Noto
 plus the wrong options named in the Preview's checkpoints and in each practice phase. Every one of
 them must be reachable from this register.
 
+**Cite ONLY wrong options — never a correct answer.** A `Qayerda:` line may cite an option
+letter only if the packet marks that option wrong (`Noto'g'ri (X):`, or an option carrying no
+correctness tag where a sibling carries one). The keyed option of an item — the letter after
+`To'g'ri javob:`, or the option tagged as correct — is **never** a distractor, even when the item
+as a whole tests this family's concept. Before emitting, check every cited letter against its
+item's key: a citation that names the key is a defect, not coverage. "This item probes the
+misconception" is expressed by citing the item's WRONG letters, not all of them.
+
 You **may** group several distractors into one misconception family — that is better for a teacher
 than a flat list — but the `Qayerda:` line under each family must then **cite every distractor that
 family covers**, by phase and item id. A distractor that appears under no family is a gap, and it is
