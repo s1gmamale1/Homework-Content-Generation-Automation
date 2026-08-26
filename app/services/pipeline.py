@@ -1895,6 +1895,7 @@ async def _verify_and_maybe_regen_extract(
         page_start=section["page_start"], page_end=section["page_end"],
         homework_job_id=job_id, phase_output_id=po_id, transport=transport,
         correction_hint="\n".join(f"- {m}" for m in mismatches),
+        subject=subject,
     )
     if agent.validate_extract_summary(corrected) is None:
         return corrected, tin2, tout2      # accept corrected
@@ -2096,7 +2097,7 @@ async def _execute_phase(
                     provider=extract_provider, model=extract_model, pdf_path=pdf_path,
                     section_title=section["title"], section_number=section["number"],
                     page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
-                    transport=vision_transport,
+                    transport=vision_transport, subject=subject,
                 )
                 reason = agent.validate_extract_summary(out_md)
                 if reason is not None:
@@ -2112,7 +2113,7 @@ async def _execute_phase(
                         section_title=section["title"], section_number=section["number"],
                         page_start=section["page_start"], page_end=section["page_end"],
                         homework_job_id=job_id, phase_output_id=po_id,
-                        transport=extract_transport,
+                        transport=extract_transport, subject=subject,
                     )
                     reason = agent.validate_extract_summary(out)
                     if reason is not None:

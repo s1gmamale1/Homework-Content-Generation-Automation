@@ -2532,6 +2532,25 @@ a factual coverage contract of THAT lesson's content for downstream homework \
 generation. Summarize only that lesson. """ + _CONTRACT_INSTRUCTIONS + """ {rules}"""
 
 
+# English-only vocabulary override (2026-08-26, owner decision): english lessons
+# carry a dedicated student-facing Topic Vocabulary phase that authors the
+# meanings, so the extract's vocabulary section lists the ITEMS ONLY. This kills
+# the degenerate `item — item [not in source]` glosses the extract model
+# produced on bare picture-wordlist textbook pages.
+_ENGLISH_VOCAB_EXTRACT_RULE = (
+    'FOR THIS ENGLISH LESSON the "## Vocabulary & set phrases" section lists '
+    "the items BARE: one bullet per word or phrase exactly as the source shows "
+    "it (`- item`), with NO meaning, NO em-dash gloss, and NO \"[not in "
+    'source]" marker — a dedicated downstream Vocabulary phase authors the '
+    "meanings. Every other section keeps the rules above. "
+)
+
+
+def _extract_rules(subject: "Optional[str]") -> str:
+    return (_ENGLISH_VOCAB_EXTRACT_RULE + _NO_PREAMBLE) if subject == "english" \
+        else _NO_PREAMBLE
+
+
 async def summarize_lesson(
     *,
     provider: str,
@@ -2545,6 +2564,7 @@ async def summarize_lesson(
     phase_output_id: UUID,
     transport: str = "cli",
     correction_hint: str = "",
+    subject: Optional[str] = None,
 ) -> tuple[str, int, int]:
     """Single-provider extract: inject the whole-book TEXT (no PDF attached),
     model locates the lesson by title and summarizes. Returns (text, prompt_tokens,
@@ -2557,7 +2577,7 @@ async def summarize_lesson(
         number=section_number,
         ps=page_start if page_start is not None else "?",
         pe=page_end if page_end is not None else "?",
-        rules=_NO_PREAMBLE,
+        rules=_extract_rules(subject),
         book_text=book_text,
     )
     if correction_hint:
@@ -2623,6 +2643,7 @@ async def summarize_lesson_vision(
     homework_job_id: UUID,
     phase_output_id: UUID,
     transport: str = "cli",
+    subject: Optional[str] = None,
 ) -> tuple[str, int, int]:
     """VISION fallback extract (scanned / unreadable-text PDFs): attach the
     section's page window as a small PDF and have the model read it visually.
@@ -2657,7 +2678,7 @@ async def summarize_lesson_vision(
         number=section_number,
         ps=page_start if page_start is not None else "?",
         pe=page_end if page_end is not None else "?",
-        rules=_NO_PREAMBLE,
+        rules=_extract_rules(subject),
     )
     prompt = _build_master_prompt(
         phase_prompt=instruction,
