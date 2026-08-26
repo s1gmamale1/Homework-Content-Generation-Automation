@@ -172,6 +172,7 @@ PHASE_TITLES: dict[str, str] = {
     "practice-sentence": "Sentence Filling",
     "boss-arena": "Boss Arena",
     "reflection": "Reflection",
+    "teacher-pack": "Teacher Pack",
 }
 
 # Homework page layout under the `Homework` sub-page. Ordered top-level entries:
@@ -193,6 +194,11 @@ _HOMEWORK_LAYOUT: list[dict] = [
     ]},
     {"kind": _LEAF, "title": "Boss Arena", "phases": ["boss-arena"]},
     {"kind": _LEAF, "title": "Reflection", "phases": ["reflection"]},
+    # Teacher Pack (2026-08-26): the teacher-side lesson document. Deliberately
+    # its OWN leaf, last — it is never part of the student-facing homework body
+    # and must never be stapled into another phase's page (the platform importer
+    # destroys teacher content found inside student homework markdown).
+    {"kind": _LEAF, "title": "Teacher Pack", "phases": ["teacher-pack"]},
 ]
 
 

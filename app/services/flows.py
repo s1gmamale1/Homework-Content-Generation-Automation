@@ -58,7 +58,7 @@ def flow_for(subject: str) -> list[str]:
     if subject not in SUBJECTS:
         raise KeyError(f"Unsupported subject: {subject}")
     head = _ENGLISH_HEAD if subject == "english" else []
-    return [*head, *_BASE_PHASES, "practice-sentence"]
+    return [*head, *_BASE_PHASES, "practice-sentence", "teacher-pack"]
 
 
 def teacher_material_flow_for(subject: str) -> list[str]:
@@ -101,7 +101,30 @@ PHASE_DEPS: dict[str, list[str]] = {
     "practice-sentence":        ["case-based-preview", "flashcards"],
     "boss-arena":               ["case-based-preview", "flashcards", "memory-check"],
     "reflection":               ["case-based-preview", "boss-arena"],
+    # teacher-pack (2026-08-26) is TERMINAL: it derives the teacher's lesson
+    # pack from the WHOLE packet (quotes it character-for-character), so it
+    # depends on every content phase and runs alone in the last wave.
+    # `vocabulary` is english-only; the resolver ignores deps not in the flow.
+    "teacher-pack":             ["vocabulary", "case-based-preview", "flashcards",
+                                 "memory-check", "practice-rlc",
+                                 "practice-error-detection", "practice-sentence"],
 }
+
+
+# Dependency-name aliasing. ONLY the preview variants are true aliases (one
+# logical dependency with per-subject names — the runtime picks whichever
+# exists). Every other phase name is its own category: multiple `practice-*`
+# deps in one list (teacher-pack) are DISTINCT dependencies, and collapsing
+# them by hyphen-prefix would silently drop all but the first.
+_ALIAS_CATEGORY: dict[str, str] = {
+    "preview-hard": "preview",
+    "preview-easy": "preview",
+    "preview": "preview",
+}
+
+
+def _dep_category(name: str) -> str:
+    return _ALIAS_CATEGORY.get(name, name)
 
 
 # Per-subject set of phase names that require the original PDF attached (vs.
@@ -159,7 +182,7 @@ def filter_prior_outputs(
     chosen: dict[str, str] = {}
     seen_categories: set[str] = set()
     for name in deps:
-        category = name.split("-", 1)[0]
+        category = _dep_category(name)
         if category in seen_categories:
             continue
         if name in prior_outputs:
@@ -183,7 +206,7 @@ def resolve_phase_deps(phase_name: str, content_phases: list[str]) -> set[str]:
     in_flow = set(content_phases)
     by_category: dict[str, list[str]] = {}
     for d in declared:
-        by_category.setdefault(d.split("-", 1)[0], []).append(d)
+        by_category.setdefault(_dep_category(d), []).append(d)
 
     resolved: set[str] = set()
     for aliases in by_category.values():

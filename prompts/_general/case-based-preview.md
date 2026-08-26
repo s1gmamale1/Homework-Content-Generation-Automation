@@ -171,10 +171,15 @@ Show both paths so the consequence reveals the {{SUBJECT}} content, not just a v
 
 ## Feedback summary
 
-Close with a feedback section in exactly four parts:
-1. **What the student understood** — the concept(s) they handled correctly.
-2. **What mistake appeared** — the error seen across checkpoints and the DPE (if any).
-3. **What to review** — the specific textbook point to revisit.
+Close with a feedback section in exactly four parts. This page is authored ONCE per
+lesson, before any student exists — every part describes **the lesson**, never a
+particular learner. Never write "what the student understood" / "what mistake
+appeared" as if reporting on a person; there is no person yet.
+1. **Concepts this case checked** — the concept(s) a correct pass demonstrates.
+2. **The mistake this case is built to expose** — the specific wrong belief the
+   checkpoints and the DPE are designed to surface (if any).
+3. **What to review** — the specific textbook point to revisit when that mistake
+   shows up.
 4. **Completion status** — describe the redo route the student **app** applies
    AFTER the attempt (the app owns pass/redo; there is no attempt yet at
    generation). State it conditionally ("if the app marks a redo, return to …")

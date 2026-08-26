@@ -7,6 +7,8 @@ def test_flow_generates_all_seven_gamified_games():
     # instruments — jigsaw/tictactoe/memory-match moved to the platform's
     # Free Practice mode, boss-arena authoring retired (backend-generated),
     # reflection retired. Cut phases stay dormant, never in the flow.
+    # teacher-pack (2026-08-26) closes every flow: the terminal teacher
+    # document derived from the whole packet.
     base = ["case-based-preview", "flashcards", "memory-check",
             "practice-rlc", "practice-error-detection"]
     for subject in flows.SUPPORTED_SUBJECTS:
@@ -16,11 +18,33 @@ def test_flow_generates_all_seven_gamified_games():
         if subject == "english":
             assert seq[0] == "vocabulary"
             seq = seq[1:]
-        assert len(seq) == 6
+        assert len(seq) == 7
         assert seq[:5] == base
-        assert seq[5:] == ["practice-sentence"]
+        assert seq[5:] == ["practice-sentence", "teacher-pack"]
         assert not (set(seq) & set(flows._CUT_PHASES))
         assert len(seq) == len(set(seq)) # no duplicate phases
+
+
+def test_teacher_pack_is_terminal_and_sees_whole_packet():
+    # The pack quotes every phase character-for-character, so it must (a) wait
+    # on EVERY content phase and (b) receive them all — the old hyphen-prefix
+    # alias collapse used to drop 2 of the 3 practice-* deps.
+    for subject in ("math-algebra", "english"):
+        seq = flows.flow_for(subject)
+        assert seq[-1] == "teacher-pack"
+        content = [p for p in seq if p != "teacher-pack"]
+        assert flows.resolve_phase_deps("teacher-pack", seq) == set(content)
+        prior = {p: f"body of {p}" for p in content}
+        assert set(flows.filter_prior_outputs("teacher-pack", prior)) == set(content)
+
+
+def test_preview_aliases_still_collapse():
+    # The preview variants remain true aliases: only one of them may be chosen.
+    prior = {"preview-hard": "H", "preview-easy": "E"}
+    chosen = flows.filter_prior_outputs("reflection", prior)  # deps: cbp, boss
+    assert chosen == {}  # sanity: reflection declares neither preview variant
+    assert flows._dep_category("preview-hard") == flows._dep_category("preview-easy")
+    assert flows._dep_category("practice-rlc") != flows._dep_category("practice-sentence")
 
 
 def test_every_subject_game_is_registered_and_has_prompt():
