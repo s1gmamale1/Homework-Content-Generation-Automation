@@ -3,17 +3,12 @@ from app.services import flows
 
 
 def test_flow_generates_all_seven_gamified_games():
-    # Every job generates the FULL Gamified Practices set (7), skipping none:
-    # rlc + error-detection + all four interactive mini-games + boss-arena.
-    # Which game "fits" a subject is curated downstream, not by skipping.
+    # Homework-arc cut (2026-08-26): the flow keeps ONLY the assessed
+    # instruments — jigsaw/tictactoe/memory-match moved to the platform's
+    # Free Practice mode, boss-arena authoring retired (backend-generated),
+    # reflection retired. Cut phases stay dormant, never in the flow.
     base = ["case-based-preview", "flashcards", "memory-check",
             "practice-rlc", "practice-error-detection"]
-    games = ["practice-memory-match", "practice-tictactoe",
-             "practice-jigsaw", "practice-sentence"]
-    tail = ["boss-arena", "reflection"]
-    all_gamified = {"practice-rlc", "practice-error-detection",
-                    "practice-memory-match", "practice-tictactoe",
-                    "practice-jigsaw", "practice-sentence", "boss-arena"}
     for subject in flows.SUPPORTED_SUBJECTS:
         seq = flows.flow_for(subject)
         # english prepends the Topic Vocabulary head phase (2026-08-25) — the
@@ -21,11 +16,10 @@ def test_flow_generates_all_seven_gamified_games():
         if subject == "english":
             assert seq[0] == "vocabulary"
             seq = seq[1:]
-        assert len(seq) == 11
+        assert len(seq) == 6
         assert seq[:5] == base
-        assert seq[5:9] == games        # all four mini-games, deterministic order
-        assert seq[9:] == tail
-        assert all_gamified <= set(seq)  # all 7 gamified present, none skipped
+        assert seq[5:] == ["practice-sentence"]
+        assert not (set(seq) & set(flows._CUT_PHASES))
         assert len(seq) == len(set(seq)) # no duplicate phases
 
 

@@ -37,14 +37,20 @@ _BASE_PHASES: list[str] = [
 # the single shared flow.
 _ENGLISH_HEAD: list[str] = ["vocabulary"]
 
-# All four interactive mini-games run on EVERY job — the full Gamified Practices
-# set (rlc + error-detection + these four + boss-arena = all 7) is generated,
-# never skipped. Order is fixed here so phase_order / display order is
-# deterministic. All four have PHASE_DEPS entries, so the wave scheduler runs
-# them concurrently once their shared deps are met (minimal extra wall-clock).
-_GAMES: list[str] = [
-    "practice-memory-match", "practice-tictactoe",
-    "practice-jigsaw", "practice-sentence",
+# Homework-arc cut (2026-08-26, owner decision, aligned with the Akademiya
+# standards estate): the homework flow keeps ONLY the assessed instruments.
+# Cut from the flow — NOT deleted (prompts + PHASE_DEPS entries stay dormant
+# for re-enable, and old jobs' outputs remain valid):
+#   - practice-memory-match / practice-tictactoe / practice-jigsaw — belong to
+#     the platform's separate "Free Practice" mode, not homework (upstream
+#     owner ruling 2026-08-24; scores never feed the pass gate);
+#   - boss-arena — boss turns are generated live by the platform backend;
+#     the authoring spec was retired upstream 2026-08-24;
+#   - reflection — the phase was retired upstream 2026-08-19 (the live AI
+#     Tutor owns the debrief; a page-authored one can't describe the student).
+_CUT_PHASES: list[str] = [
+    "practice-memory-match", "practice-tictactoe", "practice-jigsaw",
+    "boss-arena", "reflection",
 ]
 
 
@@ -52,7 +58,7 @@ def flow_for(subject: str) -> list[str]:
     if subject not in SUBJECTS:
         raise KeyError(f"Unsupported subject: {subject}")
     head = _ENGLISH_HEAD if subject == "english" else []
-    return [*head, *_BASE_PHASES, *_GAMES, "boss-arena", "reflection"]
+    return [*head, *_BASE_PHASES, "practice-sentence"]
 
 
 def teacher_material_flow_for(subject: str) -> list[str]:

@@ -6,17 +6,23 @@ SUBJECT = "math-algebra"
 
 
 def test_runs_exactly_what_is_picked_no_deps_added():
-    # boss-arena would previously pull in case-based-preview/flashcards/memory-check;
+    # practice-error-detection would previously pull in its declared deps;
     # now we run exactly what the user picked, nothing more.
-    ordered = order_phase_selection(SUBJECT, ["boss-arena"])
-    assert ordered == ["boss-arena"]
+    ordered = order_phase_selection(SUBJECT, ["practice-error-detection"])
+    assert ordered == ["practice-error-detection"]
 
 
 def test_orders_by_canonical_flow_regardless_of_input_order():
     flow = flow_for(SUBJECT)
-    scrambled = ["boss-arena", "flashcards", "case-based-preview"]
+    scrambled = ["practice-sentence", "flashcards", "case-based-preview"]
     ordered = order_phase_selection(SUBJECT, scrambled)
     assert ordered == [p for p in flow if p in set(scrambled)]
+
+
+def test_cut_phase_is_rejected():
+    # boss-arena left the homework flow (2026-08-26 cut) — selecting it is a 400.
+    with pytest.raises(ValueError):
+        order_phase_selection(SUBJECT, ["boss-arena"])
 
 
 def test_dedups_repeated_phases():
