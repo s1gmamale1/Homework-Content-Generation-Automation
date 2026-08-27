@@ -236,6 +236,18 @@ Number every slide sequentially with `## <n>. <Title>`, starting at 1. The
 **slide count varies with the lesson** — expand any arc that needs it. A typical
 deck runs **13–18 slides**.
 
+**Exactly ONE `##` heading per slide — its numbered title. Never a second `#`
+or `##` line inside a slide body:** the platform's section importer splits on
+`##`, so a nested heading silently breaks the slide in two. Where a pattern
+template shows a `#`/`##` line, that line IS the slide's own numbered title
+slot — inside the body use `###` labels, bold lead-ins, or plain lines only.
+
+**Pattern names are prompt vocabulary.** *Term Ledger*, *Rule Card*, *Minimal
+Pairs*, *Versus Split*, *Decision Fork* and the rest never appear in visible
+deck text — the bridge's "nima ishlatiladi" column describes the CONTENT
+("10 term–definition pairs", "question-form rule"), never the pattern used to
+lay it out.
+
 Emit the arcs in this order. Slide counts below are minimums.
 
 ### Arc A — Where we are going (3 slides)
@@ -335,7 +347,9 @@ Each slide (labels in the deck's language — Uzbek / English):
 <!-- QA-WHERE: <phase> <item>: <wrong options>; <phase> <item>: <wrong options> -->
 ```
 
-English-deck labels: `**Right:**` · `**Why:**` · `**Ask the class:**`.
+English-deck labels: `**Right:**` · `**Why:**` · `**Ask the class:**` — in the
+register the corrected line's label is `**To'g'risi:**` / `**Right:**`, never
+`**Fix:**` (`Fix:` belongs to the generic Wrong→Right pattern outside this arc).
 The ✗ line and the corrected line are the SAME sentence minimally edited —
 the diff IS the lesson. (`✓` is stripped at import — the corrected line takes
 the bold label, never a check mark.)
@@ -411,7 +425,9 @@ a mapping to a slide that does not contain the thing is a fabrication, and this
 block is machine-checked line by line. Write `UNTAUGHT: none` only when the
 remainder is actually empty; when it is not, the untaught concepts must ALSO
 appear visibly per the closing-line rule above (a real gap gets its own slide —
-an empty gap gets no slide, no line, no claim).
+an empty gap gets no slide, no line, no claim). **The comment and the visible
+deck must AGREE:** naming a gap visibly while the comment says `none` — or the
+reverse — is a contradiction and fails the packet.
 
 ## What must NOT appear anywhere
 
