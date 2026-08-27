@@ -397,7 +397,8 @@ visible text are always spelled out** — *Real-Life Challenge*, never *RLC*;
 can read aloud is fine; an opaque acronym is QA-comment vocabulary only.
 The canonical visible names, in full: *Topic Vocabulary · Case Preview ·
 Flashcards · Memory Check · Real-Life Challenge · Error Detection · Sentence
-Practice*. Writing "Practice RLC" anywhere visible fails the packet.
+Practice*. Exactly these strings — no acronyms ("Practice RLC" fails the
+packet) and no paraphrases ("Sentence Fill" is not a phase name).
 
 **Coverage is 100% and you must count it.** Enumerate every distractor the
 packet declares (the `Noto'g'ri (X):` lines, plus the wrong options in the
@@ -526,6 +527,12 @@ ELEMENT: test
 - `exercise` — `exercise_type: "text"`; `prompt`; optional `title`, `rubric`.
 - **`ai_boss` — NEVER.** AI Boss is banned from teacher material; a single
   occurrence fails the whole packet at import.
+
+**The code fence is MANDATORY.** An `ELEMENT:` line outside a ``` fence is a
+packet failure: the importer only parses fenced blocks, so a bare block leaks
+its raw JSON onto the slide as visible text. Open with ```, then `ELEMENT:
+<kind>` on the first line inside (canonical; the kind on the fence line is
+tolerated), then the JSON, then the closing ```.
 
 Where an element belongs — driven by need, never a quota:
 - **game (matching) is the expected DEFAULT under the vocabulary slide** when
@@ -781,7 +788,8 @@ Fix what fails. Do not report the check.
     `options`, do games carry ≥2 pairs, is the prompt non-empty, is the
     language and word choice at the deck's grade band — and is there NO
     `ai_boss` anywhere? Count the items: 2–3 per deck, every test a battery
-    of 3–4 consecutive question fences, never one lonely question.
+    of 3–4 consecutive question fences, never one lonely question. And is
+    EVERY element inside a ``` code fence — no bare `ELEMENT:` line anywhere?
 21. **Read every visible line as the student would.** Any analyst word
     (auxiliary, interrogative, infinitive, syntax, procedure, formulating,
     clause, indicator, evidential, classification, bank)? Rewrite it in the
