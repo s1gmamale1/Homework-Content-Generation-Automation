@@ -175,7 +175,9 @@ important sentence a line of its own.
 
 Where a slide shows a worked example or a task, end it with ONE line that is a
 **checkable fact**, not a summary: `**Tekshiruv:** <the result the teacher
-should see>` or `**Diqqat:** <the thing that usually breaks>`. The reference decks use
+should see>` or `**Diqqat:** <the thing that usually breaks>` — and in an
+all-English deck those labels are `**Check:**` and `**Watch out:**` (the
+deck-language rule binds closing labels too). The reference decks use
 `Checkpoint:` / `Gotchas` / `Tip:` exactly this way. A closing line that merely
 restates the slide is noise — cut it.
 
@@ -369,6 +371,9 @@ immediately after the slide, machine-checked, invisible in the room.
 visible text are always spelled out** — *Real-Life Challenge*, never *RLC*;
 *Error Detection*, *Case Preview*, *Memory Check*. A spelled-out name a teacher
 can read aloud is fine; an opaque acronym is QA-comment vocabulary only.
+The canonical visible names, in full: *Topic Vocabulary · Case Preview ·
+Flashcards · Memory Check · Real-Life Challenge · Error Detection · Sentence
+Practice*. Writing "Practice RLC" anywhere visible fails the packet.
 
 **Coverage is 100% and you must count it.** Enumerate every distractor the
 packet declares (the `Noto'g'ri (X):` lines, plus the wrong options in the
@@ -490,9 +495,10 @@ ELEMENT: test
   occurrence fails the whole packet at import.
 
 Where an element belongs — driven by need, never a quota:
-- **game (matching)** under a vocabulary slide carrying ≥4 term–definition
-  pairs (the class plays the pairing after the table is read); **game
-  (memory)** for younger grades / flashcard-heavy sets.
+- **game (matching) is the expected DEFAULT under the vocabulary slide** when
+  it carries ≥4 term–definition pairs — the class plays the pairing after the
+  table is read; omit it only for a concrete reason. **game (memory)** for
+  younger grades / flashcard-heavy sets.
 - **test** where the deck already asks the class a checkable question — a
   register slide's `Ask the class:` line can become a single_choice test whose
   distractors echo the homework's REAL distractors; or one exit-check question
