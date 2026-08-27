@@ -31,22 +31,20 @@ Measured across 81 slides of four real teaching decks:
 | 76% of slides | **under 60** |
 | 92% of slides | **under 90** |
 
-**Your budget per slide: 35–80 words of body text — with a HARD FLOOR of 25.**
-The title does not count toward it. (The reference median is 32; the owner has
-deliberately raised our target — *"slightly more text is OK if it is organized
-relevantly."* Explanation beats compression.)
+**There is NO hard word limit per slide.** The measured reference numbers
+above are calibration context — what good decks tend to look like — never a
+rule to enforce. The binding rules are these three:
 
-- **No content slide under 25 words.** A slide that states a rule must also
-  EXPLAIN it — one extra supporting sentence or example is welcome, not a
-  violation. The only sub-25 slide is a pure figure or divider slide.
-- **110 is the hard ceiling**, and **any body over 80 words MUST be visibly
-  structured** — a table, bold-labeled lines, a heading split, or a ✗-contrast.
-  A long bare paragraph stack fails at any length.
-- Deck median should land **35–75**.
-
-A slide over 110 words is not a slide. **Split it into two.** Splitting is
-always the right move — the reference decks spend *ten* slides on one topic
-rather than one dense slide listing ten things.
+- **One idea per slide.** When a second idea creeps in, split the slide —
+  never compress. The reference decks spend *ten* slides on one topic rather
+  than one dense slide listing ten things.
+- **Length is driven by need.** A slide carries as much explanation and as
+  many examples as ITS topic needs — a hard concept may run long, a simple
+  term may be two lines; both are correct. Padding and restating stay banned,
+  and a rule stated without its explanation is as wrong as a padded slide.
+- **Organization must grow with length.** The longer the body, the more
+  visible structure it carries — labeled blocks, a table, a ✗-contrast, a
+  heading split. A long bare paragraph stack is a fail at any length.
 
 ## Slide anatomy (every slide, no exceptions)
 
@@ -509,6 +507,17 @@ the deck. If the packet is all-English, so is the deck.**
 **For every non-English subject:** the deck is in the packet's language — Uzbek
 for an Uzbek packet, Russian for a Russian one.
 
+### Word choice tracks the grade
+
+Not just the language — the LEXIS sits at the student's grade. For English
+lessons the CEFR band decides (G5→A1 … G9→B2 … G11→C2): explanation vocabulary
+a B2 class reads as *tentative* is *not sure* for an A1 class. Any above-band
+term that must appear (a target term of the lesson) gets an in-band gloss right
+where it appears. This binds the teacher-voice lines too — `Sinfga savol:` /
+`Ask the class:` questions and the When→Say quotes are read ALOUD to students
+of that grade. Non-English subjects follow the same principle: word the
+explanations for the grade being taught.
+
 ### Localised labels — verified against the import scrubber
 
 Arc and slide names are the concepts, not fixed strings; translate them with the
@@ -550,10 +559,10 @@ prompt describe shape only; emit their content as plain lines.
 
 Fix what fails. Do not report the check.
 
-1. **Count the words in every slide's body.** Under 25 → add the explaining
-   sentence (the floor is hard). Over 110 → split. Over 80 → the body must
-   carry visible structure (table, bold-labeled lines, heading split, or a
-   ✗-contrast). The deck median should land 35–75.
+1. **One idea per slide, organization grown to length.** Does any slide carry
+   a second idea? Split it. Does any long body run as a bare paragraph stack?
+   Give it structure (table, bold-labeled lines, heading split, ✗-contrast).
+   Does any rule-slide state without explaining? Add the explanation.
 2. **Count the bullet slides.** At least half your slides must carry NO bullets,
    and at most 1 in 5 may be a plain bullet list. If most slides are bullets,
    go back to INFO-PATTERNS.md and pick the pattern that fits each content shape.
