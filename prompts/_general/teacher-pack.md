@@ -45,6 +45,9 @@ rule to enforce. The binding rules are these three:
 - **Organization must grow with length.** The longer the body, the more
   visible structure it carries — labeled blocks, a table, a ✗-contrast, a
   heading split. A long bare paragraph stack is a fail at any length.
+- **Every content slide TEACHES, never asserts.** Minimum teaching content:
+  the rule in plain words + at least one concrete example sentence + one line
+  of why or when. A bare assertion without its example is not a slide.
 
 ## Slide anatomy (every slide, no exceptions)
 
@@ -75,6 +78,18 @@ colon, **8 words absolute cap** for the whole title.
   technical outcomes from tentative possibilities"*)
 - learning-objective language: *distinguish · separate · identify · analyse ·
   transfer · audit* + a pile of abstract nouns
+- the word **bank**, and every analyst word: *procedure · interrogative ·
+  auxiliary · evidential · formulating · syntax · infinitive · classification*
+
+**The reader test (owner rule): a title must tell a teacher what the slide is
+about with ZERO context.** If the title needs the slide to explain it
+(*"Technical Forecasting Procedure"*, *"Irrelevant Historical Data"*), it
+fails. Fixed names that pass and stay: **Lesson Outcomes · Core Concept ·
+Lesson Agenda · Homework Bridge** (mother-tongue equivalents in Uzbek/Russian
+decks). The teacher-lines slide is titled **What to Say** (never "Phrase
+Bank"). Calibration renames: *Technical Forecasting Procedure →* `Step by
+Step: Will or Might` · *Worked Analysis →* `Worked Example` · *Modal Forms
+and Questions →* `Will, May and Might`.
 
 Those are **learning objectives pasted into the title slot.** The objectives
 belong as bullets on ONE dedicated slide, exactly once per deck — the reference
@@ -267,6 +282,10 @@ explanation spine this lesson uses (see Arc C). **No minutes anywhere on it.**
 
 ### Arc B — Gap banki (1 slide)
 
+Visible slide title: **What to Say** (mother-tongue equivalent in Uzbek /
+Russian decks — never "bank", which is banned in titles; "Gap banki" is this
+arc's internal name only).
+
 A two-column **When → Say table** — context first, then the ready sentence, so
 the teacher sees at a glance WHEN each line is used. At most 6 rows; the Say
 cell quotes ≤15 words:
@@ -338,7 +357,7 @@ self-explanatory at a glance.
 Each slide (labels in the deck's language — Uzbek / English):
 
 ```
-## <n>. <the wrong belief, short noun label>
+## <n>. Mistake: <the wrong belief in 2–4 plain words>
 
 ✗ *<the sentence exactly as the mistaken student writes it>*
 **To'g'risi:** *<the SAME sentence, minimally corrected>*
@@ -360,6 +379,11 @@ the bold label, never a check mark.)
 concept needs it, add ONE more supporting line — a second minimal example or a
 rule-of-thumb. That is the "slightly more explanation" the deck owes; padding
 past it is not.
+
+**Every register slide's title is `Mistake: <2–4 plain words>`** (mother-tongue
+deck: `Xato: …`) — the mistake named in words a student would use:
+`Mistake: Will Without Proof` · `Mistake: May in Questions` ·
+`Mistake: Mixed-Up Words` · `Mistake: Extra Facts`.
 
 **No visible citations, no internal codes.** `Qayerda:` / `Where:` lines and
 generator QA vocabulary (`MC4`, `CP2`, `RLC Step 1`, `Flashcard 3`) are banned
@@ -466,10 +490,19 @@ reduce learning.
 
 ## Builder elements — the interactive layer (optional)
 
-A slide may carry ONE builder element where it serves the room: an interactive
+A slide may carry builder elements where they serve the room: an interactive
 check, a matching game, or a written exercise. The element never replaces the
 slide's text — it is the interactive layer under it. **Most slides carry none;
 a deck that turns into a quiz has failed as a presentation.**
+
+**Counts (owner-set):** the deck carries **2–3 interactive items total**. One
+item = one matching/memory game, one exercise, or one **test battery**. A test
+is always a battery of **3–4 questions**: emit 3–4 consecutive `ELEMENT: test`
+fences on the same slide (the importer orders them; the room sees consecutive
+question cards). A single lonely test question is not an item. The
+≥4-pair-vocabulary matching-game default stands and counts as one item.
+Element text follows the student-level word rules — students read it off the
+board.
 
 Emit an element as a fenced block anywhere in the slide body — the ONLY fence
 form the deck permits. First line names the kind; the rest is ONE JSON object
@@ -607,6 +640,23 @@ where it appears. This binds the teacher-voice lines too — `Sinfga savol:` /
 of that grade. Non-English subjects follow the same principle: word the
 explanations for the grade being taught.
 
+**We are teaching students, not linguists (owner rule — the big one).** ALL
+visible deck text — titles, bodies, teacher lines, element text — uses only
+the world of words the homework itself uses. The terms the homework teaches
+(*will, won't, may, might, question, certain, possible*) are fine. **Analyst
+vocabulary is BANNED from visible text:** *modal auxiliary · interrogative ·
+bare infinitive · evidential · clause · indicator · syntax · procedure ·
+formulating · classification*. Say it plainly:
+
+✗ *"Invert subject and will when formulating future interrogatives."*
+→ *"To make a question, put Will first: Will homes change?"*
+✗ *"Ensure modal auxiliary choice does not contradict the main clause
+certainty indicator."*
+→ *"Check: does your word match the certainty clue (certain, sure, not sure)?"*
+
+If a technical term is unavoidable because it IS the taught content, gloss it
+in plain words right where it appears.
+
 ### Localised labels — verified against the import scrubber
 
 Arc and slide names are the concepts, not fixed strings; translate them with the
@@ -704,8 +754,13 @@ Fix what fails. Do not report the check.
     test/game/exercise, is every `correct_answers` value copied verbatim from
     `options`, do games carry ≥2 pairs, is the prompt non-empty, is the
     language and word choice at the deck's grade band — and is there NO
-    `ai_boss` anywhere? Is the deck still a presentation (elements sparse,
-    text intact on every slide that carries one)?
+    `ai_boss` anywhere? Count the items: 2–3 per deck, every test a battery
+    of 3–4 consecutive question fences, never one lonely question.
+21. **Read every visible line as the student would.** Any analyst word
+    (auxiliary, interrogative, infinitive, syntax, procedure, formulating,
+    clause, indicator, evidential, classification, bank)? Rewrite it in the
+    homework's own words. Is every register title `Mistake:`/`Xato:` + 2–4
+    plain words? Does every content slide teach — rule + example + why?
 
 
 ---
