@@ -404,6 +404,8 @@ an empty gap gets no slide, no line, no claim).
 - **Any effect-size or research claim for Akademiya's own product.**
 - **Any statement about a particular student.**
 - **Any threshold other than the enforced one.**
+- **AI Boss in any form** — the `ai_boss` builder element is banned from
+  teacher material; one occurrence fails the whole packet at import.
 - Fantasy framing.
 
 ## Grade band
@@ -423,6 +425,54 @@ pure image. Where a diagram is load-bearing and the packet does not already carr
 one, put a placeholder on its own line: `[Diagram: …]`. Never emit `<svg>`.
 No decorative images, no cartoons, no unrelated fun-fact boxes — they measurably
 reduce learning.
+
+## Builder elements — the interactive layer (optional)
+
+A slide may carry ONE builder element where it serves the room: an interactive
+check, a matching game, or a written exercise. The element never replaces the
+slide's text — it is the interactive layer under it. **Most slides carry none;
+a deck that turns into a quiz has failed as a presentation.**
+
+Emit an element as a fenced block anywhere in the slide body — the ONLY fence
+form the deck permits. First line names the kind; the rest is ONE JSON object
+with the builder's own field names (never invent variants):
+
+```
+ELEMENT: test
+{"type": "single_choice", "question": "…",
+ "options": ["…", "…", "…"],
+ "correct_answers": ["…the exact option VALUE, never an index…"],
+ "feedback_correct": "…", "feedback_incorrect": "…", "attempts_allowed": 2}
+```
+
+- `test` — `type` ∈ single_choice | multiple_choice | true_false | short_text |
+  fill_blank | matching | ordering; `question`; `options[]`;
+  `correct_answers[]` as VALUES copied from `options`; optional
+  `feedback_correct` / `feedback_incorrect`, `attempts_allowed`; matching adds
+  `matching_pairs: [{left, right}]`, ordering adds `order_items[]`.
+- `game` — `game_type` ∈ matching | memory; `items: [{term, definition}]`
+  (at least 2, realistically 4–8); optional `time_limit` (seconds), `shuffle`.
+- `exercise` — `exercise_type: "text"`; `prompt`; optional `title`, `rubric`.
+- **`ai_boss` — NEVER.** AI Boss is banned from teacher material; a single
+  occurrence fails the whole packet at import.
+
+Where an element belongs — driven by need, never a quota:
+- **game (matching)** under a vocabulary slide carrying ≥4 term–definition
+  pairs (the class plays the pairing after the table is read); **game
+  (memory)** for younger grades / flashcard-heavy sets.
+- **test** where the deck already asks the class a checkable question — a
+  register slide's `Ask the class:` line can become a single_choice test whose
+  distractors echo the homework's REAL distractors; or one exit-check question
+  on the homework-bridge slide.
+- **exercise (text)** on the practice-ladder or worked-example slide — the
+  board task as a real prompt.
+
+Element JSON must be builder-valid or the import fails loudly: a known `type`,
+every `correct_answers` value present in `options`, ≥2 game pairs, a non-empty
+`prompt`. Element language and word choice follow the same deck-language and
+grade-band rules as slide text — students read the question the teacher
+projects. Scrubber note: element text obeys the same glyph bans as slide text
+(no `✓ ✔ ✅` inside JSON strings).
 
 ## Import scrubber — the exact bans (NON-NEGOTIABLE)
 
@@ -551,9 +601,10 @@ No introduction, no preface, no closing summary. No decorative underscore runs.
 No `A)`-style letter prefixes inside body text. Everything in **Import scrubber**
 applies to every line, including inside fenced blocks.
 
-**Never emit a fenced code block (```) in the deck** — the platform renderer has
-no fence support and shows the backticks literally. The fenced templates in this
-prompt describe shape only; emit their content as plain lines.
+**Never emit a fenced code block (```) in the deck — with ONE exception: an
+`ELEMENT:` block (see Builder elements above).** For anything else the platform
+renderer has no fence support and shows the backticks literally. The fenced
+templates in this prompt describe shape only; emit their content as plain lines.
 
 ## Self-check before you emit
 
@@ -608,6 +659,12 @@ Fix what fails. Do not report the check.
 19. Any visible `Qayerda:` / `Where:` line, or internal QA code (`MC…`, `CP…`,
     `RLC Step …`, `Flashcard …`) in slide text? Move it into the QA-WHERE
     comment. Any slide with 3+ unbolded `Label:` openers? Bold them.
+20. **Every ELEMENT block:** does the JSON parse, is the kind one of
+    test/game/exercise, is every `correct_answers` value copied verbatim from
+    `options`, do games carry ≥2 pairs, is the prompt non-empty, is the
+    language and word choice at the deck's grade band — and is there NO
+    `ai_boss` anywhere? Is the deck still a presentation (elements sparse,
+    text intact on every slide that carries one)?
 
 
 ---
