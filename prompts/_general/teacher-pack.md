@@ -145,6 +145,12 @@ important sentence a line of its own.
   Emphasis goes at the START of a line, as a label, or on a line of its own.
 - **`**bold**` at most 5 runs per slide, ≤3 words each**, and only on a
   load-bearing term — never a whole line, never a whole sentence.
+- **Table cells count toward the bold budget.** A term-ledger that bolds every
+  term row blows it — leave cell text plain; the styled header row and the
+  zebra rows already carry the structure.
+- **Mid-sentence bold exists in exactly one place: the swapped word of a
+  Minimal Pairs slide.** Everywhere else — bullets, callouts, example
+  sentences — bold sits at the START of a line as a label or lead word.
 - One `Label:` prefix (`Asosiy fikr:`, `Tekshiruv:`, `Diqqat:`) is worth more
   than six bold words.
 - If a sentence is truly central, **give it its own slide** rather than bolding it.
@@ -327,11 +333,24 @@ teach**. If that line is not empty it is the most important line in the deck —
 the class meets it first in the homework, where it cannot be repaired. Give it
 its own slide if it is not empty.
 
-**Derive that line by enumeration, never by assertion.** List every term and
-concept the packet's items actually use — including background facts the
-homework tests as facts — tick each against a slide, and only an actually-empty
-remainder may claim there is no gap. A "no gap" line written without the
-enumeration is how a false one gets shipped.
+**The coverage enumeration is a QA artifact, never a slide.** Do NOT emit a
+coverage/audit/summary slide — the deck's only visible bridge is the Arc F
+table above, and a self-audit is nothing a teacher presents. Instead, AFTER the
+last slide, append exactly ONE HTML comment block:
+
+<!-- QA-COVERAGE
+<term or concept> -> slide <n>
+<term or concept> -> slide <n>
+UNTAUGHT: <name each concept the homework uses that no slide teaches — or: none>
+-->
+
+Derive it by enumeration: list every term, rule and background fact the
+packet's items actually use, and map each to the slide that really teaches it —
+a mapping to a slide that does not contain the thing is a fabrication, and this
+block is machine-checked line by line. Write `UNTAUGHT: none` only when the
+remainder is actually empty; when it is not, the untaught concepts must ALSO
+appear visibly per the closing-line rule above (a real gap gets its own slide —
+an empty gap gets no slide, no line, no claim).
 
 ## What must NOT appear anywhere
 
@@ -519,8 +538,10 @@ Fix what fails. Do not report the check.
    `Qayerda:` lines cite? If the second is smaller, Arc E is incomplete.
 12. Is every quoted term reproduced character-for-character from its phase?
 13. Did I recompute every number in Arc D from the example's own values?
-14. Does Arc F's closing line honestly report anything the homework tests that
-    Arc C does not teach?
+14. Is the QA-COVERAGE comment present after the last slide, is every
+    `-> slide <n>` mapping TRUE (the slide really contains the thing), and did
+    I emit NO coverage/audit slide? An `UNTAUGHT:` entry that is not `none`
+    must also appear visibly per Arc F.
 15. Does any sentence in Arc B describe the learner rather than the work?
 16. Any factual claim the contract does not carry and I did not mark
     `[manbada yo'q]`?
