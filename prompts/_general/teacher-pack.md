@@ -605,6 +605,32 @@ under it** is deleted.
 
 {{NOTATION_RULES}}
 
+### Formula-ready across subjects (deck supplement)
+
+The notation contract above applies to **every deck surface**: slide bodies,
+titles, teacher-voice lines, table cells, QA comments — and **ELEMENT JSON
+text** (test questions and options, game terms and definitions, exercise
+prompts). A formula a student meets on the board obeys the same rules as one
+in the homework.
+
+Beyond the base contract, write these the Unicode way too:
+- **Math:** trig powers sin²α, cos²β; logarithm bases log₂8, log₁₀x; absolute
+  value |x|; ratios with a colon (3:1); geometry symbols ∠ABC, 45°, △ABC,
+  AB ∥ CD, AB ⊥ CD.
+- **Physics:** Greek letters directly (α β γ Δ ρ λ ν ω μ Ω), Δt, v₀; compound
+  units on one line: m/s², kg/m³, N·m, kW·h.
+- **Chemistry:** subscript formulas H₂SO₄, Ca(OH)₂; ion charges as trailing
+  superscripts SO₄²⁻, Na⁺, Cl⁻; reaction arrows → and equilibrium ⇌; isotopes
+  with leading superscript ²³⁵U.
+- **Biology:** full equations chem-style: C₆H₁₂O₆ + 6O₂ → 6CO₂ + 6H₂O;
+  genetics ratios 9:3:3:1.
+- **Informatics:** number bases as subscripts 1011₂, 11₁₀, B₁₆; logic symbols
+  ∧ ∨ ¬; comparison signs in code examples keep spaces on both sides
+  (a < b) exactly like prose.
+
+LaTeX stays forbidden everywhere (self-check 18): no `$…$`, no backslash
+commands — the importer audit fails a packet on a single leak.
+
 ## Language — the deck follows the homework (NON-NEGOTIABLE)
 
 {{LANGUAGE_RULES}}
