@@ -63,7 +63,11 @@ Whitespace is not waste.
 
 **Marker pills.** Where a slide is an activity, open it with a pill in square
 brackets: `[TAXTADA]` (at the board) · `[SINF ISHLAYDI]` (class works) ·
-`[5 daqiqa]` (timebox) · `[AGAR XATO]` (the corrective branch).
+`[AGAR XATO]` (the corrective branch).
+
+**NEVER put a time on anything.** No minute figures, no timeboxes, no clock
+ranges, no "5 daqiqa", no `0:00–0:10`. The teacher paces their own room and a
+printed minute is a wrong instruction in most of them.
 
 **Titles are claims, not labels.** ✓ *"Kelajak savollari faqat Will bilan"*
 ✗ *"Grammatika qoidasi"*. A title a teacher can read aloud as a sentence is
@@ -121,13 +125,11 @@ Emit the arcs in this order. Slide counts below are minimums.
 |---|---|---|
 | 1 | **Dars natijasi** | 3 bullets: what the student can *apply*, *explain why*, *name to fix* after the lesson |
 | 2 | **Tayanch tushuncha** | THE one thing that must land. One sentence + why the homework collapses without it |
-| 3 | **Dars rejasi** | The timed agenda, one line per beat, minutes summing to ≤30 of 45 |
+| 3 | **Dars rejasi** | The plan: one short line per board beat, in order. No times |
 
-Slide 3 is the deck's agenda, in the reference decks' own form:
-`0:00–0:06 Amaliy vaziyat` … The remaining 15 minutes are the class working,
-not the teacher talking. **Sum the minutes of the beats you list: at most 30.**
-Write the class-work block as one closing agenda line of its own, never as more
-teacher beats — an agenda whose beats fill all 45 minutes is a defect.
+Slide 3 is the deck's route map — the beat names in order, nothing more, so the
+teacher can see the shape of the lesson at a glance. It also states which
+explanation spine this lesson uses (see Arc C). **No minutes anywhere on it.**
 
 ### Arc B — Gap banki (1 slide)
 
@@ -150,7 +152,7 @@ nega→qanday→nima · qo'llash**. For **languages** the spine is use-case firs
 then form. For **humanities**, origin and causation lead. Say which shape you
 are using on the agenda slide.
 
-Each beat slide: a claim title, ≤5 bullets or one worked block, a timebox pill.
+Each beat slide: a claim title and ≤5 bullets, or one worked block.
 If the contract does not support a beat, write it `[bu darsda yo'q]` rather than
 inventing material.
 
@@ -202,10 +204,10 @@ Selecting the memorable few and stopping is this arc's characteristic failure.
 Count the declared distractors, count the ones your `Qayerda:` lines cite, and
 do not emit until the numbers match.
 
-**Cite ONLY wrong options — never a correct answer.** A `Qayerda:` line may
-cite an option letter (or a choice value) only if the packet marks that option
-wrong. Before emitting, check every cited letter against its item's key: a
-citation that names the key is a defect, not coverage.
+**Cite ONLY wrong options — never a correct answer.** A `Qayerda:` / `Where:`
+line may cite an option letter (or a choice value) only if the packet marks that
+option wrong. Before emitting, check every cited letter against its item's key:
+a citation that names the key is a defect, not coverage.
 
 **Carry the register code** where an item declares one (`MATH.FRAC.NO_SIMPLIFY`).
 Where the item names its misconception only in prose, write the prose.
@@ -311,13 +313,50 @@ under it** is deleted.
 
 {{NOTATION_RULES}}
 
-## Language
+## Language — the deck follows the homework (NON-NEGOTIABLE)
 
 {{LANGUAGE_RULES}}
 
-Address the teacher formally ("Siz"). Slide prose is **telegraphic, not
-literary** — drop articles and connectives that carry no information. No
-motivational register, no performed enthusiasm.
+**The deck is written in exactly the language the homework packet is written
+in.** It is the same lesson; a teacher presenting an all-English homework from
+an Uzbek deck is translating live, and a teacher presenting a bilingual homework
+from an English-only deck cannot use the scaffolding the students will see.
+
+**For English (L2) lessons the CEFR ladder decides, and B1 is the threshold:**
+
+| grade / level | the homework | so the deck |
+|---|---|---|
+| **G5–G7 · below B1** (A1, A2) | target language in English, **all scaffolding in the mother tongue** (Uzbek or Russian) | **the same split** — slide titles, instructions, misconception lines and the phrase bank in the mother tongue; only the target items, example sentences and quoted homework text in English |
+| **G8–G11 · B1 and up** (B1, B2, C1, C2) | **entirely in English** | **entirely in English** — every slide title, every line label, every sentence |
+
+Read the level from the packet itself, not from an assumption: the vocabulary
+phase declares `**CEFR:** <level>`, and the homework's own scaffolding tells you
+which side of B1 it sits on. **If the packet's scaffolding is in Uzbek, so is
+the deck. If the packet is all-English, so is the deck.**
+
+**For every non-English subject:** the deck is in the packet's language — Uzbek
+for an Uzbek packet, Russian for a Russian one.
+
+### Localised labels — verified against the import scrubber
+
+Arc and slide names are the concepts, not fixed strings; translate them with the
+deck. The **line labels** are not free, because some are deleted at import:
+
+| | mother-tongue deck | all-English deck |
+|---|---|---|
+| safe | `Ko'rinishi:` `Ochib beruvchi savol:` `Tuzatish:` `Qayerda:` `Yechim:` `Natija:` `Tekshiruv:` `Qadam:` `Xato:` `Darslikda:` `Bizda:` `Sababi:` `Diqqat:` | `Looks like:` `Exposing question:` `Fix:` `Where:` `Solution:` `Result:` `Check:` `Step:` `Mistake:` `Watch out:` `Why:` `Say:` `Note:` |
+| **deleted** | `Javob:` `Izoh:` `Asos:` `Fikr-mulohaza:` `O'tish bali:` | **`Answer:`** · **`Feedback:`** · `Correct answer:` |
+
+**`Feedback:` is the trap in an English deck** — it is the natural word to reach
+for and it is on the scrubber's label list, so the whole line vanishes at import.
+Use `Say:` or `Note:` instead. Verified by running the platform's own scrubber.
+
+### Register
+
+Address the teacher formally — "Siz" in Uzbek, plain professional English
+otherwise. Slide prose is **telegraphic, not literary** — drop articles and
+connectives that carry no information. No motivational register, no performed
+enthusiasm.
 
 Orthography must be internally consistent across the whole deck: one apostrophe
 style everywhere.
@@ -348,11 +387,20 @@ Fix what fails. Do not report the check.
 2. Is every body one of the four permitted shapes — bullets, mini-blocks, a
    worked block, or one short paragraph? A stack of paragraphs is not a slide.
 3. Is every title a **claim or a task**, not a category label?
+3b. **Is there a time anywhere?** Search for `daqiqa`, `min`, `:0`, `0:`, and any
+   digit followed by a clock or minute mark. There must be none — not on the
+   plan slide, not in a pill, not in a bullet.
+3c. **Is the deck in the same language as the homework packet?** For an English
+   lesson: below B1 the scaffolding is in the mother tongue and only the target
+   items are in English; at B1 and above **every line is English**. Read the
+   level off the packet, do not assume it.
 4. Is there one slide per board beat, and one slide per misconception?
 5. **Scrubber sweep, line by line.** Search for `javob`, `ответ`, `answer`,
    `izoh`, `asos`, `fikr-mulohaza`, `o'tish bali`, `o'tish chegarasi`,
    `(To'g'ri)`, `(Eslatma:`, `✓ ✔ ✅`. Rewrite every hit. Pay special attention
    to `to'g'ri javob` in prose and to any answer-ish word inside `**bold**`.
+   **In an English deck also search for `Answer:` and `Feedback:` at line
+   start** — both are deleted at import; use `Say:` or `Note:`.
 6. Is there a single sentence about a particular student, or a template inviting
    one? Remove it.
 7. **Count the distractors.** How many does the packet declare? How many do your
