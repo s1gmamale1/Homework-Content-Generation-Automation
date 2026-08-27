@@ -175,3 +175,37 @@ def test_unparseable_priors_fail_open():
 def test_never_raises_on_garbage_deck():
     r = gate.check("\x00\x01 not markdown <!-- QA-WHERE: ???: -->", PRIORS)
     assert isinstance(r.passed, bool)
+
+
+def test_banned_words_fail_visible_text_only():
+    deck = DECK_COMPLETE + """
+## 15. Mistake: Wrong Word
+
+Match the modal to the certainty clause on the board.
+"""
+    r = gate.check(deck, PRIORS)
+    assert not r.passed
+    assert any("clause" in b for b in r.banned)
+    assert "BANNED WORDS" in r.feedback
+    # the same word inside a QA comment or an ELEMENT fence is NOT visible
+    deck_hidden = DECK_COMPLETE + """
+<!-- QA-WHERE: clause note -->
+
+```
+ELEMENT: exercise
+{"exercise_type": "text", "prompt": "no clause problem here"}
+```
+"""
+    r2 = gate.check(deck_hidden, PRIORS)
+    assert r2.passed, (r2.banned, r2.missing)
+
+
+def test_bank_banned_in_titles_only():
+    deck_title = DECK_COMPLETE.replace(
+        "## 12. Mistake: Will Without Proof", "## 12. Phrase Bank"
+    )
+    r = gate.check(deck_title, PRIORS)
+    assert any("bank" in b.lower() for b in r.banned)
+    deck_body = DECK_COMPLETE + "\nThe river bank appears in the reading text.\n"
+    r2 = gate.check(deck_body, PRIORS)
+    assert r2.passed, r2.banned

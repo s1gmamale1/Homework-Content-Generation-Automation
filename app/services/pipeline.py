@@ -2352,80 +2352,6 @@ async def _execute_phase(
             else:
                 judge_status = "major_shipped"
 
-        # Deterministic coverage gate (teacher-pack only). The pack's QA-WHERE
-        # citations are machine-checkable against the packet's declared
-        # distractors, and that class failed 6 of 8 canaries at the judge while
-        # every other rule held (2026-08-27 loop) — so code, not prompt, holds
-        # the line. Runs AFTER the judge (a gate regen is re-judged so
-        # judge_status stays truthful); bounded by teacher_pack_gate_retries;
-        # NEVER fails the job — exhaustion ships with a gate warning.
-        if phase_name == "teacher-pack" and settings.teacher_pack_gate_retries > 0:
-            _gate = teacher_pack_gate.check(output_md, prior_outputs)
-            for _gate_attempt in range(settings.teacher_pack_gate_retries):
-                if _gate.passed:
-                    break
-                logger.info(
-                    f"[job {job_id}] teacher-pack coverage gate failed "
-                    f"({len(_gate.missing)} missing / {len(_gate.bogus)} bogus) — "
-                    f"regenerating (attempt {_gate_attempt + 1}/"
-                    f"{settings.teacher_pack_gate_retries})"
-                )
-                try:
-                    g_art, g_tin, g_tout, g_prod = await _generate(
-                        feedback=_gate.feedback,
-                        req_provider=produced_by,
-                        req_model=_gen_model_of(produced_by),
-                    )
-                    artifact, tin, tout, produced_by = g_art, g_tin, g_tout, g_prod
-                    output_md = artifact.output_md
-                    _jp3, _jm3 = model_tiers.resolve_judge(
-                        produced_by, _gen_model_of(produced_by),
-                        judge_provider_ov, judge_model_ov,
-                    )
-                    outcome = await _judge_with_timeout(
-                        subject=subject, phase_name=phase_name, output_md=output_md,
-                        lesson_context=lesson_context, prior_outputs=prior_outputs,
-                        gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
-                        judge_provider=_jp3, judge_model=_jm3,
-                        homework_job_id=job_id, phase_output_id=po_id,
-                        transport=judge_transport,
-                        contract_override=_custom_md,
-                        output_language=output_language,
-                    )
-                    if getattr(outcome, "refused", False):
-                        judge_status = "refused"
-                    elif not outcome.available:
-                        judge_status = "unavailable"
-                    elif outcome.passed or not outcome.has_major:
-                        judge_status = "ok"
-                    else:
-                        judge_status = "major_shipped"
-                except (LeaseLostSignal, CancelWonSignal):
-                    raise  # control signal — never a soft-keep
-                except SessionLimitPause:
-                    raise  # quota-pause must propagate — not a content failure
-                except Exception as exc:  # noqa: BLE001 — the gate must never fail a job
-                    if is_slot_saturation(exc):
-                        raise SlotSaturation(str(exc)) from exc
-                    if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
-                        logger.error(
-                            f"[job {job_id}] teacher-pack api auth failure during gate regen ({exc!r})"
-                        )
-                        raise
-                    logger.warning(
-                        f"[job {job_id}] teacher-pack gate regen failed ({exc!r}); "
-                        f"keeping the previous output"
-                    )
-                    break
-                _gate = teacher_pack_gate.check(output_md, prior_outputs)
-            if not _gate.passed:
-                warnings.append(
-                    "gate:coverage-incomplete: "
-                    + "; ".join(_gate.missing[:8] + _gate.bogus[:4])
-                )
-            elif _gate.notes:
-                warnings.append("gate:notes: " + "; ".join(_gate.notes[:3]))
-
         # CQ-C (R21.2): independent answer-key solver over the key-bearing phases.
         # Runs AFTER the judge so it checks the FINAL (possibly judge-regenerated)
         # output. Initial infrastructure unavailability remains advisory. Once a
@@ -2552,6 +2478,101 @@ async def _execute_phase(
         # the ExcType stays in the logs. major_shipped/major_regen_failed keep
         # available=True so their genuine content warnings survive.
         warnings = outcome.warnings if outcome.available else []
+
+        # Deterministic gate (teacher-pack only): coverage/citations + banned
+        # lexemes are machine-checkable, and those classes failed most canaries
+        # at the judge while every other rule held (2026-08-27 loop) — code,
+        # not prompt, holds the line. Sits AFTER the warnings reassignment
+        # above (an earlier placement had its warning wiped by it) and BEFORE
+        # content_lint (lint must see the final markdown). Each regen is
+        # re-judged; on exhaustion the BEST attempt ships (a retry can degrade
+        # — job 8c42fe6b shipped 25/49 because the last attempt won); the gate
+        # NEVER fails a job.
+        if phase_name == "teacher-pack" and settings.teacher_pack_gate_retries > 0:
+            def _gate_score(g) -> int:
+                return len(g.missing) + len(g.bogus) + len(g.banned)
+
+            _gate = teacher_pack_gate.check(output_md, prior_outputs)
+            _best = (_gate_score(_gate), artifact, tin, tout, produced_by,
+                     outcome, judge_status, _gate)
+            for _gate_attempt in range(settings.teacher_pack_gate_retries):
+                if _gate.passed:
+                    break
+                logger.info(
+                    f"[job {job_id}] teacher-pack gate failed "
+                    f"({len(_gate.missing)} missing / {len(_gate.bogus)} bogus / "
+                    f"{len(_gate.banned)} banned) — regenerating "
+                    f"(attempt {_gate_attempt + 1}/{settings.teacher_pack_gate_retries})"
+                )
+                try:
+                    g_art, g_tin, g_tout, g_prod = await _generate(
+                        feedback=_gate.feedback,
+                        req_provider=produced_by,
+                        req_model=_gen_model_of(produced_by),
+                    )
+                    artifact, tin, tout, produced_by = g_art, g_tin, g_tout, g_prod
+                    output_md = artifact.output_md
+                    _jp3, _jm3 = model_tiers.resolve_judge(
+                        produced_by, _gen_model_of(produced_by),
+                        judge_provider_ov, judge_model_ov,
+                    )
+                    outcome = await _judge_with_timeout(
+                        subject=subject, phase_name=phase_name, output_md=output_md,
+                        lesson_context=lesson_context, prior_outputs=prior_outputs,
+                        gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
+                        judge_provider=_jp3, judge_model=_jm3,
+                        homework_job_id=job_id, phase_output_id=po_id,
+                        transport=judge_transport,
+                        contract_override=_custom_md,
+                        output_language=output_language,
+                    )
+                    if getattr(outcome, "refused", False):
+                        judge_status = "refused"
+                    elif not outcome.available:
+                        judge_status = "unavailable"
+                    elif outcome.passed or not outcome.has_major:
+                        judge_status = "ok"
+                    else:
+                        judge_status = "major_shipped"
+                except (LeaseLostSignal, CancelWonSignal):
+                    raise  # control signal — never a soft-keep
+                except SessionLimitPause:
+                    raise  # quota-pause must propagate — not a content failure
+                except Exception as exc:  # noqa: BLE001 — the gate must never fail a job
+                    if is_slot_saturation(exc):
+                        raise SlotSaturation(str(exc)) from exc
+                    if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                        logger.error(
+                            f"[job {job_id}] teacher-pack api auth failure during gate regen ({exc!r})"
+                        )
+                        raise
+                    logger.warning(
+                        f"[job {job_id}] teacher-pack gate regen failed ({exc!r}); "
+                        f"keeping the previous output"
+                    )
+                    break
+                _gate = teacher_pack_gate.check(output_md, prior_outputs)
+                if _gate_score(_gate) < _best[0]:
+                    _best = (_gate_score(_gate), artifact, tin, tout, produced_by,
+                             outcome, judge_status, _gate)
+            # Adopt the best-scoring attempt (initial or any regen) — never let
+            # a degrading retry ship just because it ran last.
+            if not _gate.passed and _best[0] < _gate_score(_gate):
+                (_, artifact, tin, tout, produced_by,
+                 outcome, judge_status, _gate) = _best
+                output_md = artifact.output_md
+                logger.info(
+                    f"[job {job_id}] teacher-pack gate: adopted best attempt "
+                    f"(score {_best[0]})"
+                )
+            warnings = list(outcome.warnings) if outcome.available else []
+            if not _gate.passed:
+                warnings.append(
+                    "gate:incomplete: "
+                    + "; ".join(_gate.missing[:8] + _gate.bogus[:4] + _gate.banned[:4])
+                )
+            elif _gate.notes:
+                warnings.append("gate:notes: " + "; ".join(_gate.notes[:3]))
         # CQ-B (R21.3/R21.4): deterministic content lint. WARN-ONLY — findings
         # join validation_warnings under a `lint:` prefix, never gate a regen,
         # never fail a job. Pure function; defensively wrapped regardless.

@@ -59,6 +59,7 @@ class GateResult:
     passed: bool
     missing: list[str] = field(default_factory=list)   # declared, never cited
     bogus: list[str] = field(default_factory=list)     # cited, but it is the key
+    banned: list[str] = field(default_factory=list)    # analyst words in visible text
     declared_count: int = 0
     cited_count: int = 0
     notes: list[str] = field(default_factory=list)     # parse gaps (fail-open)
@@ -83,6 +84,10 @@ class GateResult:
             lines.append("")
             lines.append("BOGUS — you cited these as wrong, but each is its item's CORRECT answer; remove them from the comments:")
             lines.extend(f"- {b}" for b in self.bogus)
+        if self.banned:
+            lines.append("")
+            lines.append("BANNED WORDS — analyst vocabulary in visible slide text; rewrite each line in the homework's own plain words (the owner's rule: we teach students, not linguists):")
+            lines.extend(f"- {b}" for b in self.banned)
         return "\n".join(lines)
 
 
@@ -206,6 +211,39 @@ def _value_covered(declared: str, cited_values: set[str]) -> bool:
                for c in cited_values if c)
 
 
+# ── banned-lexeme scan ──────────────────────────────────────────────────────
+
+# Owner rule (POLISH-round2 §1): analyst vocabulary never appears in visible
+# deck text. "bank" is banned in TITLES only (it can be legitimate content).
+_ANALYST_RE = re.compile(
+    r"(?i)\b(modal auxiliar\w*|auxiliar\w*|interrogativ\w*|bare infinitiv\w*|"
+    r"infinitiv\w*|evidential\w*|clauses?|indicators?|syntax|procedures?|"
+    r"formulat\w*|classificat\w*)\b"
+)
+_TITLE_BANK_RE = re.compile(r"(?im)^## \d+\.[^\n]*\bbank\b[^\n]*$")
+
+
+def _visible_text(deck_md: str) -> str:
+    vis = re.sub(r"<!--.*?-->", "", deck_md, flags=re.S)
+    return re.sub(r"```.*?```", "", vis, flags=re.S)
+
+
+def _banned_hits(deck_md: str) -> list[str]:
+    vis = _visible_text(deck_md)
+    hits: list[str] = []
+    seen: set[str] = set()
+    for line in vis.splitlines():
+        m = _ANALYST_RE.search(line)
+        if m:
+            key = (m.group(1).lower(), line.strip()[:60])
+            if key not in seen:
+                seen.add(key)
+                hits.append(f"'{m.group(1)}' in: {line.strip()[:80]}")
+    for m in _TITLE_BANK_RE.finditer(vis):
+        hits.append(f"'bank' in a title: {m.group(0)[:80]}")
+    return hits
+
+
 # ── the gate ────────────────────────────────────────────────────────────────
 
 def check(deck_md: str, prior_outputs: dict[str, str]) -> GateResult:
@@ -277,6 +315,11 @@ def check(deck_md: str, prior_outputs: dict[str, str]) -> GateResult:
     except Exception as exc:  # noqa: BLE001
         r.notes.append(f"ed parse: {exc!r}")
 
-    if r.missing or r.bogus:
+    try:
+        r.banned = _banned_hits(deck_md)
+    except Exception as exc:  # noqa: BLE001
+        r.notes.append(f"banned-scan: {exc!r}")
+
+    if r.missing or r.bogus or r.banned:
         r.passed = False
     return r
