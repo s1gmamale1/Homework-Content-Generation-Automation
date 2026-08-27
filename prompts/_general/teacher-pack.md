@@ -155,6 +155,13 @@ important sentence a line of its own.
 - **Mid-sentence bold exists in exactly one place: the swapped word of a
   Minimal Pairs slide.** Everywhere else — bullets, callouts, example
   sentences — bold sits at the START of a line as a label or lead word.
+  The classic violation is bolding the lesson's target terms (*will*, *may*,
+  *might*) inside sentences — target terms inside a sentence take *italics*.
+- **A Headline Claim is never a whole bolded line.** The claim lives in a `>`
+  callout; inside it, bold at most the resolving 1–3 words. Manual step
+  numbers (`**1.**`) count toward the budget too — in a worked block, bold
+  the numbers and the labels, nothing else, and end with the closing check
+  line.
 - **Every `Label:` line opener is BOLD** — `**Diqqat:** …`, `**Say:** …`,
   `**Tuzatish:** …`. Three or more unbolded `Label:` openers on one slide is
   a failing slide (the importer audit enforces exactly this). Bold labels
@@ -344,6 +351,11 @@ from slide text — a teacher reading them "does not get the relevance". Each
 register slide's citations go in ONE `<!-- QA-WHERE: … -->` HTML comment
 immediately after the slide, machine-checked, invisible in the room.
 
+**This holds everywhere in the deck, the bridge table included: phase names in
+visible text are always spelled out** — *Real-Life Challenge*, never *RLC*;
+*Error Detection*, *Case Preview*, *Memory Check*. A spelled-out name a teacher
+can read aloud is fine; an opaque acronym is QA-comment vocabulary only.
+
 **Coverage is 100% and you must count it.** Enumerate every distractor the
 packet declares (the `Noto'g'ri (X):` lines, plus the wrong options in the
 Preview checkpoints and each practice phase). Every one must be reachable from
@@ -352,7 +364,12 @@ misconception slide is allowed — citing fewer than all of them is not.
 
 Selecting the memorable few and stopping is this arc's characteristic failure.
 Count the declared distractors, count the ones your `QA-WHERE` comments cite,
-and do not emit until the numbers match.
+and do not emit until the numbers match. **Walk the packet item by item:**
+every multiple-choice AND choose-explanation card carries three declared
+wrongs (fill-blanks carry none), every preview checkpoint carries its wrong
+letters, every practice step carries its wrong options — and the concept-chip
+step's wrong chips count too. The repeat failure is skipping one mid-packet
+card and one chip step; tick items off one by one, never by memory.
 
 **Cite ONLY wrong options — never a correct answer.** A `QA-WHERE` comment may
 cite an option letter (or a choice value) only if the packet marks that option
@@ -616,7 +633,9 @@ Fix what fails. Do not report the check.
    Does any rule-slide state without explaining? Add the explanation.
 2. **Count the bullet slides.** At least half your slides must carry NO bullets,
    and at most 1 in 5 may be a plain bullet list. If most slides are bullets,
-   go back to INFO-PATTERNS.md and pick the pattern that fits each content shape.
+   go back to INFO-PATTERNS.md and pick the pattern that fits each content
+   shape. And count the words in every bullet — over 10 words is a fail;
+   tighten the fragment.
 3. Does the shape CHANGE between consecutive slides, or does the deck read as
    one undifferentiated wall?
 4. **Measure every title.** Median 1–4 words, 8 absolute cap. Is any title a
