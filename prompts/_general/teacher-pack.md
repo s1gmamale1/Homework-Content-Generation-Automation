@@ -31,16 +31,22 @@ Measured across 81 slides of four real teaching decks:
 | 76% of slides | **under 60** |
 | 92% of slides | **under 90** |
 
-**Your budget per slide: 25–60 words of body text. 90 is a hard ceiling.**
-The title does not count toward it.
+**Your budget per slide: 35–80 words of body text — with a HARD FLOOR of 25.**
+The title does not count toward it. (The reference median is 32; the owner has
+deliberately raised our target — *"slightly more text is OK if it is organized
+relevantly."* Explanation beats compression.)
 
-A slide over 90 words is not a slide. **Split it into two.** Splitting is always
-the correct move — the reference decks spend *ten* slides on one topic rather
-than one dense slide listing ten things.
+- **No content slide under 25 words.** A slide that states a rule must also
+  EXPLAIN it — one extra supporting sentence or example is welcome, not a
+  violation. The only sub-25 slide is a pure figure or divider slide.
+- **110 is the hard ceiling**, and **any body over 80 words MUST be visibly
+  structured** — a table, bold-labeled lines, a heading split, or a ✗-contrast.
+  A long bare paragraph stack fails at any length.
+- Deck median should land **35–75**.
 
-**A slide may be almost empty.** A three-word slide and a diagram is a real
-slide; one of the reference decks carries 15 slides and no text at all.
-Whitespace is not waste.
+A slide over 110 words is not a slide. **Split it into two.** Splitting is
+always the right move — the reference decks spend *ten* slides on one topic
+rather than one dense slide listing ten things.
 
 ## Slide anatomy (every slide, no exceptions)
 
@@ -151,6 +157,11 @@ important sentence a line of its own.
 - **Mid-sentence bold exists in exactly one place: the swapped word of a
   Minimal Pairs slide.** Everywhere else — bullets, callouts, example
   sentences — bold sits at the START of a line as a label or lead word.
+- **Every `Label:` line opener is BOLD** — `**Diqqat:** …`, `**Say:** …`,
+  `**Tuzatish:** …`. Three or more unbolded `Label:` openers on one slide is
+  a failing slide (the importer audit enforces exactly this). Bold labels
+  count toward the budget — which is why a labeled slide rarely needs any
+  other bold.
 - One `Label:` prefix (`Asosiy fikr:`, `Tekshiruv:`, `Diqqat:`) is worth more
   than six bold words.
 - If a sentence is truly central, **give it its own slide** rather than bolding it.
@@ -158,8 +169,8 @@ important sentence a line of its own.
 ### Closing lines have a job
 
 Where a slide shows a worked example or a task, end it with ONE line that is a
-**checkable fact**, not a summary: `Tekshiruv: <the result the teacher should
-see>` or `Diqqat: <the thing that usually breaks>`. The reference decks use
+**checkable fact**, not a summary: `**Tekshiruv:** <the result the teacher
+should see>` or `**Diqqat:** <the thing that usually breaks>`. The reference decks use
 `Checkpoint:` / `Gotchas` / `Tip:` exactly this way. A closing line that merely
 restates the slide is noise — cut it.
 
@@ -237,13 +248,26 @@ explanation spine this lesson uses (see Arc C). **No minutes anywhere on it.**
 
 ### Arc B — Gap banki (1 slide)
 
-6–10 ready sentences, each on its own line, for responding to work. Every one:
+A two-column **When → Say table** — context first, then the ready sentence, so
+the teacher sees at a glance WHEN each line is used. At most 6 rows; the Say
+cell quotes ≤15 words:
+
+| When | Say |
+|---|---|
+| <the classroom moment, ≤8 words> | "<the ready sentence>" |
+
+Every row still obeys the feedback principles:
 
 - names **the work, the process or the next step** — never the learner
 - answers one of: *where am I going · how am I going · where to next*
-- returns the correct response **with its reason** when the work was wrong
+- returns the right response **with its reason** when the work was wrong
 - compares the student to **their own previous attempt**, never to classmates
 - never mixes a score with a compliment
+
+**Scrubber trap in this table:** never write *correct / correctly / incorrect*
+(or a `to'g'ri`+`javob` pairing) in a row that also carries italics — the
+importer deletes everything between the asterisk marks. Phrase certainty
+without the word: "You chose *will* because the clause is certain."
 
 ### Arc C — Dars rejasi bosqichlari (ONE SLIDE PER STEP — 5 slides)
 
@@ -287,33 +311,55 @@ cannot be found during the lesson.
 ### Arc E — Xatolar registri (ONE SLIDE PER MISCONCEPTION — 4–6 slides)
 
 **This is where the old document failed hardest and where splitting matters
-most.** One misconception per slide. Never a list.
+most.** One misconception per slide. Never a list. Every register slide is a
+**true Wrong→Right contrast** — the correction is ON the slide, because the
+wrong example plus advice without the corrected sentence is not
+self-explanatory at a glance.
 
-Each slide, four short lines:
+Each slide (labels in the deck's language — Uzbek / English):
 
 ```
-## <n>. <the wrong belief, short>
+## <n>. <the wrong belief, short noun label>
 
-Ko'rinishi: <what the student actually writes>
-Ochib beruvchi savol: <ONE question the misconception cannot survive>
-Tuzatish: <the correction, phrased to kill the belief>
-Qayerda: <phase + item ids where the homework tests it>
+✗ *<the sentence exactly as the mistaken student writes it>*
+**To'g'risi:** *<the SAME sentence, minimally corrected>*
+
+**Sababi:** <one line naming the rule that was broken>
+**Sinfga savol:** <ONE question the misconception cannot survive>
+
+<!-- QA-WHERE: <phase> <item>: <wrong options>; <phase> <item>: <wrong options> -->
 ```
+
+English-deck labels: `**Right:**` · `**Why:**` · `**Ask the class:**`.
+The ✗ line and the corrected line are the SAME sentence minimally edited —
+the diff IS the lesson. (`✓` is stripped at import — the corrected line takes
+the bold label, never a check mark.)
+
+**The `Sababi:`/`Why:` line may run one or two full sentences.** When the
+concept needs it, add ONE more supporting line — a second minimal example or a
+rule-of-thumb. That is the "slightly more explanation" the deck owes; padding
+past it is not.
+
+**No visible citations, no internal codes.** `Qayerda:` / `Where:` lines and
+generator QA vocabulary (`MC4`, `CP2`, `RLC Step 1`, `Flashcard 3`) are banned
+from slide text — a teacher reading them "does not get the relevance". Each
+register slide's citations go in ONE `<!-- QA-WHERE: … -->` HTML comment
+immediately after the slide, machine-checked, invisible in the room.
 
 **Coverage is 100% and you must count it.** Enumerate every distractor the
 packet declares (the `Noto'g'ri (X):` lines, plus the wrong options in the
 Preview checkpoints and each practice phase). Every one must be reachable from
-some slide's `Qayerda:` line. Grouping several distractors onto one
+some slide's `QA-WHERE` comment. Grouping several distractors onto one
 misconception slide is allowed — citing fewer than all of them is not.
 
 Selecting the memorable few and stopping is this arc's characteristic failure.
-Count the declared distractors, count the ones your `Qayerda:` lines cite, and
-do not emit until the numbers match.
+Count the declared distractors, count the ones your `QA-WHERE` comments cite,
+and do not emit until the numbers match.
 
-**Cite ONLY wrong options — never a correct answer.** A `Qayerda:` / `Where:`
-line may cite an option letter (or a choice value) only if the packet marks that
-option wrong. Before emitting, check every cited letter against its item's key:
-a citation that names the key is a defect, not coverage.
+**Cite ONLY wrong options — never a correct answer.** A `QA-WHERE` comment may
+cite an option letter (or a choice value) only if the packet marks that option
+wrong. Before emitting, check every cited letter against its item's key: a
+citation that names the key is a defect, not coverage.
 
 **Carry the register code** where an item declares one (`MATH.FRAC.NO_SIMPLIFY`).
 Where the item names its misconception only in prose, write the prose.
@@ -470,7 +516,7 @@ deck. The **line labels** are not free, because some are deleted at import:
 
 | | mother-tongue deck | all-English deck |
 |---|---|---|
-| safe | `Ko'rinishi:` `Ochib beruvchi savol:` `Tuzatish:` `Qayerda:` `Yechim:` `Natija:` `Tekshiruv:` `Qadam:` `Xato:` `Darslikda:` `Bizda:` `Sababi:` `Diqqat:` | `Looks like:` `Exposing question:` `Fix:` `Where:` `Solution:` `Result:` `Check:` `Step:` `Mistake:` `Watch out:` `Why:` `Say:` `Note:` |
+| safe | `Ko'rinishi:` `Ochib beruvchi savol:` `Tuzatish:` `To'g'risi:` `Sinfga savol:` `Yechim:` `Natija:` `Tekshiruv:` `Qadam:` `Xato:` `Darslikda:` `Bizda:` `Sababi:` `Diqqat:` | `Looks like:` `Exposing question:` `Fix:` `Right:` `Ask the class:` `Solution:` `Result:` `Check:` `Step:` `Mistake:` `Watch out:` `Why:` `Say:` `Note:` |
 | **deleted** | `Javob:` `Izoh:` `Asos:` `Fikr-mulohaza:` `O'tish bali:` | **`Answer:`** · **`Feedback:`** · `Correct answer:` |
 
 **`Feedback:` is the trap in an English deck** — it is the natural word to reach
@@ -504,9 +550,10 @@ prompt describe shape only; emit their content as plain lines.
 
 Fix what fails. Do not report the check.
 
-1. **Count the words in every slide's body.** Any slide over 90 → split it into
-   two. Is your median near 32? If most slides are over 60, you are writing a
-   document, not a deck.
+1. **Count the words in every slide's body.** Under 25 → add the explaining
+   sentence (the floor is hard). Over 110 → split. Over 80 → the body must
+   carry visible structure (table, bold-labeled lines, heading split, or a
+   ✗-contrast). The deck median should land 35–75.
 2. **Count the bullet slides.** At least half your slides must carry NO bullets,
    and at most 1 in 5 may be a plain bullet list. If most slides are bullets,
    go back to INFO-PATTERNS.md and pick the pattern that fits each content shape.
@@ -534,8 +581,8 @@ Fix what fails. Do not report the check.
    start** — both are deleted at import; use `Say:` or `Note:`.
 10. Is there a single sentence about a particular student, or a template inviting
    one? Remove it.
-11. **Count the distractors.** How many does the packet declare? How many do your
-   `Qayerda:` lines cite? If the second is smaller, Arc E is incomplete.
+11. **Count the distractors.** How many does the packet declare? How many do
+   your `QA-WHERE` comments cite? If the second is smaller, Arc E is incomplete.
 12. Is every quoted term reproduced character-for-character from its phase?
 13. Did I recompute every number in Arc D from the example's own values?
 14. Is the QA-COVERAGE comment present after the last slide, is every
@@ -547,7 +594,11 @@ Fix what fails. Do not report the check.
     `[manbada yo'q]`?
 17. Did I write "mastery", quote a threshold other than 60%, or claim an effect
     for the product?
-18. Any LaTeX, `$`, backslash command, `<svg>`, or angle-bracketed word?
+18. Any LaTeX, `$`, backslash command, `<svg>`, or angle-bracketed word
+    (QA comments excepted)?
+19. Any visible `Qayerda:` / `Where:` line, or internal QA code (`MC…`, `CP…`,
+    `RLC Step …`, `Flashcard …`) in slide text? Move it into the QA-WHERE
+    comment. Any slide with 3+ unbolded `Label:` openers? Bold them.
 
 
 ---
@@ -1018,7 +1069,7 @@ Template:
 ## Fix it
 
 ✗ *<the wrong sentence>*
-Fix: *<the corrected sentence>*
+**Fix:** *<the corrected sentence>*
 
 **Why:** <one line naming the rule that was broken>
 ```
@@ -1029,7 +1080,7 @@ Filled:
 ## Fix the question
 
 ✗ *May she come tomorrow?*
-Fix: *Will she come tomorrow?*
+**Fix:** *Will she come tomorrow?*
 
 **Why:** future questions take Will…?. *May I…?* asks for
 permission — *May I leave early?* — not about what happens.
