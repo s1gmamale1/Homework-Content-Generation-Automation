@@ -125,7 +125,9 @@ Emit the arcs in this order. Slide counts below are minimums.
 
 Slide 3 is the deck's agenda, in the reference decks' own form:
 `0:00–0:06 Amaliy vaziyat` … The remaining 15 minutes are the class working,
-not the teacher talking.
+not the teacher talking. **Sum the minutes of the beats you list: at most 30.**
+Write the class-work block as one closing agenda line of its own, never as more
+teacher beats — an agenda whose beats fill all 45 minutes is a defect.
 
 ### Arc B — Gap banki (1 slide)
 
@@ -152,6 +154,12 @@ Each beat slide: a claim title, ≤5 bullets or one worked block, a timebox pill
 If the contract does not support a beat, write it `[bu darsda yo'q]` rather than
 inventing material.
 
+**When the lesson has a vocabulary phase, the vocabulary beat carries EVERY word
+that phase carries.** Count them; when the slide budget cannot hold them all,
+split the beat into two slides — showing five of ten words is this beat's
+characteristic failure, and every word left off the board meets the class for
+the first time in the homework.
+
 ### Arc D — Ishlangan namuna (2 slides)
 
 | # | slide | body |
@@ -162,6 +170,10 @@ inventing material.
 **Re-derive every number from the example's own values.** Never copy a result
 from the source or from a homework phase. An arithmetic slip here is repeated to
 a whole class by someone who trusts the page.
+
+**Every ladder rung names its source phase** — `(Error Detection)`,
+`(Real-Life Challenge, 1-qadam)`. A quoted sentence without its phase name
+cannot be found during the lesson.
 
 ### Arc E — Xatolar registri (ONE SLIDE PER MISCONCEPTION — 4–6 slides)
 
@@ -202,12 +214,19 @@ Where the item names its misconception only in prose, write the prose.
 ### Arc F — Uy vazifasiga ko'prik (1–2 slides)
 
 A table, one row per generated phase: `faza | nima ishlatiladi | darsda albatta`.
-Keep cells to a few words; this slide is scanned, not read.
+Keep cells to a few words; this slide is scanned, not read. Emit a **real
+markdown table** (header row + `|---|` separator) — the platform renders
+tables; a bulleted list with pipe characters inside it is not a table.
 
 Then a closing line naming **anything the homework tests that Arc B does not
 teach**. If that line is not empty it is the most important line in the deck —
 the class meets it first in the homework, where it cannot be repaired. Give it
 its own slide if it is not empty.
+
+**Derive that line by enumeration, never by assertion.** List every term and
+concept the packet's items actually use, tick each against a slide, and only
+an actually-empty remainder may claim there is no gap — a "no gap" line written
+without the enumeration is how a false one gets shipped.
 
 ## What must NOT appear anywhere
 
