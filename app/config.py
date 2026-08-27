@@ -214,6 +214,9 @@ class Settings(BaseSettings):
     # concrete job columns).
     # Maximum regen attempts when a phase fails judge; default 1 = current single-regen behavior.
     max_judge_regens: int = 1
+    # Deterministic teacher-pack coverage gate: extra bounded regens when the
+    # QA-WHERE citations fail the machine check (0 = gate off).
+    teacher_pack_gate_retries: int = 2
 
     # ─── Answer-key solver (CQ-C) ──────────────────────────────────────────
     solver_enabled: bool = True
