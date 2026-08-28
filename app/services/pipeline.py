@@ -18,7 +18,7 @@ from app.repositories import books as books_repo
 from app.repositories import jobs as jobs_repo
 from app.repositories import phase_outputs as phase_repo
 from app.repositories import toc_entries as toc_repo
-from app.services import agent, book_fetch, content_lint, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage, subjects, teacher_pack_gate
+from app.services import agent, book_fetch, content_lint, deck_images, events_bus, failure_classifier, model_tiers, notion_archive, phase_judge, solver, storage, subjects, teacher_pack_gate
 from app.services.agent_models import resolve_role_transport, resolve_session_limit_strategy
 from app.services.errors import (
     CancelWonSignal,
@@ -2573,6 +2573,31 @@ async def _execute_phase(
                 )
             elif _gate.notes:
                 warnings.append("gate:notes: " + "; ".join(_gate.notes[:3]))
+
+            # Illustrations: fill the data-less ELEMENT: image fences AFTER the
+            # text has settled (gate regens replace the md wholesale — filling
+            # earlier would pay image calls for discarded attempts). Fail-open:
+            # a host without the image credential ships the deck imageless
+            # (failed fences are STRIPPED — the importer hard-fails data-less
+            # ones); nothing here may fail the job.
+            if settings.deck_images_enabled:
+                try:
+                    output_md, _img_made, _img_failed = await deck_images.fill_images(
+                        output_md, job_id=job_id,
+                    )
+                    artifact = artifact_from_markdown(output_md, mode=artifact.mode)
+                    if _img_failed:
+                        warnings.append(
+                            f"images:partial: generated={_img_made} failed={_img_failed}"
+                        )
+                except (LeaseLostSignal, CancelWonSignal):
+                    raise
+                except Exception as exc:  # noqa: BLE001 — images must never fail a job
+                    logger.warning(
+                        f"[job {job_id}] teacher-pack image fill failed ({exc!r}); "
+                        f"shipping without generated images"
+                    )
+                    warnings.append(f"images:error: {exc!r}"[:200])
         # CQ-B (R21.3/R21.4): deterministic content lint. WARN-ONLY — findings
         # join validation_warnings under a `lint:` prefix, never gate a regen,
         # never fail a job. Pure function; defensively wrapped regardless.

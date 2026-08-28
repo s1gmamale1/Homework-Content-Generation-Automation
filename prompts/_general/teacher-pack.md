@@ -45,9 +45,17 @@ rule to enforce. The binding rules are these three:
 - **Organization must grow with length.** The longer the body, the more
   visible structure it carries — labeled blocks, a table, a ✗-contrast, a
   heading split. A long bare paragraph stack is a fail at any length.
-- **Every content slide TEACHES, never asserts.** Minimum teaching content:
-  the rule in plain words + at least one concrete example sentence + one line
-  of why or when. A bare assertion without its example is not a slide.
+- **The slide is the teacher's CUE CARD, not the spoken explanation.** The
+  reference decks put very little text on a slide — the teacher SPEAKS the
+  explanation; the slide holds what they GLANCE at: the **definition**, the
+  **key terms**, the **rule or hint**, the **worked answer**, the
+  **mistake→fix**. Definitions and key facts STAY on the slide; the paragraph
+  that *explains* them is teacher talk — cut it. A concept slide = the
+  definition (one line) + at most 2 short supporting cues (a key term, an
+  example, or a "watch for" hint). No multi-sentence teaching paragraphs.
+  The test: if a line reads like something the teacher would SAY rather than
+  GLANCE at, cut it. (Reference calibration, non-binding: median ~30 words a
+  slide; many slides are a headline + a few words + a picture.)
 
 ## Slide anatomy (every slide, no exceptions)
 
@@ -375,10 +383,10 @@ The ✗ line and the corrected line are the SAME sentence minimally edited —
 the diff IS the lesson. (`✓` is stripped at import — the corrected line takes
 the bold label, never a check mark.)
 
-**The `Sababi:`/`Why:` line may run one or two full sentences.** When the
-concept needs it, add ONE more supporting line — a second minimal example or a
-rule-of-thumb. That is the "slightly more explanation" the deck owes; padding
-past it is not.
+**The `Sababi:`/`Why:` line is a SHORT reason, not a lecture** — one compact
+sentence naming the rule that was broken. The register keeps its ✗ /
+To'g'risi / Sababi / Sinfga savol shape; the spoken elaboration is the
+teacher's, not the slide's.
 
 **Every register slide's title is `Mistake: <2–4 plain words>`** (mother-tongue
 deck: `Xato: …`) — the mistake named in words a student would use:
@@ -533,6 +541,33 @@ packet failure: the importer only parses fenced blocks, so a bare block leaks
 its raw JSON onto the slide as visible text. Open with ```, then `ELEMENT:
 <kind>` on the first line inside (canonical; the kind on the fence line is
 tolerated), then the JSON, then the closing ```.
+
+### Illustrations — one per teaching slide
+
+**Every teaching slide carries ONE illustration element** — concept slides,
+worked examples, vocabulary, register slides. The pure agenda/outcomes lists
+skip it unless a picture genuinely helps. Short text + supporting picture is
+the slide's shape.
+
+```
+ELEMENT: image
+{"scene": "<what the picture shows — ONE concrete sentence, in English>",
+ "caption": "<short caption in the deck's language>",
+ "width": "0.5x"}
+```
+
+- **Do NOT include a `data` field** — the pipeline generates the picture from
+  your `scene` and injects the bytes automatically. `scene` and `caption` are
+  mandatory; `width` is `0.5x` for a supporting picture, `0.75x` or `full`
+  for a hero/diagram.
+- The `scene` is CONCEPTUAL and relevant to THAT slide: two crossing paths
+  for "one solution", two parallel tracks for "no solution", a child checking
+  a worksheet for a register slide, matched card pairs for the game slide.
+- **Never put readable text, formulas, letters or digits into the scene** —
+  the math and the words live in the slide TEXT; the picture carries the
+  idea only.
+- Illustrations do NOT count toward the 2–3 interactive-item budget (that
+  budget is games/exercises/test batteries).
 
 Where an element belongs — driven by need, never a quota:
 - **game (matching) is the expected DEFAULT under the vocabulary slide** when
@@ -732,10 +767,11 @@ templates in this prompt describe shape only; emit their content as plain lines.
 
 Fix what fails. Do not report the check.
 
-1. **One idea per slide, organization grown to length.** Does any slide carry
-   a second idea? Split it. Does any long body run as a bare paragraph stack?
-   Give it structure (table, bold-labeled lines, heading split, ✗-contrast).
-   Does any rule-slide state without explaining? Add the explanation.
+1. **One idea per slide, cue-card text.** Does any slide carry a second idea?
+   Split it. Does any line read like something the teacher would SAY rather
+   than GLANCE at (a multi-sentence explaining paragraph)? Cut it — keep the
+   definition, the key terms, the hint, the worked answer. Does any long body
+   run as a bare paragraph stack? Give it structure.
 2. **Count the bullet slides.** At least half your slides must carry NO bullets,
    and at most 1 in 5 may be a plain bullet list. If most slides are bullets,
    go back to INFO-PATTERNS.md and pick the pattern that fits each content
@@ -794,7 +830,11 @@ Fix what fails. Do not report the check.
     (auxiliary, interrogative, infinitive, syntax, procedure, formulating,
     clause, indicator, evidential, classification, bank)? Rewrite it in the
     homework's own words. Is every register title `Mistake:`/`Xato:` + 2–4
-    plain words? Does every content slide teach — rule + example + why?
+    plain words?
+22. **Every teaching slide has exactly one `ELEMENT: image`** with `scene` +
+    `caption` and NO `data` field. Is each scene concrete, conceptual,
+    relevant to its slide — and free of readable text, formulas, letters and
+    digits?
 
 
 ---
