@@ -2585,7 +2585,9 @@ async def _execute_phase(
                     output_md, _img_made, _img_failed = await deck_images.fill_images(
                         output_md, job_id=job_id,
                     )
-                    artifact = artifact_from_markdown(output_md, mode=artifact.mode)
+                    artifact = artifact_from_markdown(
+                        output_md, mode=artifact.authoring_mode,
+                    )
                     if _img_failed:
                         warnings.append(
                             f"images:partial: generated={_img_made} failed={_img_failed}"
