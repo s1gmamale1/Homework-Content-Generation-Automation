@@ -126,6 +126,11 @@ def _declared_cbp(md: str) -> dict[str, tuple[set[str], str]]:
     )
 
 
+# Correct-option marker: english packets write "(Correct)", uz packets
+# "(To'g'ri)" with any apostrophe variant. Match both everywhere.
+_CORRECT_MARK_RE = re.compile(r"\((?:Correct|To[’'‘ʻ`´]g[’'‘ʻ`´]ri)\)")
+
+
 def _declared_rlc(md: str) -> tuple[dict[str, tuple[set[str], str]], set[str]]:
     """Lettered steps + the concept-select step's wrong chip values."""
     steps: dict[str, tuple[set[str], str]] = {}
@@ -134,17 +139,40 @@ def _declared_rlc(md: str) -> tuple[dict[str, tuple[set[str], str]], set[str]]:
         num, body = m.group(1), m.group(2)
         letters = re.findall(r"(?m)^\s*-?\s*([A-D])\)", body)
         if letters:
-            correct = re.search(r"(?m)^\s*-?\s*([A-D])\)[^\n]*\(Correct\)", body)
+            correct = None
+            for lm in re.finditer(r"(?m)^\s*-?\s*([A-D])\)([^\n]*)$", body):
+                if _CORRECT_MARK_RE.search(lm.group(2)):
+                    correct = lm.group(1)
+                    break
             if correct:
-                steps[num] = (set(letters) - {correct.group(1)}, correct.group(1))
+                steps[num] = (set(letters) - {correct}, correct)
             continue
-        # concept_select: plain "- chip" lines, one "(Correct)"
+        # concept_select: plain "- chip" lines, one correct-marked
         chip_lines = re.findall(r"(?m)^- ([^\n]+)$", body)
-        if chip_lines and any("(Correct)" in c for c in chip_lines):
+        if chip_lines and any(_CORRECT_MARK_RE.search(c) for c in chip_lines):
             for c in chip_lines:
-                if "(Correct)" not in c:
+                if not _CORRECT_MARK_RE.search(c):
                     chips.add(_norm_value(c))
     return steps, chips
+
+
+def _declared_fill_keys(md: str) -> dict[str, set[str]]:
+    """{card_number: normalized expected+alternate answers} for fill_blanks.
+
+    Fill-blanks declare no distractors (nothing to cover), but citing their
+    KEY as if it were a wrong option is a bogus citation — track the keys."""
+    out: dict[str, set[str]] = {}
+    for m in re.finditer(r"###[^\n]*?card[ _](\d+)\n(.*?)(?=\n### |\Z)", md, re.S):
+        num, body = m.group(1), m.group(2)
+        exp = re.search(r"Kutilayotgan javob:\*\*\s*([^\n]+)", body)
+        if not exp:
+            continue
+        keys = {_norm_value(exp.group(1))}
+        alt = re.search(r"Muqobil javoblar:\*\*\s*([^\n]+)", body)
+        if alt:
+            keys.update(_norm_value(a) for a in alt.group(1).split(","))
+        out[num] = {k for k in keys if k}
+    return out
 
 
 def _declared_sentence(md: str) -> tuple[set[str], str | None]:
@@ -154,8 +182,8 @@ def _declared_sentence(md: str) -> tuple[set[str], str | None]:
     wrongs: set[str] = set()
     key = None
     for line in re.findall(r"(?m)^- ([^\n]+)$", sec.group(1)):
-        if re.search(r"\((?:To'g'ri|Correct)\)", line):
-            key = _norm_value(re.sub(r"\((?:To'g'ri|Correct)\)", "", line))
+        if _CORRECT_MARK_RE.search(line):
+            key = _norm_value(_CORRECT_MARK_RE.sub("", line))
         else:
             wrongs.add(_norm_value(line))
     return wrongs, key
@@ -180,6 +208,7 @@ def _cited(deck_md: str):
     letter_cites: dict[tuple[str, str], set[str]] = {}
     value_tokens: set[str] = set()
     block_cites: set[tuple[str, str]] = set()
+    item_values: dict[tuple[str, str], set[str]] = {}
     for cm in re.finditer(r"<!--\s*QA-WHERE:(.*?)-->", deck_md, re.S):
         for seg in cm.group(1).split(";"):
             phase = _phase_of(seg)
@@ -199,7 +228,9 @@ def _cited(deck_md: str):
                 t = _norm_value(tok)
                 if t and t not in _LETTERS and len(t) > 1:
                     value_tokens.add(t)
-    return letter_cites, value_tokens, block_cites
+                    if item:
+                        item_values.setdefault((phase, item), set()).add(t)
+    return letter_cites, value_tokens, block_cites, item_values
 
 
 def _value_covered(declared: str, cited_values: set[str]) -> bool:
@@ -249,7 +280,7 @@ def _banned_hits(deck_md: str) -> list[str]:
 def check(deck_md: str, prior_outputs: dict[str, str]) -> GateResult:
     r = GateResult(passed=True)
     try:
-        letter_cites, value_tokens, block_cites = _cited(deck_md)
+        letter_cites, value_tokens, block_cites, item_values = _cited(deck_md)
     except Exception as exc:  # noqa: BLE001 — never raise
         return GateResult(passed=True, notes=[f"cited-parse-failed: {exc!r}"])
 
@@ -273,6 +304,14 @@ def check(deck_md: str, prior_outputs: dict[str, str]) -> GateResult:
     try:
         _check_letter_phase("memory-check", "Memory Check card",
                             _declared_memory_check(prior_outputs.get("memory-check", "")))
+        # A fill-blank has no distractors — citing its KEY as one is bogus.
+        for num, keys in _declared_fill_keys(prior_outputs.get("memory-check", "")).items():
+            for v in item_values.get(("memory-check", num), set()):
+                if any(v == k or v.startswith(k) or k.startswith(v) for k in keys):
+                    r.bogus.append(
+                        f"Memory Check card {num}: '{v[:50]}' is the fill-blank's "
+                        f"CORRECT expected answer"
+                    )
     except Exception as exc:  # noqa: BLE001
         r.notes.append(f"memory-check parse: {exc!r}")
     try:
