@@ -93,8 +93,21 @@ async def test_fills_all_dataless_fences_as_jpeg(monkeypatch):
     # style prefix carried the scene and the owner's style language
     assert any("two crossing paths" in c["prompt"] for c in models.calls)
     assert all("flat-vector" in c["prompt"] for c in models.calls)
+    # VERDICT-v186 fixes: no 'logistics' wording; hard no-text clause always on
+    assert all("logistics illustration style" not in c["prompt"] for c in models.calls)
+    assert all("writing of ANY" in c["prompt"] for c in models.calls)
     assert all(c["model"] == "gemini-2.5-flash-image" for c in models.calls)
     assert '"type": "single_choice"' in out
+
+
+def test_build_prompt_sanitizes_and_hardens():
+    p = deck_images._build_prompt("a chalkboard showing 100 / 2 = 50 packages")
+    assert not any(ch in p.split("in my flat-vector")[0] for ch in "0123456789=/")
+    assert "completely BLANK" in p          # risky scene → extra-hard variant
+    p2 = deck_images._build_prompt("two friendly characters shaking hands where two paths meet")
+    assert "completely BLANK" not in p2     # clean metaphor → standard clause
+    assert "writing of ANY" in p2
+    assert "logistics imagery" in p2        # subject-leak ban always present
 
 
 @pytest.mark.asyncio

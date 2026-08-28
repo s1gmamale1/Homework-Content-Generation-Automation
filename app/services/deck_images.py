@@ -33,7 +33,7 @@ from app.config import settings
 # interpolated at the head; the style handles palette/composition and forbids
 # readable text, logos and watermarks.
 STYLE_PREFIX = (
-    "Create an illustration of {scene} in my logistics illustration style: "
+    "Create an illustration of {scene} in my flat-vector illustration style: "
     "a friendly modern flat-vector illustration with a soft educational "
     "children's-book aesthetic. Use simplified rounded characters and objects, "
     "clean smooth shapes, minimal outlines, expressive but simple facial "
@@ -49,6 +49,38 @@ STYLE_PREFIX = (
     "dark colors, heavy outlines, complex textures, dramatic contrast, "
     "readable text, logos, or watermarks."
 )
+
+# Review 2026-08-28 (VERDICT-v186): two leaks fixed here. "logistics" in the
+# original owner prefix named the AESTHETIC but the model drew delivery
+# imagery — the prefix now says "flat-vector illustration style" (rest kept
+# verbatim). And scenes implying calculations produced garbled chalkboard
+# text — every prompt now carries the hard no-text clause, scenes are
+# sanitized of digits/equation symbols, and a scene that mentions writable
+# surfaces or numeric ideas gets the even harder BLANK-surfaces variant.
+_HARD_NO_TEXT = (
+    " — absolutely NO letters, numbers, digits, equations, or writing of ANY "
+    "kind anywhere in the image; no chalkboard text, no labels, no signage. "
+    "The subject of the picture is the described scene itself — never "
+    "delivery, warehouses, packages, trucks, or logistics imagery."
+)
+_HARD_NO_TEXT_BLANK = (
+    _HARD_NO_TEXT
+    + " Any board, screen, sign, paper or surface in the scene is completely "
+    "BLANK, with nothing written or drawn on it."
+)
+_RISKY_SCENE_RE = re.compile(
+    r"(?i)\b(chalk\s*board|blackboard|whiteboard|board|screen|sign|label|"
+    r"poster|paper|notebook|writing|written|text|formula|equation|number|"
+    r"digit|calculat\w*)\b"
+)
+_SCENE_STRIP_RE = re.compile(r"[0-9=+×÷<>%^_/\\$]|\b[a-z]\)\s")
+
+
+def _build_prompt(scene: str) -> str:
+    clean = _SCENE_STRIP_RE.sub(" ", scene)
+    clean = re.sub(r"\s+", " ", clean).strip()
+    tail = _HARD_NO_TEXT_BLANK if _RISKY_SCENE_RE.search(scene) else _HARD_NO_TEXT
+    return STYLE_PREFIX.format(scene=clean) + tail
 
 # Both tolerated fence forms: kind on the fence line, or on the first line
 # inside (canonical). Group 1/2 = kind, group 3 = JSON body.
@@ -108,7 +140,7 @@ async def _generate_one(client, scene: str) -> str:
     2026-08-28 (Imagen models 404 on this endpoint)."""
     import base64
 
-    prompt = STYLE_PREFIX.format(scene=scene)
+    prompt = _build_prompt(scene)
     resp = await client.aio.models.generate_content(
         model=settings.deck_image_model, contents=prompt,
     )

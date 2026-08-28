@@ -560,12 +560,15 @@ ELEMENT: image
   your `scene` and injects the bytes automatically. `scene` and `caption` are
   mandatory; `width` is `0.5x` for a supporting picture, `0.75x` or `full`
   for a hero/diagram.
-- The `scene` is CONCEPTUAL and relevant to THAT slide: two crossing paths
-  for "one solution", two parallel tracks for "no solution", a child checking
-  a worksheet for a register slide, matched card pairs for the game slide.
-- **Never put readable text, formulas, letters or digits into the scene** —
-  the math and the words live in the slide TEXT; the picture carries the
-  idea only.
+- The `scene` is a PURE METAPHOR for that slide's idea: two crossing paths
+  for "one solution", two parallel tracks for "no solution", a balanced
+  see-saw for an equation, one character handing a glowing key to another
+  for a worked answer, a child checking a worksheet for a register slide.
+- **The scene must contain ZERO numbers, equations, or words-to-show — and
+  never "a board/screen/sign with something written on it".** A scene that
+  implies a calculation makes the model bake garbled text into the picture.
+  The math and the words live in the slide TEXT; the picture carries the
+  idea only, wordlessly.
 - Illustrations do NOT count toward the 2–3 interactive-item budget (that
   budget is games/exercises/test batteries).
 
