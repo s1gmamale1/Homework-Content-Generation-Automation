@@ -1,8 +1,11 @@
-"""Unit tests for deck_images.fill_images — stubbed image client."""
+"""Unit tests for deck_images.fill_images — stubbed Gemini image client."""
 
+import base64
+import io
 import json
 
 import pytest
+from PIL import Image
 
 from app.services import deck_images
 
@@ -29,65 +32,100 @@ ELEMENT: test
 """
 
 
-class _Resp:
-    def __init__(self, b64):
-        class D:  # noqa: D401
-            b64_json = b64
-        self.data = [D()]
+def _tiny_png() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (8, 8), (200, 220, 240)).save(buf, format="PNG")
+    return buf.getvalue()
 
 
-class _Images:
-    def __init__(self, fail_scenes=()):
+def _resp(data: bytes):
+    class Blob:
+        mime_type = "image/png"
+    Blob.data = data
+
+    class Part:
+        inline_data = Blob()
+
+    class Content:
+        parts = [Part()]
+
+    class Cand:
+        content = Content()
+
+    class Resp:
+        candidates = [Cand()]
+    return Resp()
+
+
+class _Models:
+    def __init__(self, fail_scenes=(), data=None):
         self.fail_scenes = fail_scenes
+        self.data = data if data is not None else _tiny_png()
         self.calls = []
 
-    async def generate(self, **kw):
-        self.calls.append(kw)
+    async def generate_content(self, *, model, contents):
+        self.calls.append({"model": model, "prompt": contents})
         for f in self.fail_scenes:
-            if f in kw["prompt"]:
+            if f in contents:
                 raise RuntimeError("boom")
-        return _Resp("QUJD")  # "ABC"
+        return _resp(self.data)
 
 
 class _Client:
-    def __init__(self, images):
-        self.images = images
+    def __init__(self, models):
+        class AIO:  # noqa: D401
+            pass
+        self.aio = AIO()
+        self.aio.models = models
 
 
 @pytest.mark.asyncio
-async def test_fills_all_dataless_fences(monkeypatch):
-    imgs = _Images()
-    monkeypatch.setattr(deck_images, "_client", lambda: _Client(imgs))
+async def test_fills_all_dataless_fences_as_jpeg(monkeypatch):
+    models = _Models()
+    monkeypatch.setattr(deck_images, "_client", lambda: _Client(models))
     out, made, failed = await deck_images.fill_images(DECK)
     assert (made, failed) == (2, 0)
-    assert out.count('"data": "QUJD"') == 2
+    # every injected payload decodes to JPEG (recompressed from the PNG)
+    for m in deck_images._IMG_FENCE_RE.finditer(out):
+        obj = json.loads(m.group(3))
+        raw = base64.b64decode(obj["data"])
+        assert raw[:3] == b"\xff\xd8\xff"
     # style prefix carried the scene and the owner's style language
-    assert any("two crossing paths" in c["prompt"] for c in imgs.calls)
-    assert all("flat-vector" in c["prompt"] for c in imgs.calls)
-    # the test element is untouched
+    assert any("two crossing paths" in c["prompt"] for c in models.calls)
+    assert all("flat-vector" in c["prompt"] for c in models.calls)
+    assert all(c["model"] == "gemini-2.5-flash-image" for c in models.calls)
     assert '"type": "single_choice"' in out
 
 
 @pytest.mark.asyncio
 async def test_failed_scene_strips_whole_fence(monkeypatch):
-    imgs = _Images(fail_scenes=("parallel train tracks",))
-    monkeypatch.setattr(deck_images, "_client", lambda: _Client(imgs))
+    models = _Models(fail_scenes=("parallel train tracks",))
+    monkeypatch.setattr(deck_images, "_client", lambda: _Client(models))
     out, made, failed = await deck_images.fill_images(DECK)
     assert (made, failed) == (1, 1)
-    assert "parallel train tracks" not in out          # fence removed entirely
+    assert "parallel train tracks" not in out
     assert out.count("ELEMENT: image") == 1
-    assert '"data": "QUJD"' in out
 
 
 @pytest.mark.asyncio
 async def test_no_credential_strips_and_never_raises(monkeypatch):
     def _boom():
-        raise RuntimeError("CLODEX_API_KEY unset")
+        raise RuntimeError("gemini api: no GEMINI_API_KEY and no Vertex SA")
     monkeypatch.setattr(deck_images, "_client", _boom)
     out, made, failed = await deck_images.fill_images(DECK)
     assert made == 0 and failed == 2
-    assert "ELEMENT: image" not in out                 # data-less fences gone
-    assert '"type": "single_choice"' in out            # other elements intact
+    assert "ELEMENT: image" not in out
+    assert '"type": "single_choice"' in out
+
+
+@pytest.mark.asyncio
+async def test_unrecompressible_bytes_fall_back_to_original(monkeypatch):
+    models = _Models(data=b"not-an-image")
+    monkeypatch.setattr(deck_images, "_client", lambda: _Client(models))
+    out, made, failed = await deck_images.fill_images(DECK)
+    assert made == 2
+    obj = json.loads(next(deck_images._IMG_FENCE_RE.finditer(out)).group(3))
+    assert base64.b64decode(obj["data"]) == b"not-an-image"
 
 
 @pytest.mark.asyncio
@@ -96,9 +134,9 @@ async def test_already_filled_fence_untouched(monkeypatch):
         '{"scene": "two crossing paths in a park", "caption": "Bitta yechim", "width": "0.5x"}',
         json.dumps({"scene": "s", "caption": "c", "width": "0.5x", "data": "OLD"}),
     )
-    imgs = _Images()
-    monkeypatch.setattr(deck_images, "_client", lambda: _Client(imgs))
+    models = _Models()
+    monkeypatch.setattr(deck_images, "_client", lambda: _Client(models))
     out, made, failed = await deck_images.fill_images(filled)
-    assert made == 1 and failed == 0                   # only the second fence
+    assert made == 1 and failed == 0
     assert '"data": "OLD"' in out
-    assert len(imgs.calls) == 1
+    assert len(models.calls) == 1

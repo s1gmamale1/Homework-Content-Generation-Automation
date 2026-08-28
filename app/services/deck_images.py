@@ -2,9 +2,10 @@
 
 The teacher-pack prompt has the model emit `ELEMENT: image` fences carrying
 only `scene` + `caption` + `width` — no bytes. This module finds those
-fences, generates each picture with the image model on the Clodex
-OpenAI-compatible endpoint (gpt-image-2) using the owner's fixed style
-prefix, and injects the base64 bytes as `data`.
+fences, generates each picture with Gemini's image model
+(gemini-2.5-flash-image) using the SAME credential the text pipeline uses
+(owner directive 2026-08-28; Imagen 404s on this endpoint) and the owner's
+fixed style prefix, recompresses to JPEG, and injects the base64 as `data`.
 
 Contract with the platform importer (DIRECTIVE-slides-lean-plus-images):
 - an image element with missing/invalid base64 HARD-FAILS the packet at
@@ -59,34 +60,64 @@ _IMG_FENCE_RE = re.compile(
 
 
 def _client():
-    """The Clodex OpenAI-compatible client (single-sourced auth handling)."""
-    from app.services.api_transport import _clodex_client
+    """The Gemini client — same auth as the text pipeline (owner directive:
+    the SAME key that generates the text generates the images). Reuses
+    api_transport._gemini_client so key vs Vertex-SA handling stays
+    single-sourced."""
+    from app.services.api_transport import _gemini_client
 
-    return _clodex_client()
+    return _gemini_client(settings.deck_image_model)
+
+
+def _max_side() -> int:
+    """Longest-side target parsed from deck_image_size ('1536x1024' → 1536)."""
+    try:
+        return max(int(p) for p in settings.deck_image_size.lower().split("x"))
+    except Exception:  # noqa: BLE001
+        return 1536
+
+
+def _recompress(raw: bytes) -> bytes:
+    """PNG-ish model output → JPEG (quality 60), downscaled to the target
+    longest side. gemini-2.5-flash-image returns ~1MB PNGs and accepts no
+    size/format parameters, so the packet budget is enforced here. Fail-open:
+    any Pillow trouble returns the original bytes."""
+    try:
+        import io
+
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(raw))
+        img = img.convert("RGB")
+        side = _max_side()
+        if max(img.size) > side:
+            img.thumbnail((side, side))
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=60, optimize=True)
+        return buf.getvalue()
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"deck_images: recompress failed ({exc!r}); keeping original bytes")
+        return raw
 
 
 async def _generate_one(client, scene: str) -> str:
-    """One image call → base64 string. Tries the compressed-jpeg parameter set
-    first (keeps the packet small), falls back to the minimal call if the
-    mirror rejects the extra kwargs."""
+    """One image call → base64 string (JPEG after recompression).
+
+    gemini-2.5-flash-image ("nano-banana") is a generate_content model whose
+    response carries the picture as an inline_data part — smoke-verified
+    2026-08-28 (Imagen models 404 on this endpoint)."""
+    import base64
+
     prompt = STYLE_PREFIX.format(scene=scene)
-    kwargs = dict(model=settings.deck_image_model, prompt=prompt,
-                  size=settings.deck_image_size)
-    try:
-        resp = await client.images.generate(
-            **kwargs, output_format="jpeg", output_compression=60,
-        )
-    except TypeError:
-        resp = await client.images.generate(**kwargs)
-    except Exception as exc:  # noqa: BLE001 — mirror may 400 unknown params
-        if "output_format" in str(exc) or "output_compression" in str(exc) or "400" in str(exc):
-            resp = await client.images.generate(**kwargs)
-        else:
-            raise
-    b64 = getattr(resp.data[0], "b64_json", None)
-    if not b64:
-        raise RuntimeError("image response carried no b64_json")
-    return b64
+    resp = await client.aio.models.generate_content(
+        model=settings.deck_image_model, contents=prompt,
+    )
+    for cand in resp.candidates or ():
+        for part in (cand.content.parts or ()) if cand.content else ():
+            blob = getattr(part, "inline_data", None)
+            if blob is not None and blob.data:
+                return base64.b64encode(_recompress(blob.data)).decode("ascii")
+    raise RuntimeError("image response carried no inline_data part")
 
 
 async def fill_images(md: str, *, job_id=None) -> tuple[str, int, int]:

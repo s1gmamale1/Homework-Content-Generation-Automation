@@ -217,11 +217,12 @@ class Settings(BaseSettings):
     # Deterministic teacher-pack coverage gate: extra bounded regens when the
     # QA-WHERE citations fail the machine check (0 = gate off).
     teacher_pack_gate_retries: int = 2
-    # Teacher-deck illustrations (ELEMENT: image fences filled via the Clodex
-    # image model). Fail-open: a host without CLODEX_API_KEY strips the
-    # data-less fences and ships the deck imageless with a warning.
+    # Teacher-deck illustrations (ELEMENT: image fences), generated with the
+    # SAME Gemini credential the text pipeline uses (owner directive) and
+    # recompressed to JPEG for the packet budget. Fail-open: a host without
+    # gemini auth strips the data-less fences and ships the deck imageless.
     deck_images_enabled: bool = True
-    deck_image_model: str = "gpt-image-2"
+    deck_image_model: str = "gemini-2.5-flash-image"
     deck_image_size: str = "1536x1024"
     deck_image_max: int = 16
 
