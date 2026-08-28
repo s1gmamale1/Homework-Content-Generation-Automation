@@ -169,6 +169,22 @@ Show both paths so the consequence reveals the {{SUBJECT}} content, not just a v
   would notice the error" is a failed wrong path — show the error itself.
 - **Why the wrong path fails** — one required sentence on why it cannot be correct.
 
+The two paths open with MACHINE-PARSED labels. The import platform reads the
+simulation out of these exact strings; a missing or malformed label makes the
+platform reject the ENTIRE homework — every phase, not just this one:
+- Each label sits at the start of its own line, bold, colon INSIDE the bold,
+  followed by that path's text: `**To'g'ri yo'l:**` and `**Noto'g'ri yo'l:**` (uz),
+  `**Correct path:**` and `**Wrong path:**` (en), `**Правильный путь:**` and
+  `**Неправильный путь:**` (ru). Exactly one of each per output.
+- These are inline labels, NOT headings: never `###`/`####` lines, never unbolded,
+  never reworded or translated loosely.
+- Open the why-fails sentence the same way: `**Noto'g'ri yo'lning xatosi:**` (uz),
+  `**Why the wrong path fails:**` (en), `**Ошибка неправильного пути:**` (ru).
+- A system of equations written inside a path follows the notation contract even
+  mid-sentence: ONE left brace with a semicolon separator —
+  `{ 2x + y = 11 ; 3x − 2y = 6`. Opening a second brace joined with va/и/and
+  (`{ … va { …`) is a wrong rendering of the mathematics itself.
+
 ## Feedback summary
 
 Close with a feedback section in exactly four parts. This page is authored ONCE per
@@ -281,7 +297,9 @@ turns on a real-world appearance the student has to look at.
 2. ✓ Both Learning Block 1 and Learning Block 2 present and short?
 3. ✓ DPE is open-ended with no answer choices?
 4. ✓ DPE placed after Checkpoint 3 and before the final simulation?
-5. ✓ Final simulation shows correct path, wrong path, and why wrong fails?
+5. ✓ Final simulation shows correct path, wrong path, and why wrong fails — each
+   opened by its exact bold machine-parsed label (`**To'g'ri yo'l:**` /
+   `**Noto'g'ri yo'l:**` or language equivalent), on its own line, never as a heading?
 6. ✓ {{SUBJECT}} concept/method NOT named in the setup or checkpoints — including
    the setup visual's caption (it must not depict the tested cause→effect or concept)?
 7. ✓ Every concept traces to this lesson; no invented textbook facts?
