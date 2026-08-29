@@ -13,6 +13,7 @@ is not performed."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Callable, Optional
@@ -30,6 +31,7 @@ from app.schemas.content_json import TeacherDeck
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
 from app.services.notion.page_creator import _normalize, find_or_create
+from app.services.platform_payload import build_notion_envelope
 from app.services.teacher_deck import render_teacher_deck_markdown, render_teacher_deck_pdf
 
 # All generated homeworks are filed under this container, created on demand
@@ -221,6 +223,7 @@ def _push_to_notion(
     subject_page_id: str,
     lesson_title: str,
     phase_md: dict[str, str],  # phase_name -> markdown (only present/done phases)
+    homework_manifest: Optional[dict] = None,
     find_or_create: Callable = find_or_create,  # injectable for tests
     replace: bool = False,
     homework_page_id: Optional[str] = None,
@@ -268,6 +271,24 @@ def _push_to_notion(
         lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
         homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
+    if homework_manifest is not None:
+        for block in client.get_block_children(homework_id):
+            if (
+                block.get("type") == "file"
+                and block.get("file", {}).get("name") == "homework-envelope.v1.json"
+            ):
+                client.delete_block(block["id"])
+        manifest_bytes = json.dumps(
+            homework_manifest, ensure_ascii=False, sort_keys=True, indent=2,
+        ).encode("utf-8")
+        upload = client.upload_bytes(
+            manifest_bytes, "homework-envelope.v1.json", "application/json",
+        )
+        client.append_block_children(
+            homework_id,
+            [blocks.make_file_upload_block(upload, "homework-envelope.v1.json")],
+        )
+
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)
         if client.page_has_content(page_id):
@@ -292,6 +313,7 @@ def _push_to_notion(
 
 
 async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, replace: bool = False,
+                          homework_manifest: Optional[dict] = None,
                           homework_page_id: Optional[str] = None,
                           lesson_page_id: Optional[str] = None,
                           backfill_lesson_id: bool = True) -> tuple[Optional[str], str]:
@@ -307,6 +329,7 @@ async def _push_with_retry(*, client, subject_page_id, lesson_title, phase_md, r
                 subject_page_id=subject_page_id,
                 lesson_title=lesson_title,
                 phase_md=phase_md,
+                homework_manifest=homework_manifest,
                 replace=replace,
                 homework_page_id=homework_page_id,
                 lesson_page_id=lesson_page_id,
@@ -538,6 +561,7 @@ async def archive_job(
                         job_id, prior_job_id, section_id)
             phases = await phase_repo.list_for_job(session, job_id)
             phase_md: dict[str, str] = {}
+            homework_manifest: Optional[dict] = None
             deck: Optional[TeacherDeck] = None
             if is_teacher:
                 for p in phases:
@@ -553,6 +577,26 @@ async def archive_job(
                     for p in phases
                     if p.status == "done" and p.phase_name != "extract" and (p.output_md or "").strip()
                 }
+                homework_manifest = build_notion_envelope(
+                    job={
+                        "id": job.id,
+                        "book_id": job.book_id,
+                        "output_language": job.output_language,
+                        "grade": book.grade,
+                    },
+                    phases=[
+                        {
+                            "phase_name": p.phase_name,
+                            "output_md": getattr(p, "output_md", None),
+                            "content_json": getattr(p, "content_json", None),
+                            "content_schema_version": getattr(p, "content_schema_version", None),
+                            "authoring_mode": getattr(p, "authoring_mode", None),
+                            "judge_status": getattr(p, "judge_status", None),
+                            "status": p.status,
+                        }
+                        for p in phases
+                    ],
+                )
         # session closed — do NOT hold a DB connection during the Notion push
         if is_teacher:
             if deck is None:
@@ -596,6 +640,7 @@ async def archive_job(
                     subject_page_id=subject_page_id,
                     lesson_title=lesson_title,
                     phase_md=phase_md,
+                    homework_manifest=homework_manifest,
                     replace=do_replace,
                     # Reuse the page this section already owns, so an ambiguous
                     # title cannot re-key it onto a fresh suffixed page.

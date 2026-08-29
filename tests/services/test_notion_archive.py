@@ -1,5 +1,6 @@
+import json
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call
 import app.services.notion_archive as na
 
 
@@ -86,6 +87,86 @@ def test_push_builds_grouped_structure():
     assert client.upload_bytes.call_count == 8
     # content written to 7 leaf pages; the Gamified Practices container gets none
     assert client.append_block_children.call_count == 7
+
+
+def test_push_attaches_one_authoritative_json_manifest_to_homework_page():
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    manifest = {
+        "schema": "hcg-notion-envelope@1",
+        "source": "hcg",
+        "source_ref": "book-1",
+        "external_key": "job-1",
+        "language": "uz",
+        "grade": "8",
+        "phases": [],
+        "artifact_digest": {
+            "algorithm": "sha256",
+            "canonicalization": "json-sort-keys-utf8",
+            "value": "a" * 64,
+        },
+    }
+
+    na._push_to_notion(
+        client=client,
+        subject_page_id="subj",
+        lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"},
+        homework_manifest=manifest,
+        find_or_create=MagicMock(side_effect=_fake_find),
+    )
+
+    json_uploads = [
+        call for call in client.upload_bytes.call_args_list
+        if call.args[1] == "homework-envelope.v1.json"
+    ]
+    assert len(json_uploads) == 1
+    data, filename, mime = json_uploads[0].args
+    assert filename == "homework-envelope.v1.json"
+    assert mime == "application/json"
+    assert json.loads(data.decode("utf-8")) == manifest
+
+    homework_writes = [
+        call for call in client.append_block_children.call_args_list
+        if call.args[0] == "id::Homework"
+    ]
+    assert len(homework_writes) == 1
+    assert homework_writes[0].args[1] == [{
+        "object": "block",
+        "type": "file",
+        "file": {
+            "type": "file_upload",
+            "file_upload": {"id": "upl::homework-envelope.v1.json"},
+            "name": "homework-envelope.v1.json",
+        },
+    }]
+
+
+def test_push_replaces_existing_manifest_blocks_without_clearing_other_homework_content():
+    client = MagicMock()
+    client.page_has_content.return_value = False
+    client.get_block_children.return_value = [
+        {"id": "old-1", "type": "file", "file": {"name": "homework-envelope.v1.json"}},
+        {"id": "keep", "type": "paragraph", "paragraph": {}},
+        {"id": "old-2", "type": "file", "file": {"name": "homework-envelope.v1.json"}},
+    ]
+    client.upload_bytes.return_value = "new-upload"
+
+    na._push_to_notion(
+        client=client,
+        subject_page_id="subj",
+        lesson_title="L",
+        phase_md={"case-based-preview": "# CBP"},
+        homework_manifest={"schema": "hcg-notion-envelope@1"},
+        find_or_create=MagicMock(side_effect=_fake_find),
+    )
+
+    assert client.delete_block.call_args_list == [
+        call("old-1"),
+        call("old-2"),
+    ]
+    client.clear_content_blocks.assert_not_called()
 
 
 def test_flashcards_page_attachments_at_top_then_content():
