@@ -272,12 +272,14 @@ def _push_to_notion(
         homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     if homework_manifest is not None:
-        for block in client.get_block_children(homework_id):
+        old_manifest_ids = [
+            block["id"]
+            for block in client.get_block_children(homework_id)
             if (
                 block.get("type") == "file"
                 and block.get("file", {}).get("name") == "homework-envelope.v1.json"
-            ):
-                client.delete_block(block["id"])
+            )
+        ]
         manifest_bytes = json.dumps(
             homework_manifest, ensure_ascii=False, sort_keys=True, indent=2,
         ).encode("utf-8")
@@ -288,6 +290,8 @@ def _push_to_notion(
             homework_id,
             [blocks.make_file_upload_block(upload, "homework-envelope.v1.json")],
         )
+        for block_id in old_manifest_ids:
+            client.delete_block(block_id)
 
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)

@@ -1,6 +1,9 @@
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call
+
+import pytest
+
 import app.services.notion_archive as na
 
 
@@ -167,6 +170,28 @@ def test_push_replaces_existing_manifest_blocks_without_clearing_other_homework_
         call("old-2"),
     ]
     client.clear_content_blocks.assert_not_called()
+
+
+def test_push_preserves_existing_manifests_when_new_manifest_append_fails():
+    client = MagicMock()
+    client.get_block_children.return_value = [
+        {"id": "old-1", "type": "file", "file": {"name": "homework-envelope.v1.json"}},
+        {"id": "old-2", "type": "file", "file": {"name": "homework-envelope.v1.json"}},
+    ]
+    client.upload_bytes.return_value = "new-upload"
+    client.append_block_children.side_effect = RuntimeError("append failed")
+
+    with pytest.raises(RuntimeError, match="append failed"):
+        na._push_to_notion(
+            client=client,
+            subject_page_id="subj",
+            lesson_title="L",
+            phase_md={"case-based-preview": "# CBP"},
+            homework_manifest={"schema": "hcg-notion-envelope@1"},
+            find_or_create=MagicMock(side_effect=_fake_find),
+        )
+
+    client.delete_block.assert_not_called()
 
 
 def test_flashcards_page_attachments_at_top_then_content():
