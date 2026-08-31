@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Callable, Optional
 from uuid import UUID
@@ -249,16 +250,38 @@ def _verified_under_container(
     return (None, None)
 
 
+_IMG_FENCE_PAGE_RE = re.compile(r"```[ \t]*\nELEMENT: image\n(\{.*?\})\s*\n?```", re.S)
+
+
+def _strip_image_payloads(md: str) -> str:
+    """Page-body copy of a phase md with base64 image fences reduced to a
+    caption line. The v1.12+ teacher-pack embeds its illustrations as base64
+    inside ```ELEMENT: image``` fences (~30KB each); pasting that into Notion
+    page blocks makes the append request exceed Notion's payload cap (HTTP 413
+    — every image-bearing archive since v1.12 failed on this, surfaced
+    2026-08-31). The FULL markdown still ships as the page's .md attachment;
+    only the rendered body is slimmed."""
+    def _repl(m):
+        try:
+            d = json.loads(m.group(1))
+            cap = (d.get("caption") or d.get("scene") or "").strip()
+        except Exception:
+            cap = ""
+        return f"🖼️ {cap}".rstrip()
+    return _IMG_FENCE_PAGE_RE.sub(_repl, md)
+
+
 def _leaf_blocks(client: NotionClientWrapper, present: list[tuple[str, str]]) -> list[dict]:
     """Blocks for a leaf page: every phase's .md attached at the very top, then
-    each phase's rendered markdown, separated by dividers."""
+    each phase's rendered markdown, separated by dividers. Body markdown is
+    passed through `_strip_image_payloads` (attachment keeps the original)."""
     body: list[dict] = []
     for phase_name, md in present:  # attachments first — top of the page
         upload = client.upload_bytes(md.encode("utf-8"), f"{phase_name}.md", "text/markdown")
         body.append(blocks.make_file_upload_block(upload, f"{phase_name}.md"))
     for phase_name, md in present:  # then content sections
         body.append(blocks.make_divider())
-        body.extend(blocks.markdown_to_notion_blocks(md))
+        body.extend(blocks.markdown_to_notion_blocks(_strip_image_payloads(md)))
     return body
 
 
