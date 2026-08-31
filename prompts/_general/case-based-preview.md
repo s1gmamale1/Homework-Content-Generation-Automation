@@ -46,6 +46,13 @@ Emit these sections in exactly this order:
                          `Source concept rule` below is satisfied. It sits outside
                          the numbered sections, so it is never folded into the
                          narrative and never dropped by the heading match.
+                         The ROLE line is MACHINE-PARSED: it must start its own line
+                         with the exact bold label `**Talaba roli:**` (uz) /
+                         `**Student role:**` (en) / `**Роль ученика:**` (ru),
+                         followed by the role — e.g. `**Talaba roli:** Yosh
+                         tadqiqotchi`. Never weave the role into prose only, never
+                         put it mid-line after a `|`, and use this label exactly
+                         once in the whole output.
 1. Case setup          — student role, narrative, clear task. Open with a real-life
                          case in ONE of the two approved shapes: **storytelling**
                          (a short concrete situation) OR **question-first** (pose
@@ -55,6 +62,13 @@ Emit these sections in exactly this order:
                          observes (events, tensions, facts on the ground) WITHOUT
                          naming the underlying cause, concept, or method that the
                          checkpoints will ask them to identify.
+                         The section ENDS with one MACHINE-PARSED task line: its own
+                         line, starting with the exact bold label `**Vazifa:**` (uz)
+                         / `**Task:**` (en) / `**Задание:**` (ru), followed by one
+                         sentence telling the student what they must do in this
+                         case. Exactly once, line-initial, never mid-line — the
+                         import platform reads the task out of this label and the
+                         Case Study section fails to import without it.
 2. Checkpoint 1        — Identify: which concept/structure/rule is involved?
 3. Learning Block 1    — short, textbook-grounded explanation of the concept just identified
 4. Checkpoint 2        — Decide: which method/factor/action drives the outcome?
@@ -263,7 +277,11 @@ section headings, so heading shape is a contract:
   <letter>` (stripped before the student sees the item). This label is a
   machine-parsed key: EXACTLY `**To'g'ri javob:**` at every level and in every
   output language — including B1+ all-English lessons — never "Correct answer" or
-  any translation. The three checkpoints must not all share one correct letter —
+  any translation. Mark correctness NO other way: never an em-dash verdict
+  appended to an option line (`… — To'g'ri!` / `… — Noto'g'ri`), never numeric
+  `Javob: 2`, never `(Правильный ответ)` — an appended verdict ships inside the
+  student's option text and leaks the answer. Options are single-line.
+  The three checkpoints must not all share one correct letter —
   vary the position of the correct option across them. Checkpoint feedback goes
   AFTER the options, never between the question and the options.
 - **Plain text — no math markup.** Never wrap anything in `$…$`, `\(…\)` or `\[…\]`:
@@ -310,7 +328,11 @@ turns on a real-world appearance the student has to look at.
 12. ✓ Feedback summary has all four parts, and the completion part describes a
     CONDITIONAL app-owned redo route (no decided pass/fail label)?
 13. ✓ No checkpoint feedback declares a partial condition "sufficient" when the rule has more cases; no "impossible" claims for merely-inconvenient methods; no fake authorities?
-14. ✓ Header block (case type · student role · textbook concept) present above the phase title?
+14. ✓ Header block (case type · student role · textbook concept) present above the
+    phase title — with the role on its own line as exactly `**Talaba roli:** …`
+    (or `**Student role:**` / `**Роль ученика:**` per output language)?
+15. ✓ Case setup ends with exactly one line-initial `**Vazifa:**` (/ `**Task:**` /
+    `**Задание:**`) task line?
 15. ✓ Exactly ONE heading per section — `##`, numbered `1.`–`10.`, output language only, no English gloss, no `###` or bold restatement underneath?
 16. ✓ All ten sections carry their heading keyword, so none is dropped on import?
 17. ✓ No `$…$` or other math markup anywhere in the output?
