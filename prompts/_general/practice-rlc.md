@@ -103,6 +103,14 @@ expressed; the platform strips it before the student sees the step, so never
 reveal the answer by option length, position, or wording, and never write
 "to'g'ri javob"/"правильный ответ" inside an option label itself.
 
+**Every step OPENS with its question.** The FIRST line after each step heading is
+one plain question sentence — the decision the student faces in that step —
+before any options, chips, or metadata lines. This line is MACHINE-PARSED as the
+step's prompt: never omit it, never fold it into an option, and never start a
+step's body directly with `A)` or a bullet. (Step 5's open prompt already is this
+line.) A step with no question line imports as a repaired item flagged for
+review — the question line is what makes it import clean.
+
 - `### Step 1 — Decision (kind: decision)` — the first call the expert must make.
   - **3–4 options**, one per line, each formatted `A) <option>` … `D) <option>`
     (capital letter + `)` — the letters are machine-parsed; a leading `-` bullet
@@ -168,6 +176,8 @@ symptoms without linking to the mechanism the lesson taught.
 
 - **Exactly five steps, in the order `decision → info_request → final_decision →
   concept_select → reasoning`.** Never fewer, never more, never reordered.
+- **Every step's first body line is its question sentence** — before options or
+  chips, never omitted (see the machine-parsed prompt rule above).
 - Steps 1–3 and Step 4 each have exactly ONE tagged-correct entry; the correctness
   tag is the only correctness signal and is stripped before the student sees it.
 - The student is the expert: first person, named role, specific decisions — never
