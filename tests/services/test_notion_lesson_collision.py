@@ -42,6 +42,10 @@ class FakeNotion:
     def page_has_content(self, page_id):
         return bool(self.content.get(page_id))
 
+    def get_page_parent(self, page_id):
+        page = self.pages.get(page_id)
+        return page["parent"] if page else None
+
     def append_block_children(self, block_id, children):
         self.content.setdefault(block_id, []).extend(children)
 
@@ -52,7 +56,7 @@ class FakeNotion:
         return "file-upload-id"
 
     # -- helpers for assertions --
-    def lesson_pages_under(self, container_title="Generated Homeworks"):
+    def lesson_pages_under(self, container_title="Platform Homeworks"):
         containers = [pid for pid, p in self.pages.items()
                       if p["title"] == container_title]
         return [p["title"] for pid, p in self.pages.items()
@@ -315,3 +319,29 @@ def test_TARGET_titled_from_chapter_title_matches_its_siblings():
     sibs = [_row(None, "", 10, _A, ct="Повторение"), _row(None, "Повторение", 20, _B)]
 
     assert na.resolve_lesson_title(sec, sibs) == "Повторение · p.10"
+
+
+def test_a_legacy_container_page_is_never_reused_or_touched():
+    """The 2026-08-31 cutover guard: a stored pointer into a frozen legacy
+    'Generated Homeworks' tree is ignored — its pages get no write, no clear —
+    and the homework files fresh under the current container instead."""
+    c = FakeNotion()
+    legacy_container = c.create_page("subject1", "Generated Homeworks")["id"]
+    legacy_lesson = c.create_page(legacy_container, "Проценты")["id"]
+    legacy_homework = c.create_page(legacy_lesson, "Homework")["id"]
+    c.content[legacy_homework] = [{"type": "paragraph"}]      # frozen content
+    frozen = list(c.content[legacy_homework])
+
+    _, homework_id = na._push_to_notion(
+        client=c,
+        subject_page_id="subject1",
+        lesson_title="Проценты",
+        phase_md=_PHASES,
+        homework_page_id=legacy_homework,
+        lesson_page_id=legacy_lesson,
+    )
+
+    assert homework_id != legacy_homework
+    assert c.content[legacy_homework] == frozen                # untouched
+    assert c.lesson_pages_under("Platform Homeworks") == ["Проценты"]
+    assert c.lesson_pages_under("Generated Homeworks") == ["Проценты"]  # still there

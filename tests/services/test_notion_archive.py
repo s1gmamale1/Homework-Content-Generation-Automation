@@ -56,7 +56,7 @@ def _fake_find(c, parent, title):
 def test_push_builds_grouped_structure():
     """Homework → Case-Based Preview · Flashcards(=flashcards+memory-check) ·
     Gamified Practices(container → game children) · Boss Arena · Reflection.
-    Always routes through Generated Homeworks → <lesson> → Homework."""
+    Always routes through the archive container → <lesson> → Homework."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
@@ -77,7 +77,7 @@ def test_push_builds_grouped_structure():
     )
     titles = [call.args[2] for call in na_find.call_args_list]
     assert titles == [
-        "Generated Homeworks",
+        "Platform Homeworks",
         "1-§ x", "Homework",
         "Case-Based Preview",
         "Flashcards",
@@ -230,7 +230,7 @@ def test_push_skips_pages_already_populated():
 def test_push_ignores_matching_human_child_always_routes_via_container():
     """Adoption is GONE. Even when the subject page already has a child whose title
     equals the lesson title, the archive still routes unconditionally through
-    'Generated Homeworks' → <lesson> → 'Homework'.
+    the archive container → <lesson> → 'Homework'.
     Also verifies get_child_pages is never called (the pre-scan is removed)."""
     client = MagicMock()
     client.page_has_content.return_value = False
@@ -248,7 +248,7 @@ def test_push_ignores_matching_human_child_always_routes_via_container():
     )
     titles = [c.args[2] for c in na_find.call_args_list]
     # Unconditional path: Generated Homeworks → lesson → Homework
-    assert titles[:3] == ["Generated Homeworks", "1-§ x", "Homework"]
+    assert titles[:3] == ["Platform Homeworks", "1-§ x", "Homework"]
     # Container created under subject, not under any human page
     assert na_find.call_args_list[0].args[1] == "subj"
     # get_child_pages should never be called — the pre-scan is removed
@@ -256,7 +256,7 @@ def test_push_ignores_matching_human_child_always_routes_via_container():
 
 
 def test_push_unconditional_container_path():
-    """Subject > Generated Homeworks > <lesson> > Homework — always, no fallback logic."""
+    """Subject > Platform Homeworks > <lesson> > Homework — always, no fallback logic."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
@@ -266,9 +266,9 @@ def test_push_unconditional_container_path():
         phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
     )
     titles = [c.args[2] for c in na_find.call_args_list]
-    assert titles[:3] == ["Generated Homeworks", "1 Sonli ifodalar", "Homework"]
+    assert titles[:3] == ["Platform Homeworks", "1 Sonli ifodalar", "Homework"]
     assert na_find.call_args_list[0].args[1] == "subj"                     # container under subject
-    assert na_find.call_args_list[1].args[1] == "id::Generated Homeworks"  # lesson under container
+    assert na_find.call_args_list[1].args[1] == "id::Platform Homeworks"  # lesson under container
 
 
 def test_push_replace_clears_then_rewrites_populated_page():
@@ -318,15 +318,17 @@ def test_push_to_notion_returns_lesson_and_homework_ids():
     assert lesson_id == "id::L"
     assert homework_id == "id::Homework"
     titles = [c.args[2] for c in na_find.call_args_list]
-    assert titles == ["Generated Homeworks", "L", "Homework", "Case-Based Preview"]
+    assert titles == ["Platform Homeworks", "L", "Homework", "Case-Based Preview"]
 
 
 def test_push_to_notion_adopts_passed_lesson_page_id():
-    """Passing lesson_page_id makes the Homework page a child of it directly —
-    find_or_create is never called for the lesson title (adoption, no re-key)."""
+    """Passing a lesson_page_id VERIFIED under the current container makes the
+    Homework page a child of it directly — find_or_create is never called for
+    the lesson title (adoption, no re-key)."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    client.get_page_parent.return_value = "id::Platform Homeworks"  # verified
     na_find = MagicMock(side_effect=_fake_find)
     lesson_id, homework_id = na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="L",
@@ -341,12 +343,15 @@ def test_push_to_notion_adopts_passed_lesson_page_id():
 
 
 def test_push_to_notion_reuse_branch_backfills_lesson_id_from_parent():
-    """REUSE branch, no lesson_page_id: get_page_parent(homework_page_id)
-    backfills lesson_id from the Homework sub-page's actual parent."""
+    """REUSE branch, no lesson_page_id: the guard derives the lesson from
+    get_page_parent(homework_page_id), then verifies THAT page's parent is the
+    current container — two parent lookups, then reuse."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
-    client.get_page_parent.return_value = "PARENT_LESSON"
+    client.get_page_parent.side_effect = (
+        lambda pid: {"HW": "PARENT_LESSON", "PARENT_LESSON": "id::Platform Homeworks"}[pid]
+    )
     na_find = MagicMock(side_effect=_fake_find)
     lesson_id, homework_id = na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="L",
@@ -355,12 +360,13 @@ def test_push_to_notion_reuse_branch_backfills_lesson_id_from_parent():
     )
     assert homework_id == "HW"
     assert lesson_id == "PARENT_LESSON"
-    client.get_page_parent.assert_called_once_with("HW")
+    assert [c.args[0] for c in client.get_page_parent.call_args_list] == ["HW", "PARENT_LESSON"]
 
 
 def test_push_to_notion_reuse_branch_backfill_failure_is_swallowed():
-    """If get_page_parent raises, lesson_id is None and no exception escapes —
-    the stamp is simply skipped this run and self-heals on the next archive."""
+    """If get_page_parent raises, the stored pointer is UNVERIFIED: no
+    exception escapes, the stored page gets no write, and the homework files
+    fresh under the current container (fail-safe for the legacy freeze)."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
@@ -371,16 +377,17 @@ def test_push_to_notion_reuse_branch_backfill_failure_is_swallowed():
         phase_md={"case-based-preview": "# CBP"}, find_or_create=na_find,
         homework_page_id="HW",
     )
-    assert homework_id == "HW"
-    assert lesson_id is None
+    assert homework_id == "id::Homework"
+    assert lesson_id == "id::L"
 
 
 def test_push_to_notion_reuse_branch_prefers_passed_lesson_page_id_over_backfill():
-    """A passed lesson_page_id wins over the get_page_parent backfill — no
-    need to ask Notion when the caller already knows the lesson page."""
+    """A passed lesson_page_id wins over deriving it from the homework page —
+    only the verification lookup on the lesson itself is made (one call)."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    client.get_page_parent.return_value = "id::Platform Homeworks"  # verified
     na_find = MagicMock(side_effect=_fake_find)
     lesson_id, homework_id = na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="L",
@@ -389,16 +396,19 @@ def test_push_to_notion_reuse_branch_prefers_passed_lesson_page_id_over_backfill
     )
     assert lesson_id == "LID"
     assert homework_id == "HW"
-    client.get_page_parent.assert_not_called()
+    client.get_page_parent.assert_called_once_with("LID")
 
 
 def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
-    """backfill_lesson_id=False must not call get_page_parent — used by the
-    repair sweep, which discards lesson_id and would otherwise waste a
-    rate-limited Notion API call for nothing."""
+    """backfill_lesson_id is VESTIGIAL since the legacy-container guard: the
+    verification walk always resolves the lesson id, and it can never be
+    skipped — safety beats the saved API call the flag used to buy."""
     client = MagicMock()
     client.page_has_content.return_value = False
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    client.get_page_parent.side_effect = (
+        lambda pid: {"HW": "PARENT_LESSON", "PARENT_LESSON": "id::Platform Homeworks"}[pid]
+    )
     na_find = MagicMock(side_effect=_fake_find)
     lesson_id, homework_id = na._push_to_notion(
         client=client, subject_page_id="subj", lesson_title="L",
@@ -406,5 +416,5 @@ def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
         homework_page_id="HW", backfill_lesson_id=False,
     )
     assert homework_id == "HW"
-    assert lesson_id is None
-    client.get_page_parent.assert_not_called()
+    assert lesson_id == "PARENT_LESSON"
+    assert client.get_page_parent.called

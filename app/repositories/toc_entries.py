@@ -111,7 +111,7 @@ async def titles_for_subject_grade(
     """Every TOC entry's (section_number, section_title, chapter_title) across
     ALL books of one subject+grade.
 
-    Scope matches the Notion container: `Generated Homeworks` lives under a
+    Scope matches the Notion archive container (CONTAINER_TITLE), which lives under a
     subject page keyed `{lang}:{subject}|{grade}`, so every book at that
     subject+grade shares one namespace of lesson-page titles — including the
     Part I / Part II split of a single textbook, whose repeated rubric headings

@@ -114,7 +114,7 @@ def test_create_adopt_chain_writes_upload_and_markdown_blocks():
     assert lesson_id is not None
     assert deck_id
     titles_called = [title for (_parent, title) in foc.calls]
-    assert titles_called == ["Generated Homeworks", "L", "Teacher Deck"]
+    assert titles_called == ["Platform Homeworks", "L", "Teacher Deck"]
     client.append_block_children.assert_called_once()
     call_deck_id, body = client.append_block_children.call_args[0]
     assert call_deck_id == deck_id
@@ -155,6 +155,9 @@ def test_replace_clears_then_appends():
 def test_adoption_skips_lesson_find_or_create_when_lesson_page_id_given():
     deck = _deck()
     client = _mock_client(populated=False)
+    # the stored lesson page verifiably lives under the CURRENT container
+    # (foc hands the container "pg1" on its first call)
+    client.get_page_parent.return_value = "pg1"
     foc = _fake_find_or_create()
     with patch.object(na, "render_teacher_deck_pdf", return_value=b"%PDF-stub"):
         lesson_id, deck_id = na._push_teacher_deck_to_notion(
@@ -165,7 +168,26 @@ def test_adoption_skips_lesson_find_or_create_when_lesson_page_id_given():
     titles_called = [title for (_parent, title) in foc.calls]
     assert "L" not in titles_called
     assert "Teacher Deck" in titles_called
-    assert "Generated Homeworks" in titles_called
+    assert "Platform Homeworks" in titles_called
+
+
+def test_legacy_lesson_pointer_is_ignored_and_freshly_filed():
+    """Cutover guard: a lesson pointer whose parent is NOT the current
+    container (a frozen legacy tree) must not be adopted — the deck files
+    under a fresh lesson page created in the current container."""
+    deck = _deck()
+    client = _mock_client(populated=False)
+    client.get_page_parent.return_value = "LEGACY-CONTAINER"
+    foc = _fake_find_or_create()
+    with patch.object(na, "render_teacher_deck_pdf", return_value=b"%PDF-stub"):
+        lesson_id, deck_id = na._push_teacher_deck_to_notion(
+            client=client, subject_page_id="S", lesson_title="L", deck=deck,
+            find_or_create=foc, lesson_page_id="LEGACY-LESSON",
+        )
+    assert lesson_id != "LEGACY-LESSON"
+    titles_called = [title for (_parent, title) in foc.calls]
+    assert "L" in titles_called          # fresh lesson page WAS created
+    client.clear_content_blocks.assert_not_called()
 
 
 def test_degrade_render_failure_still_writes_page_no_upload_no_exception():

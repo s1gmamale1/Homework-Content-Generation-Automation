@@ -1,14 +1,15 @@
 """Phase-1 Notion push. Best-effort: archive_job never raises into the pipeline.
 
 Flow: resolve subject page from config map ({subject}|{grade}) → unconditionally
-find-or-create a 'Generated Homeworks' container under the subject page →
+find-or-create the CONTAINER_TITLE container under the subject page →
 find-or-create the lesson page under that container → find-or-create a 'Homework'
 sub-page → grouped page layout (Case-Based Preview · Flashcards[+memory-check] ·
 Gamified Practices[game children] · Boss Arena · Reflection), each page's .md
 attached at the top → stamp toc_entry + job.
 
-Every homework is filed under 'Generated Homeworks'; human-page matching/adoption
-is not performed."""
+Every homework is filed under CONTAINER_TITLE ("Platform Homeworks" since the
+2026-08-31 cutover — legacy 'Generated Homeworks' trees are frozen, see the
+constant's comment); human-page matching/adoption is not performed."""
 
 from __future__ import annotations
 
@@ -36,7 +37,16 @@ from app.services.teacher_deck import render_teacher_deck_markdown, render_teach
 
 # All generated homeworks are filed under this container, created on demand
 # under the subject page. Human-page matching/adoption is not performed.
-CONTAINER_TITLE = "Generated Homeworks"
+#
+# 2026-08-31 cutover (owner directive via the importer lane): the container is
+# now "Platform Homeworks". The legacy "Generated Homeworks" containers and
+# EVERYTHING under them are frozen production content — never removed, renamed,
+# moved, archived, cleared, or written to. Importer discovery matches ONLY the
+# new container. Stored per-section Notion pointers may still reference lesson
+# pages under a legacy container; `_verified_under_container` guards every
+# pointer-reuse path so such pointers are ignored (pages left untouched) and a
+# fresh lesson page is created under the current container instead.
+CONTAINER_TITLE = "Platform Homeworks"
 
 log = logging.getLogger("notion.archive")
 
@@ -204,6 +214,41 @@ _HOMEWORK_LAYOUT: list[dict] = [
 ]
 
 
+def _verified_under_container(
+    client: NotionClientWrapper,
+    container_id: str,
+    *,
+    lesson_page_id: Optional[str],
+    homework_page_id: Optional[str] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Return ``(lesson_id, homework_id)`` ONLY when the stored pointers
+    verifiably live under ``container_id`` (the CURRENT archive container);
+    otherwise ``(None, None)`` so the caller files fresh pages under the
+    current container.
+
+    This is the legacy-container safety guard: pointers stamped before the
+    "Platform Homeworks" cutover reference lesson pages under the frozen
+    "Generated Homeworks" trees, and reusing them would write into (or, on
+    replace, CLEAR) production content the owner ordered untouched. Fail-safe:
+    any lookup failure counts as unverified — worst case is a duplicate lesson
+    page under the current container, never a write to a legacy page."""
+    lesson = lesson_page_id
+    if lesson is None and homework_page_id is not None:
+        try:
+            lesson = client.get_page_parent(homework_page_id)
+        except Exception:  # noqa: BLE001 — fail-safe: treat as unverified
+            return (None, None)
+    if lesson is None:
+        return (None, None)
+    try:
+        parent = client.get_page_parent(lesson)
+    except Exception:  # noqa: BLE001 — fail-safe: treat as unverified
+        return (None, None)
+    if parent and parent.replace("-", "") == container_id.replace("-", ""):
+        return (lesson, homework_page_id)
+    return (None, None)
+
+
 def _leaf_blocks(client: NotionClientWrapper, present: list[tuple[str, str]]) -> list[dict]:
     """Blocks for a leaf page: every phase's .md attached at the very top, then
     each phase's rendered markdown, separated by dividers."""
@@ -231,44 +276,40 @@ def _push_to_notion(
     backfill_lesson_id: bool = True,
 ) -> tuple[Optional[str], str]:
     """Synchronous Notion I/O. Unconditionally creates the path:
-    Subject → 'Generated Homeworks' → <lesson_title> → 'Homework', then the
+    Subject → CONTAINER_TITLE → <lesson_title> → 'Homework', then the
     grouped page layout (`_HOMEWORK_LAYOUT`): Case-Based Preview, Flashcards
     (flashcards + memory-check inline), Gamified Practices (container of game
     sub-pages), Boss Arena, Reflection. Idempotent: a page that already has
     content is skipped. When `replace` is True, a populated leaf page is
     cleared (`clear_content_blocks`) and rewritten instead of skipped — used
     by the operator force-refresh path. Returns `(lesson_id, homework_id)` —
-    `lesson_id` is `None` when it could not be determined (reuse branch,
-    no `lesson_page_id` given, and either the `get_page_parent` backfill
-    failed or `backfill_lesson_id=False` skipped it entirely — e.g. the repair
-    sweep, which discards `lesson_id` and would otherwise waste a
-    rate-limited Notion call for nothing)."""
-    if homework_page_id:
-        # Identity from the DB beats identity from the title. A section that
-        # already owns a page reuses it directly — this is what stops a lesson
-        # whose title IS ambiguous from being re-keyed onto a fresh suffixed
-        # page and orphaning the content already filed under the old one.
-        homework_id = homework_page_id
-        if lesson_page_id:
-            lesson_id = lesson_page_id
-        elif backfill_lesson_id:
-            # Backfill for the ~3,200 already-archived sections whose
-            # notion_lesson_page_id is NULL: the Homework sub-page's parent
-            # IS the lesson page. Best-effort — a failure here just skips the
-            # stamp this run; it self-heals on the next archive.
-            try:
-                lesson_id = client.get_page_parent(homework_page_id)
-            except Exception:  # noqa: BLE001 - best-effort backfill
-                log.warning(
-                    "notion: get_page_parent backfill failed for %s", homework_page_id,
-                    exc_info=True,
-                )
-                lesson_id = None
-        else:
-            lesson_id = None
+    `lesson_id` is `None` when it could not be determined. Stored page ids
+    are reused ONLY after `_verified_under_container` proves they live under
+    the CURRENT container — unverified/legacy pointers are ignored (their
+    pages left untouched) and fresh pages are filed under the container.
+    `backfill_lesson_id` is vestigial (the guard resolves the lesson id
+    itself); accepted for caller compatibility."""
+    # Resolve the CURRENT container first — every reuse of a stored pointer
+    # must be proven to live under it (legacy-container guard: pointers from
+    # before the "Platform Homeworks" cutover reference frozen legacy trees
+    # that must never be written to). Identity from the DB still beats identity
+    # from the title — but only once verified under the current container.
+    container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
+    kept_lesson, kept_homework = _verified_under_container(
+        client, container_id,
+        lesson_page_id=lesson_page_id, homework_page_id=homework_page_id,
+    )
+    if kept_homework:
+        homework_id = kept_homework
+        lesson_id = kept_lesson
     else:
-        container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
-        lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
+        if homework_page_id:
+            log.info(
+                "notion: stored homework page %s is not under %r — leaving it "
+                "untouched and filing fresh under the current container",
+                homework_page_id, CONTAINER_TITLE,
+            )
+        lesson_id = kept_lesson or find_or_create(client, container_id, lesson_title)[0]
         homework_id, _ = find_or_create(client, lesson_id, "Homework")
 
     if homework_manifest is not None:
@@ -387,11 +428,20 @@ def _push_teacher_deck_to_notion(
     replace: bool = False,
     lesson_page_id: Optional[str] = None,
 ) -> tuple[str, str]:
-    """Create/adopt Subject → 'Generated Homeworks' → <lesson> → 'Teacher Deck', then write the
+    """Create/adopt Subject → CONTAINER_TITLE → <lesson> → 'Teacher Deck', then write the
     readable deck page (+ PDF attachment when renderable). Idempotent: a populated page is skipped
     unless `replace`. Returns `(lesson_id, deck_page_id)`."""
     container_id, _ = find_or_create(client, subject_page_id, CONTAINER_TITLE)
-    lesson_id = lesson_page_id or find_or_create(client, container_id, lesson_title)[0]
+    kept_lesson, _kept = _verified_under_container(
+        client, container_id, lesson_page_id=lesson_page_id,
+    )
+    if lesson_page_id and not kept_lesson:
+        log.info(
+            "notion: stored lesson page %s is not under %r — leaving it "
+            "untouched and filing fresh under the current container",
+            lesson_page_id, CONTAINER_TITLE,
+        )
+    lesson_id = kept_lesson or find_or_create(client, container_id, lesson_title)[0]
     deck_id, _ = find_or_create(client, lesson_id, "Teacher Deck")
     populated = client.page_has_content(deck_id)
     if populated and not replace:
@@ -531,7 +581,7 @@ async def archive_job(
                     job.subject, book.grade, lesson_title,
                 )
 
-            # A leaf page under 'Generated Homeworks' is always our own output
+            # A leaf page under the CURRENT archive container is our own output
             # (no human-page adoption — see module docstring), so a regen may
             # safely clear+rewrite it. first_archive: never filed this lesson
             # (we set the page id only when we archive). auto_replace fires only
