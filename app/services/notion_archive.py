@@ -14,6 +14,7 @@ constant's comment); human-page matching/adoption is not performed."""
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 import re
@@ -271,17 +272,60 @@ def _strip_image_payloads(md: str) -> str:
     return _IMG_FENCE_PAGE_RE.sub(_repl, md)
 
 
+def _body_blocks_with_images(client: NotionClientWrapper, md: str) -> list[dict]:
+    """Rendered page-body blocks for one phase md, with each base64
+    ```ELEMENT: image``` fence turned into a REAL Notion image block (the
+    decoded JPEG is uploaded, ~30KB each) followed by its caption. Never
+    inlines base64 into text blocks (that is the 413). Fail-open per image:
+    a decode/upload failure degrades that one illustration to its caption
+    callout and the push continues."""
+    out: list[dict] = []
+    last = 0
+    n = 0
+    for m in _IMG_FENCE_PAGE_RE.finditer(md):
+        seg = md[last:m.start()]
+        if seg.strip():
+            out.extend(blocks.markdown_to_notion_blocks(seg))
+        cap, data = "", None
+        try:
+            d = json.loads(m.group(1))
+            cap = (d.get("caption") or d.get("scene") or "").strip()
+            data = d.get("data")
+        except Exception:  # noqa: BLE001 — malformed fence -> caption-only
+            pass
+        placed = False
+        if data:
+            n += 1
+            try:
+                img = base64.b64decode(data)
+                up = client.upload_bytes(img, f"illustration-{n}.jpg", "image/jpeg")
+                out.append(blocks.make_image_upload_block(up))
+                placed = True
+            except Exception:  # noqa: BLE001 — keep the push alive
+                log.warning("notion: illustration upload failed — caption fallback", exc_info=True)
+        if cap:
+            out.append(blocks.make_callout(cap, "🖼️"))
+        elif not placed:
+            out.append(blocks.make_callout("illustration", "🖼️"))
+        last = m.end()
+    tail = md[last:]
+    if tail.strip():
+        out.extend(blocks.markdown_to_notion_blocks(tail))
+    return out
+
+
 def _leaf_blocks(client: NotionClientWrapper, present: list[tuple[str, str]]) -> list[dict]:
     """Blocks for a leaf page: every phase's .md attached at the very top, then
-    each phase's rendered markdown, separated by dividers. Body markdown is
-    passed through `_strip_image_payloads` (attachment keeps the original)."""
+    each phase's rendered markdown, separated by dividers. Image fences render
+    as real image blocks via `_body_blocks_with_images` (attachment keeps the
+    original markdown, base64 included)."""
     body: list[dict] = []
     for phase_name, md in present:  # attachments first — top of the page
         upload = client.upload_bytes(md.encode("utf-8"), f"{phase_name}.md", "text/markdown")
         body.append(blocks.make_file_upload_block(upload, f"{phase_name}.md"))
     for phase_name, md in present:  # then content sections
         body.append(blocks.make_divider())
-        body.extend(blocks.markdown_to_notion_blocks(_strip_image_payloads(md)))
+        body.extend(_body_blocks_with_images(client, md))
     return body
 
 

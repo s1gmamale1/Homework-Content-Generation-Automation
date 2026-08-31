@@ -60,6 +60,15 @@ def make_external_image(url: str) -> dict:
 _IMAGE_LINE_RE = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<url>[^)]*)\)$")
 
 
+def make_image_upload_block(upload_id: str) -> dict:
+    """An inline image block backed by a completed file upload."""
+    return {
+        "object": "block",
+        "type": "image",
+        "image": {"type": "file_upload", "file_upload": {"id": upload_id}},
+    }
+
+
 def make_file_upload_block(upload_id: str, name: str = "") -> dict:
     block: dict = {
         "object": "block",
