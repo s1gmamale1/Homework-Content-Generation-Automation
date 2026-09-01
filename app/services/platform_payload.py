@@ -38,7 +38,21 @@ _ENVELOPE_KEYS = (
 )
 
 _NOTION_ENVELOPE_SCHEMA = "hcg-notion-envelope@1"
-_NOTION_EXCLUDED_PHASES = {"extract", "teacher-pack", "teacher-deck"}
+# Teacher artifacts only. `extract` IS carried by the versioned envelope (the
+# platform importer consumes it as an OPTIONAL FIRST phase, 2026-09-01) — but
+# it stays out of the rendered Notion page body and out of the direct ingest
+# payload, both of which exclude it at their own call sites.
+_NOTION_EXCLUDED_PHASES = {"teacher-pack", "teacher-deck"}
+
+# The importer validates phase order as optionals-first: these lead `phases[]`,
+# in this order, ahead of the six required content phases.
+_ENVELOPE_OPTIONAL_FIRST = ("extract", "vocabulary")
+
+
+def _optionals_first(rows: list[dict]) -> list[dict]:
+    """Stable-sort the optional phases to the front, required ones keep order."""
+    rank = {name: i for i, name in enumerate(_ENVELOPE_OPTIONAL_FIRST)}
+    return sorted(rows, key=lambda r: rank.get(r.get("phase_name"), len(rank)))
 
 
 def _phase_rows(phases: list[dict], *, excluded: set[str]) -> list[dict]:
@@ -78,6 +92,7 @@ def build_notion_envelope(*, job: dict, phases: list[dict]) -> dict[str, Any]:
     The digest covers the complete envelope body except the digest field itself,
     using stable UTF-8 JSON canonicalization. Teacher artifacts are deliberately
     excluded: they have their own archive lane and are not learner homework.
+    `extract` IS included, first, as an optional phase for the importer.
     """
     artifact: dict[str, Any] = {
         "schema": _NOTION_ENVELOPE_SCHEMA,
@@ -86,7 +101,9 @@ def build_notion_envelope(*, job: dict, phases: list[dict]) -> dict[str, Any]:
         "external_key": str(job["id"]),
         "language": job["output_language"],
         "grade": str(job["grade"]),
-        "phases": _phase_rows(phases, excluded=_NOTION_EXCLUDED_PHASES),
+        "phases": _optionals_first(
+            _phase_rows(phases, excluded=_NOTION_EXCLUDED_PHASES)
+        ),
     }
     canonical = json.dumps(
         artifact, ensure_ascii=False, sort_keys=True, separators=(",", ":"),

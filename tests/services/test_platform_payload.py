@@ -77,7 +77,6 @@ def test_build_payload_excludes_extract_and_non_done_and_empty():
 def test_build_notion_envelope_has_versioned_schema_and_canonical_artifact_digest():
     phases = [
         _phase(),
-        _phase(phase_name="extract"),
         _phase(phase_name="teacher-pack"),
         _phase(status="failed"),
     ]
@@ -117,3 +116,39 @@ def test_notion_manifest_does_not_change_direct_ingest_contract():
     }
     assert "schema" not in direct
     assert "artifact_digest" not in direct
+
+
+def test_build_notion_envelope_carries_extract_first():
+    """The importer takes `extract` as an OPTIONAL FIRST phase, ahead of
+    `vocabulary` and the six required content phases."""
+    phases = [
+        _phase(phase_name="case-based-preview"),
+        _phase(phase_name="vocabulary"),
+        _phase(phase_name="extract"),
+        _phase(),
+    ]
+
+    out = pp.build_notion_envelope(job=_job(), phases=phases)
+
+    assert [p["phase_name"] for p in out["phases"]] == [
+        "extract", "vocabulary", "case-based-preview", "practice-rlc",
+    ]
+    extract_row = out["phases"][0]
+    assert set(extract_row) == set(pp._ENVELOPE_KEYS)
+    assert extract_row["output_md"] == "# x"
+    assert extract_row["judge_status"] == "ok"
+
+
+def test_build_notion_envelope_omits_extract_when_absent():
+    out = pp.build_notion_envelope(job=_job(), phases=[_phase()])
+    assert [p["phase_name"] for p in out["phases"]] == ["practice-rlc"]
+
+
+def test_ingest_payload_still_excludes_extract():
+    """Only the versioned envelope gained `extract` — the direct ingest
+    payload contract is unchanged."""
+    phases = [_phase(phase_name="extract"), _phase()]
+    out = pp.build_ingest_payload(
+        job=_job(), phases=phases, subject_map={"history": 7}
+    )
+    assert [p["phase_name"] for p in out["phases"]] == ["practice-rlc"]
