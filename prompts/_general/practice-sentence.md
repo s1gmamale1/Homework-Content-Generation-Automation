@@ -74,7 +74,10 @@ Write the set as Markdown sections, in this order:
   `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` (or `### Answer key (Hidden from
   the student)` in English output): for each item number, one line per wrong bank
   entry naming why it fails at the concept level. Never repeat the correctness tag
-  inside the key.
+  inside the key. Inside the key, name items with a BOLD line (`**1-gap:**`,
+  `**2-gap:**`), NEVER another `##` heading — the `## N-gap` headings are the
+  item splitter, they appear exactly once per item in the student text, and a
+  repeated one inside the key would split the key into phantom items.
 
 ## Non-negotiables
 
