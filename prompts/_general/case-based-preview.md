@@ -284,9 +284,12 @@ section headings, so heading shape is a contract:
   The three checkpoints must not all share one correct letter —
   vary the position of the correct option across them. Checkpoint feedback goes
   AFTER the options, never between the question and the options.
-- **Plain text — no math markup.** Never wrap anything in `$…$`, `\(…\)` or `\[…\]`:
-  there is no math renderer downstream, so the student literally sees the dollar
-  signs. Write `Z = 11`, `Ar = 23`, `a1/a2 = b1/b2` as ordinary text.
+- **Math markup follows the notation contract.** Every mathematical expression
+  sits inside `$…$` (one pair, same line — `$Z = 11$`, `$\frac{a_1}{a_2} = \frac{b_1}{b_2}$`);
+  never `\(…\)`/`\[…\]` delimiters and never a bare fragment (`a_1`, `\frac`)
+  outside dollars — an unwrapped fragment reaches the student as literal text.
+  An option line's math is wrapped the same way, and the correct-answer text
+  still repeats its option text character-for-character, math span included.
 
 **Visuals.** Do NOT emit `<svg>` or any image/HTML markup. For ANY visual (diagram
 OR photo), emit a described placeholder instead — never the visual itself:
@@ -335,7 +338,8 @@ turns on a real-world appearance the student has to look at.
     `**Задание:**`) task line?
 15. ✓ Exactly ONE heading per section — `##`, numbered `1.`–`10.`, output language only, no English gloss, no `###` or bold restatement underneath?
 16. ✓ All ten sections carry their heading keyword, so none is dropped on import?
-17. ✓ No `$…$` or other math markup anywhere in the output?
+17. ✓ Every mathematical expression inside a single-line `$…$` pair (KaTeX-safe,
+    no bare `a_1`/`\frac` fragments outside dollars, no `\(…\)`/`\[…\]`)?
 18. ✓ No checkpoint stem names the rule, group, or trend direction its own options exist to discriminate?
 19. ✓ Correct option is not the longest and not the only one giving a reason; no absolutes confined to distractors?
 20. ✓ Setup visual depicts the GIVEN data (labelled diagram preferred over a mood photo) without depicting the inference?

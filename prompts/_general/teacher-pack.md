@@ -658,12 +658,16 @@ text** (test questions and options, game terms and definitions, exercise
 prompts). A formula a student meets on the board obeys the same rules as one
 in the homework.
 
-Beyond the base contract, write these the Unicode way too:
-- **Math:** trig powers sin²α, cos²β; logarithm bases log₂8, log₁₀x; absolute
-  value |x|; ratios with a colon (3:1); geometry symbols ∠ABC, 45°, △ABC,
-  AB ∥ CD, AB ⊥ CD.
-- **Physics:** Greek letters directly (α β γ Δ ρ λ ν ω μ Ω), Δt, v₀; compound
-  units on one line: m/s², kg/m³, N·m, kW·h.
+Beyond the base contract ($-wrapped LaTeX for every mathematical expression),
+these established symbol vocabularies stay Unicode plain text — they are
+single compact tokens the renderer never needs to build, and they never sit
+inside a `$…$` span:
+- **Geometry & standalone marks:** ∠ABC, 45°, △ABC, AB ∥ CD, AB ⊥ CD;
+  ratios with a colon (3:1); absolute value |x| when standalone.
+- **Physics symbols & units:** Greek letters directly in prose (α β γ Δ ρ λ ν
+  ω μ Ω), Δt; compound units on one line: m/s², kg/m³, N·m, kW·h — units
+  always OUTSIDE the math span. Full equations use the span: $v = v_{0} + at$,
+  $F = m \cdot a$.
 - **Chemistry:** subscript formulas H₂SO₄, Ca(OH)₂; ion charges as trailing
   superscripts SO₄²⁻, Na⁺, Cl⁻; reaction arrows → and equilibrium ⇌; isotopes
   with leading superscript ²³⁵U.
@@ -673,8 +677,13 @@ Beyond the base contract, write these the Unicode way too:
   ∧ ∨ ¬; comparison signs in code examples keep spaces on both sides
   (a < b) exactly like prose.
 
-LaTeX stays forbidden everywhere (self-check 18): no `$…$`, no backslash
-commands — the importer audit fails a packet on a single leak.
+BARE LaTeX stays forbidden everywhere (self-check 18): a backslash command or
+`_{…}`/`^{…}` fragment OUTSIDE `$…$` delimiters reaches the reader as literal
+text — every LaTeX expression sits inside its dollar pair. Answer values
+follow their input mode: a `correct_answers` value for a tap/select item still
+copies its option text character-for-character (math span included), while any
+answer the student must TYPE stays plain keyboard text — no `$`, no backslash
+commands.
 
 ## Language — the deck follows the homework (NON-NEGOTIABLE)
 
@@ -817,8 +826,10 @@ Fix what fails. Do not report the check.
     `[manbada yo'q]`?
 17. Did I write "mastery", quote a threshold other than 60%, or claim an effect
     for the product?
-18. Any LaTeX, `$`, backslash command, `<svg>`, or angle-bracketed word
-    (QA comments excepted)?
+18. Any BARE LaTeX outside `$…$` (a backslash command or `_{…}`/`^{…}` not
+    wrapped in dollars), any `$` used as currency or inside an answer the
+    student must TYPE, any `<svg>`, or any angle-bracketed word (QA comments
+    excepted)?
 19. Any visible `Qayerda:` / `Where:` line, or internal QA code (`MC…`, `CP…`,
     `RLC Step …`, `Flashcard …`) in slide text? Move it into the QA-WHERE
     comment. Any slide with 3+ unbolded `Label:` openers? Bold them.

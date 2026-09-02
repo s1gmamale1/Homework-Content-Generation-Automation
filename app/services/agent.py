@@ -2546,9 +2546,30 @@ _ENGLISH_VOCAB_EXTRACT_RULE = (
 )
 
 
+# Math-notation contract for the extract (2026-09-02 format decision: LaTeX in
+# $-delimiters is the wire format platform-wide). The extract is the phase that
+# naturally transcribes textbook LaTeX, and BARE fragments (a_n outside
+# dollars) are exactly what reaches students as mangled literal text — so the
+# rule here is wrap-always, KaTeX-safe subset, chemistry stays Unicode.
+_EXTRACT_NOTATION_RULE = (
+    "Mathematics notation: wrap EVERY mathematical expression — every "
+    "variable, formula, fraction, power, inequality, sequence — in dollar "
+    "delimiters, $...$ inline or $$...$$ on its own line, using standard "
+    "KaTeX-safe LaTeX (\\frac{a}{b}, a_{n+1}, x^{2}, \\sqrt{...}, \\cdot, "
+    "\\neq, \\leq, \\geq, Greek). NEVER leave a bare fragment like a_n or "
+    "\\frac outside dollars — unwrapped fragments render as literal text. "
+    "One $ pair per expression, opened and closed on the same line; no "
+    "\\begin{...} environments; no \\text{...} — units and words stay "
+    "outside the span. Chemical formulas, ions and reaction arrows stay "
+    "Unicode plain text (H₂O, SO₄²⁻, →), never inside $. Never use $ as a "
+    "currency symbol — write the currency as a word. "
+)
+
+
 def _extract_rules(subject: "Optional[str]") -> str:
-    return (_ENGLISH_VOCAB_EXTRACT_RULE + _NO_PREAMBLE) if subject == "english" \
-        else _NO_PREAMBLE
+    rules = _EXTRACT_NOTATION_RULE + _NO_PREAMBLE
+    return (_ENGLISH_VOCAB_EXTRACT_RULE + rules) if subject == "english" \
+        else rules
 
 
 async def summarize_lesson(

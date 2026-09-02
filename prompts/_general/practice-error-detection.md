@@ -97,7 +97,12 @@ What each section contains:
   machine-parsed as the acceptance set — prose acceptance notes ("any equivalent
   phrasing is fine") are a contract violation. Cover spacing/word-order/synonym
   variants a correct student would actually type, so a right answer is never
-  rejected on phrasing.
+  rejected on phrasing. The backticked strings are TYPED input compared against
+  the student's keyboard text: plain typable characters only — never `$`
+  delimiters, backslash commands, or math markup inside the backticks, and
+  always include plain-ASCII spellings of any formula (`a11 = 4 + 10 * 3`
+  alongside `a₁₁ = 4 + 10 · 3`). Math in the surrounding explanation prose
+  follows the notation contract (`$…$`) as usual.
 - **`## Haqiqiy xato`** — the genuine student mix-up this error encodes.
 - **`## Maslahat`** — ONE probing hint. It must NEVER reveal the corrected block.
 - **`## "Nega" savoli`** — exactly ONE question paragraph (the open why-question),

@@ -94,6 +94,11 @@ an item silently drop or corrupt:
 - A run of 3+ underscores appears ONLY inside passage lines (the paragraph directly
   under an item heading). Never write such a run in the title, how-to-play, banks,
   why prompt, or key.
+- A `____` blank NEVER sits inside a `$…$` math span — structure the sentence so
+  the blank stays in plain text (the formula around it may be `$…$`-wrapped, or the
+  whole formula is itself the blanked-out bank entry). Bank entries that are
+  formulas follow the notation contract (`$…$`-wrapped, KaTeX-safe) like any other
+  displayed math.
 - Every item heading is an `##` heading containing the item's number; the passage is
   the text between that heading and the item's bank heading.
 - Bank entries are a plain bulleted list (`- <entry>`). NEVER letter them (`A)`,
