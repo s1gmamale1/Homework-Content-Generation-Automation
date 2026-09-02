@@ -1,102 +1,111 @@
 # Prompt: Practice Game — Sentence Fill — {{SUBJECT}}
 
-You are generating ONE compact **Sentence Fill** practice game for this {{SUBJECT}}
-lesson. The student sees a sentence with one blank (marked `____`) and a set of
-word/phrase choices. Exactly one choice correctly completes the sentence according to
-the lesson concept; the others are plausible distractors that fail for concept-level
-reasons — wrong term, wrong cause/effect, reversed/opposite cause-effect connector,
-too broad, too narrow, reversed meaning, opposite meaning, wrong register, a changed
-formula/unit/variable meaning, or an unsupported evidence claim. Either way the
-sentence stays mostly fluent and the wrong choice is tempting, not nonsense.
+You are generating the **Sentence Fill** practice set for this {{SUBJECT}} lesson:
+**7–10 fill-in items**. Each item is a short passage with blanks (marked `____`) and
+its own word bank; the student fills every blank from that item's bank. Wrong bank
+entries are plausible distractors that fail for concept-level reasons — wrong term,
+wrong cause/effect, reversed/opposite cause-effect connector, too broad, too narrow,
+reversed meaning, opposite meaning, wrong register, a changed formula/unit/variable
+meaning, or an unsupported evidence claim. The passage stays fluent either way and
+wrong choices are tempting, not nonsense.
 
-Keep this a single short game. Do NOT expand it into a multi-step case with learning
-blocks, MCQ checkpoints, or a final consequence panel.
+Keep every item a compact fill game. Do NOT expand any item into a multi-step case
+with learning blocks, MCQ checkpoints, or a final consequence panel.
 
 ## Primary rules
 
-- **Draw the sentence and choices from this lesson.** The sentence must test a real
+- **7–10 items, each testing a DIFFERENT fact of the lesson.** Spread the set across
+  the lesson's distinct concepts, rules, definitions, values, and relationships —
+  never two rewordings of the same fact. If the lesson genuinely cannot support 7
+  distinct facts, cover every distinct fact it has and stop (never pad with
+  rephrasings) — but reaching at least 7 is the norm.
+- **Draw every passage and bank from this lesson.** Each item must test a real
   concept, rule, definition, or relationship taught in this session's {{SUBJECT}}
   content — not a trivial detail — and must not contradict the lesson's Flashcards
   terminology.
-- **Concept-level distractors.** Each wrong choice must be wrong for a concept reason
+- **Per item: 1–6 blanks.** Most items use 1–2 blanks; use more only when the
+  passage naturally carries them. Every blank removes a concept-bearing word or
+  value — never a function word.
+- **Per item: its own word bank** = every answer (verbatim) plus 1–3 plausible
+  distractors. All bank entries distinct; the answers themselves distinct
+  (case-insensitive, ignoring extra spaces) — the interface consumes each bank chip
+  once, so a repeated answer makes the item unfinishable.
+- **Concept-level distractors.** Each wrong entry is wrong for a concept reason
   (too broad, too narrow, conceptually reversed, wrong register, or
-  plausible-but-incorrect), not an arbitrary one. The sentence must fail with a wrong
-  choice because of the lesson concept, not because of random grammar weirdness.
-- **Anti-leak.** The correct choice must not stand out by length, grammar fit, or word
-  similarity to the sentence — only by meaning. Wrong choices should be tempting: close
-  in meaning or wording, never obviously silly.
-- **Judged on meaning, not well-formedness.** A choice that keeps the sentence
-  grammatical is still wrong if it changes the source concept — the fill is judged on
-  meaning against the source, never on well-formedness alone. Never smuggle a changed
-  formula, unit, chronology, term, or safety rule in as the "wrong" choice.
+  plausible-but-incorrect), never an arbitrary one.
+- **Anti-leak.** Correct entries must not stand out by length, grammar fit, or word
+  similarity — only by meaning. A bank where two entries could be defended as
+  correct for the same blank is a broken item.
+- **Judged on meaning, not well-formedness.** An entry that keeps the passage
+  grammatical is still wrong if it changes the source concept. Never smuggle a
+  changed formula, unit, chronology, term, or safety rule in as a "wrong" entry.
 - **What the blank IS for this {{SUBJECT}}.** When {{SUBJECT}} is a mathematics
-  lesson, the blank is a value with its unit, or an operator — never a story word —
-  and the surrounding text keeps the source's numbers and glyphs. When {{SUBJECT}} is
-  a chemistry lesson, the blank is never a formula fragment — a partial formula
-  exposes a corrupted formula as a candidate string. When {{SUBJECT}} is a history
-  lesson, the blank is a term, date, or sequence member — never a causal connector
-  that smuggles a claim. For other subjects, keep the general rules above.
+  lesson, blanks are values with units, or operators — never story words — and the
+  surrounding text keeps the source's numbers and glyphs. When {{SUBJECT}} is a
+  chemistry lesson, a blank is never a formula fragment — a partial formula exposes
+  a corrupted formula as a candidate string. When {{SUBJECT}} is a history lesson,
+  blanks are terms, dates, or sequence members — never causal connectors that
+  smuggle a claim. For other subjects, keep the general rules above.
 
 ## What to produce
 
-Write the game as Markdown sections, in this order:
+Write the set as Markdown sections, in this order:
 
-- **Title** — short; names the concept or skill being tested.
-- **How to play** — 1–2 sentences: the student reads the sentence and picks the one
-  choice that fills the blank correctly according to the lesson.
-- **Sentence** — one sentence containing exactly one blank marked `____`, meaningful
-  with the blank in place.
-- **Choices** — **3 or more** word/phrase choices, one per line as a plain bulleted
-  list (`- <choice>`). Mark the correct one (exactly one) by ending its line with the
-  tag `(To'g'ri)` — Russian «(Верно)», English `(Correct)`; the tag is stripped
-  before the student sees the choice. For each wrong choice, give a brief note of why
-  it fails at the concept level in the answer-key section below the choices (never
-  beside the choice on its face). Every choice must be a non-empty string. Build the
-  set as distinct candidate roles — the correct repair; a
-  grammatically-possible-but-conceptually-wrong one; a
-  conceptually-close-but-too-broad-or-too-narrow one; a
-  wrong-register-or-irrelevant one. A set where two choices could be defended as
-  correct is a broken item — every wrong choice remains demonstrably wrong for this
-  sentence.
-- **Why prompt** — for math/science lessons this is **mandatory**; for other subjects
-  include it whenever the choice turns on reasoning. ONE open question asking the
-  student to explain which concept makes the correct choice right, why the others fail
-  (pointing to the concept, not just grammar), and what mistake a student guessing by
-  surface similarity or word length would make. A short note (to yourself) of the
-  concept words a sound answer should reach is fine, but keep it to a single open prompt.
+- **Title** (`#`) — short; names the lesson skill the set tests.
+- **How to play** (`##`) — once, 1–2 sentences: read each passage, fill every blank
+  from that item's word bank.
+- **The items, numbered.** Each item, in order:
+  - An `##` heading carrying the item number: `## 1-gap` … `## 10-gap` (uz) /
+    `## Sentence 1` … (en) / `## Предложение 1` … (ru).
+  - The passage: one short paragraph containing that item's blanks, each marked
+    `____`, meaningful with the blanks in place.
+  - `### Variantlar` (uz) / `### Choices` (en) / `### Варианты` (ru) — the item's
+    word bank as a plain bulleted list (`- <entry>`), answers and distractors mixed.
+    Mark every ANSWER entry by ending its line with the tag `(To'g'ri)` — Russian
+    «(Верно)», English `(Correct)`; tagged entries = number of blanks, in any bank
+    order (the platform maps them to blanks by meaning at import). The tag is
+    stripped before the student sees the bank.
+- **Why prompt** (`##`) — once for the whole set, after the last item; for
+  math/science lessons **mandatory**, for other subjects include it whenever the
+  choices turn on reasoning. ONE open question asking the student to explain which
+  lesson concepts drive the correct fills and what mistake a student guessing by
+  surface similarity would make.
+- **Answer key** (`###`) — one final section headed exactly
+  `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` (or `### Answer key (Hidden from
+  the student)` in English output): for each item number, one line per wrong bank
+  entry naming why it fails at the concept level. Never repeat the correctness tag
+  inside the key.
 
 ## Non-negotiables
 
-- Exactly one blank, clearly marked `____`; exactly one correct choice; 3+ choices total.
-- Wrong choices fail for concept-level reasons and are tempting near-misses — never random filler.
+- 7–10 items, each on a different lesson fact; per item 1–6 blanks (`____`), a bank
+  of every answer + 1–3 distractors, all entries distinct, answers distinct
+  case-insensitively.
+- Wrong entries fail for concept-level reasons and are tempting near-misses — never
+  random filler.
 - Terminology aligns with the lesson's Flashcards.
-- Stay compact: one game, no MCQ checkpoints, no learning blocks, no consequence panel.
+- Items stay compact: no MCQ checkpoints, no learning blocks, no consequence panels.
 
 ## Parser contract (non-negotiable)
 
-The platform importer reads this game with fixed rules; violating any of them makes
-the game silently drop or corrupt:
+The platform importer reads this set with fixed rules; violating any of them makes
+an item silently drop or corrupt:
 
-- The blank marker appears ONLY in the Sentence line. Never write a run of 3+
-  underscores anywhere else (title, how-to-play, choices, key section) — the importer
-  takes the FIRST line containing such a run as the sentence.
-- Choices are a plain bulleted list (`- <choice>`). NEVER letter them (`A)`, `B)` …) —
-  lettered lines are not recognized as choices and the whole game is dropped.
-- Exactly one choice line ends with the correctness tag `(To'g'ri)` / «(Верно)» /
-  `(Correct)`. The tag must sit on the choice line itself — a marking that lives only
-  in the answer-key section is not read.
-- Put the wrong-choice notes under a final heading containing the words `Javoblar
-  kaliti` or `Answer key`, e.g. `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` — the
-  whole section under such a heading is removed from all student-facing text.
-- Inside the key, name each choice plainly WITHOUT repeating the correctness
-  tag — the single `(To'g'ri)` in the whole output is the one on the choice line.
+- A run of 3+ underscores appears ONLY inside passage lines (the paragraph directly
+  under an item heading). Never write such a run in the title, how-to-play, banks,
+  why prompt, or key.
+- Every item heading is an `##` heading containing the item's number; the passage is
+  the text between that heading and the item's bank heading.
+- Bank entries are a plain bulleted list (`- <entry>`). NEVER letter them (`A)`,
+  `B)` …) — lettered lines are not recognized and the item is dropped.
+- Within one item's bank, the number of entries tagged `(To'g'ri)` / «(Верно)» /
+  `(Correct)` equals that item's blank count. The tag sits on the bank line itself —
+  a marking that lives only in the key is not read.
+- The key section's heading contains the words `Javoblar kaliti` or `Answer key`;
+  everything under it is removed from all student-facing text.
 - Write the machine-read label strings — `(To'g'ri)`, `Javoblar kaliti`,
   `(O'quvchiga ko'rinmaydi)` — with the plain ASCII apostrophe `'` exactly as
   shown, whatever apostrophe style the surrounding prose uses.
-- Platform note: today the student plays this as a type-the-answer (free-recall) item
-  built from the sentence plus the tagged correct choice; the untagged choices are not
-  rendered yet. Author the distractors well anyway — the staged word-bank upgrade
-  consumes them.
 
 ## Output format
 

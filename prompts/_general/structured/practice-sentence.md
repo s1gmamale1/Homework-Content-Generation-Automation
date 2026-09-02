@@ -5,7 +5,9 @@ schema below. No prose, no code fences.
 
 ## Required shape
 
-- `items` — 3-6 entries. Each item:
+- `items` — **7-10 entries**, each testing a DIFFERENT fact of the lesson (never two
+  rewordings of one fact; if the lesson cannot support 7 distinct facts, cover every
+  distinct fact it has). Each item:
   - `id` — short slug, unique across items.
   - `mode` — always the string `"word_bank"`. No other value is supported.
   - `passage` — the sentence, with **1-6** blanks written as exactly three underscores `___`.
