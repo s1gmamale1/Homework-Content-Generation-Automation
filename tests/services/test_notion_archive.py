@@ -53,12 +53,25 @@ def _fake_find(c, parent, title):
     return (f"id::{title}", True)
 
 
+def _track_page_content(client):
+    """Make a MagicMock client's `page_has_content` model reality: False until
+    the page receives a non-empty `append_block_children`, True afterwards —
+    so the leaf-integrity gate at the end of `_push_to_notion` sees what a
+    real Notion read-back would."""
+    def _has(page_id):
+        return any(
+            c.args[0] == page_id and len(c.args[1]) > 0
+            for c in client.append_block_children.call_args_list
+        )
+    client.page_has_content.side_effect = _has
+
+
 def test_push_builds_grouped_structure():
     """Homework → Case-Based Preview · Flashcards(=flashcards+memory-check) ·
     Gamified Practices(container → game children) · Boss Arena · Reflection.
     Always routes through the archive container → <lesson> → Homework."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=_fake_find)
     phase_md = {
@@ -94,7 +107,7 @@ def test_push_builds_grouped_structure():
 
 def test_push_attaches_one_authoritative_json_manifest_to_homework_page():
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     manifest = {
         "schema": "hcg-notion-envelope@1",
@@ -148,7 +161,7 @@ def test_push_attaches_one_authoritative_json_manifest_to_homework_page():
 
 def test_push_replaces_existing_manifest_blocks_without_clearing_other_homework_content():
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.get_block_children.return_value = [
         {"id": "old-1", "type": "file", "file": {"name": "homework-envelope.v1.json"}},
         {"id": "keep", "type": "paragraph", "paragraph": {}},
@@ -196,7 +209,7 @@ def test_push_preserves_existing_manifests_when_new_manifest_append_fails():
 
 def test_flashcards_page_attachments_at_top_then_content():
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=_fake_find)
     na._push_to_notion(
@@ -233,7 +246,7 @@ def test_push_ignores_matching_human_child_always_routes_via_container():
     the archive container → <lesson> → 'Homework'.
     Also verifies get_child_pages is never called (the pre-scan is removed)."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     # A child page whose title exactly matches the lesson title would have been adopted
     # under the old behavior — it must be ignored now.
@@ -258,7 +271,7 @@ def test_push_ignores_matching_human_child_always_routes_via_container():
 def test_push_unconditional_container_path():
     """Subject > Platform Homeworks > <lesson> > Homework — always, no fallback logic."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=lambda c, parent, title: (f"id::{title}", True))
     na._push_to_notion(
@@ -308,7 +321,7 @@ def test_push_to_notion_returns_lesson_and_homework_ids():
     and the leaf-page titles/order are unaffected by the return-type change
     (regression guard for the byte-identical homework pages requirement)."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     na_find = MagicMock(side_effect=_fake_find)
     lesson_id, homework_id = na._push_to_notion(
@@ -326,7 +339,7 @@ def test_push_to_notion_adopts_passed_lesson_page_id():
     Homework page a child of it directly — find_or_create is never called for
     the lesson title (adoption, no re-key)."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     client.get_page_parent.return_value = "id::Platform Homeworks"  # verified
     na_find = MagicMock(side_effect=_fake_find)
@@ -347,7 +360,7 @@ def test_push_to_notion_reuse_branch_backfills_lesson_id_from_parent():
     get_page_parent(homework_page_id), then verifies THAT page's parent is the
     current container — two parent lookups, then reuse."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     client.get_page_parent.side_effect = (
         lambda pid: {"HW": "PARENT_LESSON", "PARENT_LESSON": "id::Platform Homeworks"}[pid]
@@ -368,7 +381,7 @@ def test_push_to_notion_reuse_branch_backfill_failure_is_swallowed():
     exception escapes, the stored page gets no write, and the homework files
     fresh under the current container (fail-safe for the legacy freeze)."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     client.get_page_parent.side_effect = RuntimeError("boom")
     na_find = MagicMock(side_effect=_fake_find)
@@ -385,7 +398,7 @@ def test_push_to_notion_reuse_branch_prefers_passed_lesson_page_id_over_backfill
     """A passed lesson_page_id wins over deriving it from the homework page —
     only the verification lookup on the lesson itself is made (one call)."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     client.get_page_parent.return_value = "id::Platform Homeworks"  # verified
     na_find = MagicMock(side_effect=_fake_find)
@@ -404,7 +417,7 @@ def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
     verification walk always resolves the lesson id, and it can never be
     skipped — safety beats the saved API call the flag used to buy."""
     client = MagicMock()
-    client.page_has_content.return_value = False
+    _track_page_content(client)
     client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
     client.get_page_parent.side_effect = (
         lambda pid: {"HW": "PARENT_LESSON", "PARENT_LESSON": "id::Platform Homeworks"}[pid]
@@ -418,3 +431,46 @@ def test_push_to_notion_reuse_branch_skips_backfill_when_disabled():
     assert homework_id == "HW"
     assert lesson_id == "PARENT_LESSON"
     assert client.get_page_parent.called
+
+
+def test_push_raises_when_a_leaf_ends_empty():
+    """Leaf-integrity gate (2026-09-02 geometry Teacher Pack incident): a leaf
+    whose page ends the push with zero content blocks fails the push — it can
+    never ride a 'successful' push into the archived stamp, where the
+    already-archived fast-path would hide it forever."""
+    client = MagicMock()
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+
+    def _has(page_id):
+        if page_id == "id::Flashcards":
+            return False                      # this leaf's append never lands
+        return any(
+            c.args[0] == page_id and len(c.args[1]) > 0
+            for c in client.append_block_children.call_args_list
+        )
+    client.page_has_content.side_effect = _has
+
+    with pytest.raises(na.LeafEmptyAfterPushError, match="Flashcards"):
+        na._push_to_notion(
+            client=client, subject_page_id="subj", lesson_title="L",
+            phase_md={"case-based-preview": "# CBP", "flashcards": "# FC"},
+            find_or_create=MagicMock(side_effect=_fake_find),
+        )
+
+
+def test_push_fills_previously_created_empty_shell_and_passes_gate():
+    """A killed pass leaves find_or_create'd EMPTY shells behind; the next
+    complete pass appends to them (page_has_content False → write) and the
+    gate then sees content — the hollow-Teacher-Pack shape self-heals on the
+    next push instead of persisting."""
+    client = MagicMock()
+    client.upload_bytes.side_effect = lambda data, name, ctype: f"upl::{name}"
+    _track_page_content(client)   # every page starts empty, like the shells
+
+    na._push_to_notion(
+        client=client, subject_page_id="subj", lesson_title="L",
+        phase_md={"teacher-pack": "# TP"},
+        find_or_create=MagicMock(side_effect=_fake_find),
+    )
+    appended = [c.args[0] for c in client.append_block_children.call_args_list]
+    assert "id::Teacher Pack" in appended

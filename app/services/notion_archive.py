@@ -52,6 +52,15 @@ CONTAINER_TITLE = "Platform Homeworks"
 
 log = logging.getLogger("notion.archive")
 
+
+class LeafEmptyAfterPushError(RuntimeError):
+    """A homework leaf page ended a push with zero content blocks.
+
+    Raised by the leaf-integrity gate at the end of `_push_to_notion` so a
+    hollow leaf can never ride a successful push into the archived stamp —
+    the name lands verbatim in `notion_skip_reason` ("push error:
+    LeafEmptyAfterPushError") when retries don't heal it."""
+
 _warned_unconfigured = False
 
 # Bounded retry for the (idempotent) Notion push. A transient network/5xx must
@@ -401,8 +410,17 @@ def _push_to_notion(
         for block_id in old_manifest_ids:
             client.delete_block(block_id)
 
+    # Every leaf this push is responsible for, written OR skipped-as-populated.
+    # Verified non-empty before the push may return: page creation and content
+    # append are separate calls, so a killed/failed pass can leave an EMPTY
+    # shell behind — and once archive_job stamps success, its already-archived
+    # fast-path never looks at the pages again (2026-09-02 incident: geometry
+    # Teacher Pack published as a 0-block page under a stamped-archived job).
+    written_leaves: list[tuple[str, str]] = []
+
     def _write_leaf(parent_id: str, title: str, present: list[tuple[str, str]]) -> None:
         page_id, _ = find_or_create(client, parent_id, title)
+        written_leaves.append((page_id, title))
         if client.page_has_content(page_id):
             if not replace:
                 log.info("notion: page %s (%s) already populated — skipping", page_id, title)
@@ -421,6 +439,16 @@ def _push_to_notion(
             container_id, _ = find_or_create(client, homework_id, entry["title"])
             for phase_name, md in present:
                 _write_leaf(container_id, PHASE_TITLES.get(phase_name, phase_name), [(phase_name, md)])
+
+    # Leaf-integrity gate: success (and therefore the caller's archived stamp)
+    # is only reachable when every leaf actually holds content. An empty leaf
+    # raises into _push_with_retry, whose next attempt finds the page
+    # content-less and appends — self-healing; persistent emptiness exhausts
+    # the retries and records a skip reason instead of stamping success.
+    for page_id, title in written_leaves:
+        if not client.page_has_content(page_id):
+            raise LeafEmptyAfterPushError(
+                f"leaf page {page_id} ({title!r}) has no content after push")
     return lesson_id, homework_id
 
 
