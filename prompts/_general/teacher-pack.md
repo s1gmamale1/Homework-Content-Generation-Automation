@@ -658,6 +658,15 @@ text** (test questions and options, game terms and definitions, exercise
 prompts). A formula a student meets on the board obeys the same rules as one
 in the homework.
 
+**LaTeX inside ELEMENT JSON strings is JSON-escaped: every backslash is
+DOUBLED.** A JSON string parses `\` as an escape introducer, so a raw LaTeX
+command inside a fence is either invalid JSON (`\oplus` → the whole deck is
+rejected as malformed) or silent corruption (`\frac` parses as formfeed +
+`rac`, `\tan` as tab + `an`). Write `"$T_{\\oplus}$"`, `"$\\frac{1}{S}$"`,
+`"$\\cdot$"` inside every ELEMENT JSON string — and keep the markdown OUTSIDE
+the fences single-backslash (`$\frac{1}{S}$`) as usual. The `$` delimiters
+need no escaping in either place.
+
 Beyond the base contract ($-wrapped LaTeX for every mathematical expression),
 these established symbol vocabularies stay Unicode plain text — they are
 single compact tokens the renderer never needs to build, and they never sit
@@ -840,6 +849,8 @@ Fix what fails. Do not report the check.
     `ai_boss` anywhere? Count the items: 2–3 per deck, every test a battery
     of 3–4 consecutive question fences, never one lonely question. And is
     EVERY element inside a ``` code fence — no bare `ELEMENT:` line anywhere?
+    And is every backslash inside ELEMENT JSON strings DOUBLED (`\\frac`,
+    `\\oplus`) — no raw single-backslash LaTeX in any JSON value?
 21. **Read every visible line as the student would.** Any analyst word
     (auxiliary, interrogative, infinitive, syntax, procedure, formulating,
     clause, indicator, evidential, classification, bank)? Rewrite it in the
