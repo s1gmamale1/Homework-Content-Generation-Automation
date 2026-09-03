@@ -81,3 +81,7 @@ def test_qa_html_comments_are_exempt():
     md = ("Slayd: $x^{2}$\n"
           "<!-- QA-WHERE: option B quotes \\frac{1}{S}; price tag $15 raw -->\n")
     assert lint_md("teacher-pack", md) == []
+
+
+def test_notin_is_in_contract():
+    assert lint_md("teacher-pack", "$0 \\notin \\mathbb{N}$") == []

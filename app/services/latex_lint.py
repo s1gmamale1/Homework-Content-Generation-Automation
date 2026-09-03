@@ -37,7 +37,7 @@ ALLOWED_COMMANDS = _GREEK | {
     # relations (+ aliases)
     "neq", "leq", "geq", "approx", "lt", "gt", "ne", "le", "ge",
     # arrows / sets
-    "to", "implies", "in", "mathbb",
+    "to", "implies", "in", "notin", "mathbb",
     # spacing / dots
     "quad", "dots",
     # symbols

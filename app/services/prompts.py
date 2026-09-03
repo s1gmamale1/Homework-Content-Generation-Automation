@@ -265,7 +265,7 @@ _NOTATION_EXACT = (
     "- Use only the platform contract's commands (v1, agreed 2026-09-03): "
     "\\frac{a}{b} (never nested), subscripts $a_{n+1}$, powers $x^{2}$, "
     "\\sqrt{...} and \\sqrt[n]{...}, \\cdot, \\times, \\pm, \\div, \\neq, "
-    "\\leq, \\geq, \\approx, \\to, \\implies, \\in, \\mathbb{N}/\\mathbb{Z}/"
+    "\\leq, \\geq, \\approx, \\to, \\implies, \\in, \\notin, \\mathbb{N}/\\mathbb{Z}/"
     "\\mathbb{Q}/\\mathbb{R}, \\dots, \\quad, \\, (digit grouping "
     "$9\\,050\\,300$), \\%, degrees as $90^{\\circ}$ INSIDE the span, "
     "geometry marks in-span (\\angle, \\triangle, \\parallel, \\perp — "
