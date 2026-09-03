@@ -273,7 +273,7 @@ _NOTATION_EXACT = (
     "\\overline{AB} (grades 9–11 geometry), \\left( \\right), Greek (\\alpha, "
     "\\pi, \\Delta, ...), \\oplus (astronomy's Earth subscript $T_{\\oplus}$), "
     "\\text{...} for a WORD inside math (plain words only — never $, \\ or "
-    "braces inside it), function names (\\sin, \\cos, \\tan, \\log, \\ln), and "
+    "braces inside it), function names incl. the textbook forms (\\sin, \\cos, \\tan, \\tg, \\ctg, \\arcsin, \\arctg, \\log, \\lg, \\ln, \\min, \\max), set notation (\\in, \\notin, \\cup, \\cap, \\subset, \\emptyset for domains and intervals), and "
     "— in grade 10–11 content only — \\infty, \\sum, \\int. No custom macros, "
     "no \\begin{...} environments, no \\ce, \\binom, \\boxed, \\color, "
     "\\stackrel or alignment (& or \\\\) inside a span. Units still sit "

@@ -92,3 +92,10 @@ def test_blank_inside_math_span_flagged():
     assert any("blank inside" in v for v in lint_md("memory-check", bad))
     ok = "To'ldiring: $T_{pl}$ formulasidagi maxraj: _____"
     assert lint_md("memory-check", ok) == []
+
+
+def test_grade9_math_vocabulary_in_contract():
+    md = ("$D(f) = (-\\infty; 0) \\cup (0; +\\infty)$, $y_{\\min}$, "
+          "$\\operatorname{tg} x$, $\\tg 45^{\\circ}$, $\\lg 100$, "
+          "$A \\cap B = \\emptyset$")
+    assert lint_md("extract", md) == []

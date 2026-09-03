@@ -43,8 +43,12 @@ ALLOWED_COMMANDS = _GREEK | {
     # symbols
     "oplus", "circ", "infty", "sum", "int",
     "angle", "triangle", "parallel", "perp", "vec", "overline",
-    # functions
-    "sin", "cos", "tan", "log", "ln",
+    # functions (incl. the Russian-tradition names the uz textbooks use)
+    "sin", "cos", "tan", "log", "ln", "lg", "tg", "ctg",
+    "arcsin", "arccos", "arctan", "arctg", "arcctg",
+    "min", "max", "operatorname",
+    # sets (renderer-supported; grade-9 domains need interval unions)
+    "cup", "cap", "subset", "emptyset",
 }
 
 _MATHBB_OK = {"N", "Z", "Q", "R"}

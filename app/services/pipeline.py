@@ -2093,13 +2093,25 @@ async def _execute_phase(
                         "lesson.extract: scanned PDF → forcing cli for vision "
                         "(only gemini api can attach); requested=api"
                     )
-                out_md, tin, tout = await agent.summarize_lesson_vision(
-                    provider=extract_provider, model=extract_model, pdf_path=pdf_path,
-                    section_title=section["title"], section_number=section["number"],
-                    page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
-                    transport=vision_transport, subject=subject,
-                )
-                reason = agent.validate_extract_summary(out_md)
+                # A refused/empty vision extract is usually a transient model
+                # flake, not a content problem — observed 2026-09-03 (wave-1
+                # 24-§): HTTP-success with 0 output tokens while all 36
+                # sibling extracts passed on identical code. One in-place
+                # retry before failing the job.
+                reason = None
+                for _vision_attempt in (1, 2):
+                    out_md, tin, tout = await agent.summarize_lesson_vision(
+                        provider=extract_provider, model=extract_model, pdf_path=pdf_path,
+                        section_title=section["title"], section_number=section["number"],
+                        page_start=ps, page_end=pe, homework_job_id=job_id, phase_output_id=po_id,
+                        transport=vision_transport, subject=subject,
+                    )
+                    reason = agent.validate_extract_summary(out_md)
+                    if reason is None:
+                        break
+                    logger.warning(
+                        "lesson.extract Gate B (vision) attempt %d refused: %s",
+                        _vision_attempt, reason)
                 if reason is not None:
                     raise failure_classifier.ExtractRefusal(
                         f"lesson.extract Gate B (vision): {reason}"
