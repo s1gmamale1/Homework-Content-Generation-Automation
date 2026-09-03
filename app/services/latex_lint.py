@@ -63,6 +63,13 @@ _ELEM_BODY_RE = re.compile(
     r"```(?:ELEMENT: (\w+)\n|[^\n`]*\nELEMENT: (\w+)\n)(\{.*?\})\s*\n?```", re.S)
 _RAW_SINGLE_BS = re.compile(r"(?<!\\)\\(?=[a-zA-Z])")
 _BACKTICK_RE = re.compile(r"`([^`\n]+)`")
+# Memory-check fill_blank typed answers (owner rule 2026-09-03): a plain word
+# or number only — a symbolic answer means the question is a formula question
+# and must be authored as multiple_choice with formula options instead.
+_FILL_ANSWER_RE = re.compile(
+    r"\*\*(?:Kutilayotgan javob|Muqobil javoblar):\*\*\s*(.+)")
+_LETTER_SLASH_RE = re.compile(r"[A-Za-z]/[A-Za-z]")
+_SPACED_OP_RE = re.compile(r" [+\-·×*/÷] ")
 
 
 def _scan_commands(text: str, where: str, out: list[str]) -> None:
@@ -150,6 +157,29 @@ def lint_md(phase_name: str, md: str) -> list[str]:
     prose = _SPAN_RE.sub(" ", body)
     for m in _CMD_RE.finditer(prose):
         out.append(f"{phase_name}: bare \\{m.group(1)} outside $ span")
+
+    # Memory-check (owner rule 2026-09-03): formula questions are
+    # multiple_choice, never fill_blank — reject symbolic typed answers and
+    # in-span placeholders that smuggle a formula-completion past the blank
+    # rule. Spans are already paired left-to-right by _SPAN_RE, so a blank
+    # BETWEEN two spans (a word blank) never matches.
+    if phase_name == "memory-check":
+        for s in spans:
+            if "?" in s or "\\square" in s:
+                out.append("memory-check: placeholder inside $ span — formula "
+                           "completion must be multiple_choice")
+        for m in _FILL_ANSWER_RE.finditer(body):
+            for val in m.group(1).split(","):
+                val = val.strip()
+                if not val:
+                    continue
+                if (any(c in val for c in "\\_^{}$=")
+                        or _LETTER_SLASH_RE.search(val)
+                        or _SPACED_OP_RE.search(val)):
+                    out.append(
+                        "memory-check: symbolic fill_blank answer "
+                        f"({val[:30]!r}) — formula questions must be "
+                        "multiple_choice")
 
     # Typed-answer fields: ED backticked accepted variants are keyboard text.
     if phase_name == "practice-error-detection":

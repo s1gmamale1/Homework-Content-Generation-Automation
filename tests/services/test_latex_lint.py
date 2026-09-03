@@ -99,3 +99,32 @@ def test_grade9_math_vocabulary_in_contract():
           "$\\operatorname{tg} x$, $\\tg 45^{\\circ}$, $\\lg 100$, "
           "$A \\cap B = \\emptyset$")
     assert lint_md("extract", md) == []
+
+
+def test_memory_check_symbolic_fill_blank_rejected():
+    md = ("Formulani to'ldiring: $T_{pl}$ uchun maxrajdagi had: _____\n"
+          "**Kutilayotgan javob:** T_yer\n"
+          "**Muqobil javoblar:** T_Yer, n - 1\n")
+    out = lint_md("memory-check", md)
+    assert sum("symbolic fill_blank answer" in v for v in out) >= 2
+
+
+def test_memory_check_word_and_number_answers_pass():
+    md = ("Gapni to'ldiring: bu davr _____ deb ataladi.\n"
+          "**Kutilayotgan javob:** sinodik davr\n"
+          "**Muqobil javoblar:** sinodik, 1/3, 25\n")
+    assert lint_md("memory-check", md) == []
+
+
+def test_memory_check_placeholder_in_span_rejected():
+    md = "Ifoda: $T_{pl} = \\frac{S \\cdot T_{yer}}{S + \\text{?}}$ — had: _____\n**Kutilayotgan javob:** yigindi\n"
+    assert any("placeholder inside" in v for v in lint_md("memory-check", md))
+    # same span content is NOT a memory-check placeholder problem elsewhere
+    assert not any("placeholder" in v for v in lint_md("case-based-preview",
+        "Savol: $x = \\text{?}$ bo'lsa nima bo'ladi?"))
+
+
+def test_word_blank_between_two_spans_is_fine():
+    md = ("$v = 20$ m/s tezlik va $t = 3$ s vaqt uchun bosib o'tilgan yo'l "
+          "_____ formula bilan topiladi.\n**Kutilayotgan javob:** masofa\n")
+    assert lint_md("memory-check", md) == []

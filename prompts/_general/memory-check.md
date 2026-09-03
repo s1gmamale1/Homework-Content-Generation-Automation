@@ -24,7 +24,26 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
 Write each item as a `###` heading that states which kind it is and which studied card it tests, followed by the question and the answer material described below.
 
 - **multiple_choice / choose_correct_explanation** — write the question, then give exactly 4 answer options, one per line, each formatted `A) <option>` … `D) <option>` (letter + `)`). After the options, name the correct one on its own line: `**To'g'ri javob:** <letter>` — this line is stripped before the student sees the item. Then give each WRONG option's short reason on its own line, formatted `Noto'g'ri (<letter>): <reason>` — and for AT LEAST ONE wrong option per item the reason must NAME the specific wrong belief that produces it ("...deb o'ylash xatosi" / "the belief that ..."), not merely state why the option is wrong — never inline in the option text (an inline note ships to the student inside the option label and marks the answer by elimination — the em-dash form `A) … — To'g'ri! …` / `… — Noto'g'ri. …` is the canonical example of this violation and is banned), and never starting a line with a bare letter + `.`/`)` (it would be mis-read as a fifth option). For choose_correct_explanation that reason is the flawed reasoning that makes the option tempting to a half-learned student. Keep all four options similar in length, style, and register so formatting never gives away the answer — if exactly one option is capitalized, or exactly one option ends with a period, that is an answer leak. **Distribute the correct letters across the phase:** use at least three different correct letters over the lettered items, never the same correct letter on more than two consecutive items, and never one letter for every item — a deck whose answers are all `A` is solved by pattern, not knowledge. No blanks in these kinds.
-- **fill_blank** — write the prompt sentence with `_____` marking the missing concept-bearing word (never a function word). The `_____` blank NEVER sits inside a `$…$` math span — structure the sentence so the blank stays in plain text (close the span before the blank, or make the whole formula element the blanked word). State the expected answer on its own line as `**Kutilayotgan javob:** <answer>` and alternatives as `**Muqobil javoblar:** <list>` — exactly these labels, which are reliably stripped from student-facing text; both are TYPED answers: plain keyboard text only, never `$`, backslash commands, or characters a student cannot type. No options in this kind. *Platform note:* today's importer folds fill_blank items into read-only recall text (not gradable yet) and routes the phase to review — prefer the two MCQ kinds for most items and use fill_blank sparingly, only where the recall target is inherently cloze-shaped.
+- **fill_blank** — ONLY for a plain WORD or a NUMBER (a numeric fraction like
+  `1/3` counts as a number). Write the prompt sentence with `_____` marking the
+  missing word (never a function word). A question that asks the student to
+  show, complete, or fix a FORMULA is NEVER fill_blank — it is
+  `multiple_choice` with formula options (four `$…$` variants, one correct —
+  see the rule below). Consequently: no symbolic expected answers (`n - 1`,
+  `T_pl`, `x^2`, `a/b` are all banned), the `_____` blank NEVER sits inside a
+  `$…$` math span, and NEVER put a placeholder (`?`, `\text{?}`, `\square`)
+  inside a formula while the typed blank stands outside it — that is still a
+  formula-completion question and it fails import. State the expected answer on
+  its own line as `**Kutilayotgan javob:** <answer>` and alternatives as
+  `**Muqobil javoblar:** <list>` — exactly these labels, which are reliably
+  stripped from student-facing text; both are TYPED answers: a plain word or
+  number only, never `$`, backslash commands, sub/superscripts, `=`, or an
+  operator. No options in this kind.
+- **Formula questions are ALWAYS multiple_choice.** When the recall target is a
+  formula, an expression, or a symbolic relationship, author it as
+  `multiple_choice` whose four options are the formula variants themselves
+  (e.g. `A) $\frac{1}{S} = \frac{1}{T_{pl}} - \frac{1}{T_{\oplus}}$` …), with
+  plausible wrong variants drawn from real sign/order/term confusions. *Platform note:* today's importer folds fill_blank items into read-only recall text (not gradable yet) and routes the phase to review — prefer the two MCQ kinds for most items and use fill_blank sparingly, only where the recall target is inherently cloze-shaped.
 - **why reasoning prompt** — after the answer, add a short "why" reasoning prompt with the key ideas the answer should mention. REQUIRED when {{SUBJECT}} is a science (biology / physics / chemistry, or any subject whose lesson is concept-and-mechanism based); optional otherwise.
 - Short correct/wrong feedback lines are encouraged on each item.
 - Distractors must encode the flawed reasoning that makes them tempting to a half-learned student — every wrong option is a real misconception, never a joke, filler, or nonsense answer. Calibrate distractor subtlety to the grade band: **G5–6** plain, obvious mistakes; **G7–8** at least one plausible near-miss; **G9–11** subtle distractors that require knowing the rule, not just recognizing a familiar term — these may use partially-true reasoning that misses the deciding step, each still provably wrong for this question. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
