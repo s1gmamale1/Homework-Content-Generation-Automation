@@ -30,6 +30,7 @@ from app.repositories import jobs as jobs_repo
 from app.repositories import books as books_repo
 from app.repositories import toc_entries as toc_repo
 from app.repositories import phase_outputs as phase_repo
+from app.services import latex_lint
 from app.schemas.content_json import TeacherDeck
 from app.services.notion import blocks
 from app.services.notion.client import NotionClientWrapper
@@ -726,6 +727,13 @@ async def archive_job(
                     for p in phases
                     if p.status == "done" and p.phase_name != "extract" and (p.output_md or "").strip()
                 }
+                # Materialized inside the session (ORM rows expire once it
+                # closes). Extract included: it ships in the envelope even
+                # though it has no leaf page.
+                lint_inputs = [
+                    (p.phase_name, p.output_md or "")
+                    for p in phases if p.status == "done"
+                ]
                 homework_manifest = build_notion_envelope(
                     job={
                         "id": job.id,
@@ -762,6 +770,21 @@ async def archive_job(
                     session, job_id, "no completed phase outputs")
                 await session.commit()
             return
+
+        # Platform LaTeX contract v1: lint every done phase before any Notion
+        # I/O — a violating output must be regenerated, never published (same
+        # block-don't-publish shape as the leaf-integrity gate). force is the
+        # operator override and bypasses the lint.
+        if not is_teacher and not force:
+            violations = latex_lint.lint_phases(lint_inputs)
+            if violations:
+                log.warning("notion: job %s failed latex lint (%d): %s",
+                            job_id, len(violations), violations[:5])
+                await _record_skip(
+                    job_id,
+                    f"latex lint: {len(violations)} violation(s); "
+                    f"first: {violations[0][:120]}")
+                return
 
         # FOOTGUN: `force` clears and rewrites the leaf pages it finds. If this
         # section still carries a colliding `notion_homework_page_id` from before
