@@ -72,13 +72,37 @@ lessons. The parenthesized machine keys — `expert_role`, `kind: …`,
 `min_chars` — and their values stay EXACTLY as this format defines them, in English,
 at every level.
 
+**The `#` phase title is the scenario's own title in the OUTPUT language ONLY** —
+it NEVER contains the phase name ("Real-Life Challenge", "RLC") or any other
+English words in a uz/ru lesson. Write what the case is about:
+`# Ko'prik loyihasidagi qaror` — not `# Real-Life Challenge — …`.
+
+**Step headings localize too.** The heading format is
+`### <step label> (kind: <machine-key>)`, and the step label — number word AND
+label — is written in the output language with EXACTLY these strings:
+
+| kind | uz heading label | ru heading label | en heading label |
+|---|---|---|---|
+| decision | `1-qadam — Qaror` | `Шаг 1 — Решение` | `Step 1 — Decision` |
+| info_request | `2-qadam — Ma'lumot so'rovi` | `Шаг 2 — Запрос информации` | `Step 2 — Information request` |
+| final_decision | `3-qadam — Yakuniy qaror` | `Шаг 3 — Окончательное решение` | `Step 3 — Final decision` |
+| concept_select | `4-qadam — Asosiy tushuncha` | `Шаг 4 — Ключевое понятие` | `Step 4 — Governing concept` |
+| reasoning | `5-qadam — Asoslash` | `Шаг 5 — Обоснование` | `Step 5 — Reasoning` |
+
+The `(kind: …)` tag is the parse anchor and never translates. Never invent a
+different label wording — these strings are machine-recognized.
+
 - **Role** — put the machine-readable expert role on its own line as
   `**Role (expert_role):** <value> — <named human role>`, where `<value>` is
   EXACTLY one of: `fire_inspector`, `structural_engineer`, `business_consultant`,
   `medical_diagnostician`, `agronomist`, `teacher`, `lawyer`, `city_planner`,
   `epidemiologist`, `ethicist`, `historian`, `general`. Choose the closest fit,
   and give a concrete named professional after the dash (never a generic "Siz
-  olimsiz").
+  olimsiz"). Directly on the NEXT line, add the machine-parsed role label in the
+  output language: `**Rol nomi (expert_role_label):** <role name in the lesson
+  language>` (uz e.g. `Qurilish muhandisi`; ru `Инженер-строитель`; en lessons
+  the plain English role name). The platform shows THIS label to the student —
+  the enum value is never student-visible.
 - **Task** — one sentence naming the decision the student was called in to make.
 - **Context** — 2–4 sentences: the situation, the constraints, and the
   information/readings available. Include exact numbers, units, and formulas as
@@ -111,7 +135,7 @@ step's body directly with `A)` or a bullet. (Step 5's open prompt already is thi
 line.) A step with no question line imports as a repaired item flagged for
 review — the question line is what makes it import clean.
 
-- `### Step 1 — Decision (kind: decision)` — the first call the expert must make.
+- `### 1-qadam — Qaror (kind: decision)` (heading label per the language table above) — the first call the expert must make.
   - **3–4 options**, one per line, each formatted `A) <option>` … `D) <option>`
     (capital letter + `)` — the letters are machine-parsed; a leading `-` bullet
     before the letter is allowed but nothing else). Exactly ONE carries the
@@ -121,21 +145,21 @@ review — the question line is what makes it import clean.
   - A mandatory **Why** prompt — the student justifies the call in 1–2 sentences.
     Name the reasoning a sound Why should reach.
   - A mandatory **confidence** prompt — the student rates Sure / Maybe / Guess.
-- `### Step 2 — Information request (kind: info_request)` — before committing,
+- `### 2-qadam — Ma'lumot so'rovi (kind: info_request)` (label per the table) — before committing,
   what should the expert check, measure, or ask for next?
   - **3–4 options** (candidate readings / tests / questions). Exactly ONE carries
     the correctness tag — the piece of information that actually resolves the
     call. The distractors are plausible-but-uninformative checks.
   - A mandatory **Why** prompt and **confidence** prompt, as in Step 1.
-- `### Step 3 — Final decision (kind: final_decision)` — the committed call now
+- `### 3-qadam — Yakuniy qaror (kind: final_decision)` (label per the table) — the committed call now
   that the information is in hand.
   - **3–4 options**; exactly ONE carries the correctness tag.
   - A mandatory **Why** prompt and **confidence** prompt.
-- `### Step 4 — Governing concept (kind: concept_select)` — which lesson concept
+- `### 4-qadam — Asosiy tushuncha (kind: concept_select)` (label per the table) — which lesson concept
   actually drove the correct decision?
   - **3–4 concept chips** as a bulleted list (the governing concept plus close
     lesson concepts as distractors). Exactly ONE carries the correctness tag.
-- `### Step 5 — Reasoning (kind: reasoning)` — a free-text justification.
+- `### 5-qadam — Asoslash (kind: reasoning)` (label per the table) — a free-text justification.
   - One open prompt asking the student to tie the concept named in Step 4 to the
     final decision in Step 3, in their own words.
   - Put the minimum length on its own line as `**Minimum length (min_chars):**

@@ -350,9 +350,9 @@ the first time in the homework.
 from the source or from a homework phase. An arithmetic slip here is repeated to
 a whole class by someone who trusts the page.
 
-**Every ladder rung names its source phase** — `(Error Detection)`,
-`(Real-Life Challenge, 1-qadam)`. A quoted sentence without its phase name
-cannot be found during the lesson.
+**Every ladder rung names its source phase, in the deck's language per the
+phase-name table above** — uz `(Xatoni aniqlash)`, `(Hayotiy vaziyat, 1-qadam)`.
+A quoted sentence without its phase name cannot be found during the lesson.
 
 ### Arc E — Xatolar registri (ONE SLIDE PER MISCONCEPTION — 4–6 slides)
 
@@ -400,13 +400,21 @@ register slide's citations go in ONE `<!-- QA-WHERE: … -->` HTML comment
 immediately after the slide, machine-checked, invisible in the room.
 
 **This holds everywhere in the deck, the bridge table included: phase names in
-visible text are always spelled out** — *Real-Life Challenge*, never *RLC*;
-*Error Detection*, *Case Preview*, *Memory Check*. A spelled-out name a teacher
-can read aloud is fine; an opaque acronym is QA-comment vocabulary only.
-The canonical visible names, in full: *Topic Vocabulary · Case Preview ·
-Flashcards · Memory Check · Real-Life Challenge · Error Detection · Sentence
-Practice*. Exactly these strings — no acronyms ("Practice RLC" fails the
-packet) and no paraphrases ("Sentence Fill" is not a phase name).
+visible text are always spelled out IN THE DECK'S LANGUAGE** — never an acronym
+(*RLC*, "Practice RLC" fail the packet), never a paraphrase, and NEVER the
+English phase name inside a uz/ru deck (English phase names are QA-comment
+vocabulary only). The canonical visible names, exactly these strings per
+language:
+
+| phase | uz deck | ru deck | en deck |
+|---|---|---|---|
+| vocabulary | Mavzu lug'ati | Тематическая лексика | Topic Vocabulary |
+| case-based-preview | Keys bilan tanishuv | Разбор кейса | Case Preview |
+| flashcards | Fleshkartalar | Флешкарты | Flashcards |
+| memory-check | Xotira tekshiruvi | Проверка памяти | Memory Check |
+| practice-rlc | Hayotiy vaziyat | Жизненная задача | Real-Life Challenge |
+| practice-error-detection | Xatoni aniqlash | Поиск ошибки | Error Detection |
+| practice-sentence | Gap tuzish mashqi | Работа с предложениями | Sentence Practice |
 
 **Coverage is 100% and you must count it.** Enumerate every distractor the
 packet declares (the `Noto'g'ri (X):` lines, plus the wrong options in the
@@ -668,11 +676,13 @@ the fences single-backslash (`$\frac{1}{S}$`) as usual. The `$` delimiters
 need no escaping in either place.
 
 Beyond the base contract ($-wrapped LaTeX for every mathematical expression),
-these established symbol vocabularies stay Unicode plain text — they are
-single compact tokens the renderer never needs to build, and they never sit
-inside a `$…$` span:
-- **Geometry & standalone marks:** ∠ABC, 45°, △ABC, AB ∥ CD, AB ⊥ CD;
-  ratios with a colon (3:1); absolute value |x| when standalone.
+these symbol vocabularies may stay Unicode plain text in prose; inside a
+`$…$` span use their commands instead (contract v1):
+- **Geometry:** in a span write $\angle ABC = 90^{\circ}$, $\triangle ABC$,
+  $AB \parallel CD$, $AB \perp CD$, vectors $\vec{AB}$, segments
+  $\overline{AB}$ — one span per statement. Standalone in prose, the Unicode
+  marks ∠ABC, 45°, △ABC, AB ∥ CD remain fine; ratios with a colon (3:1);
+  absolute value |x| when standalone.
 - **Physics symbols & units:** Greek letters directly in prose (α β γ Δ ρ λ ν
   ω μ Ω), Δt; compound units on one line: m/s², kg/m³, N·m, kW·h — units
   always OUTSIDE the math span. Full equations use the span: $v = v_{0} + at$,
