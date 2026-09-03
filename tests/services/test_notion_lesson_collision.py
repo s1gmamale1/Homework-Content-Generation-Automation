@@ -42,6 +42,9 @@ class FakeNotion:
     def page_has_content(self, page_id):
         return bool(self.content.get(page_id))
 
+    def page_is_live(self, page_id):
+        return True   # fake pages are never in Notion trash
+
     def get_page_parent(self, page_id):
         page = self.pages.get(page_id)
         return page["parent"] if page else None

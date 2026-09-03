@@ -85,3 +85,10 @@ def test_qa_html_comments_are_exempt():
 
 def test_notin_is_in_contract():
     assert lint_md("teacher-pack", "$0 \\notin \\mathbb{N}$") == []
+
+
+def test_blank_inside_math_span_flagged():
+    bad = "To'ldiring: $T_{pl} = \\frac{S \\cdot T_{yer}}{S + _____}$"
+    assert any("blank inside" in v for v in lint_md("memory-check", bad))
+    ok = "To'ldiring: $T_{pl}$ formulasidagi maxraj: _____"
+    assert lint_md("memory-check", ok) == []

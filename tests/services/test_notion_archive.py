@@ -474,3 +474,29 @@ def test_push_fills_previously_created_empty_shell_and_passes_gate():
     )
     appended = [c.args[0] for c in client.append_block_children.call_args_list]
     assert "id::Teacher Pack" in appended
+
+
+def test_guard_rejects_trashed_lesson_page():
+    """2026-09-03 cleanup: a trashed page still has its old parent, so
+    parentage alone would verify it — liveness must gate reuse."""
+    client = MagicMock()
+    client.page_is_live.return_value = False
+    assert na._verified_under_container(
+        client, "CONT", lesson_page_id="L", homework_page_id="HW") == (None, None)
+    client.get_page_parent.assert_not_called()
+
+
+def test_guard_rejects_trashed_homework_page_even_with_live_lesson():
+    client = MagicMock()
+    client.page_is_live.side_effect = lambda pid: pid != "HW"
+    client.get_page_parent.return_value = "CONT"
+    assert na._verified_under_container(
+        client, "CONT", lesson_page_id="L", homework_page_id="HW") == (None, None)
+
+
+def test_guard_accepts_live_pages_under_container():
+    client = MagicMock()
+    client.page_is_live.return_value = True
+    client.get_page_parent.return_value = "CONT"
+    assert na._verified_under_container(
+        client, "CONT", lesson_page_id="L", homework_page_id="HW") == ("L", "HW")

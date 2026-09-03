@@ -139,6 +139,8 @@ def lint_md(phase_name: str, md: str) -> list[str]:
         _scan_commands(s, phase_name, out)
         if _nested_frac(s):
             out.append(f"{phase_name}: nested \\frac")
+        if re.search(r"_{3,}", s):
+            out.append(f"{phase_name}: ____ blank inside $ span")
 
     # Bare LaTeX outside any span renders as literal text — the classic mangle.
     prose = _SPAN_RE.sub(" ", body)

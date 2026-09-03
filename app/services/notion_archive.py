@@ -253,6 +253,14 @@ def _verified_under_container(
     if lesson is None:
         return (None, None)
     try:
+        # 2026-09-03: pointers can reference pages the owner has since moved
+        # to Notion trash (test-lesson cleanup). A trashed page still has its
+        # old parent, so parentage alone would verify it — check liveness
+        # first and file fresh instead of writing into the trash.
+        if not client.page_is_live(lesson):
+            return (None, None)
+        if homework_page_id is not None and not client.page_is_live(homework_page_id):
+            return (None, None)
         parent = client.get_page_parent(lesson)
     except Exception:  # noqa: BLE001 — fail-safe: treat as unverified
         return (None, None)

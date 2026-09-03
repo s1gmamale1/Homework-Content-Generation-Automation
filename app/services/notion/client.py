@@ -79,6 +79,14 @@ class NotionClientWrapper:
         parts = title_prop.get("title", [])
         return "".join(p.get("plain_text", "") for p in parts).strip() or ""
 
+    def page_is_live(self, page_id: str) -> bool:
+        """False when the page is archived / in Notion trash. A trashed page
+        must never be reused as an archive target: appends to an archived
+        ancestor fail, and resurrecting it would undo a deliberate cleanup."""
+        self._rate_limit()
+        page = self.client.pages.retrieve(page_id)
+        return not (page.get("archived") or page.get("in_trash"))
+
     def get_page_parent(self, page_id: str) -> Optional[str]:
         """The page's parent page id, or ``None`` when the parent isn't itself
         a page (workspace root or a database row) — signals chain-end to an
