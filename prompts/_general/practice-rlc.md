@@ -135,6 +135,16 @@ step's body directly with `A)` or a bullet. (Step 5's open prompt already is thi
 line.) A step with no question line imports as a repaired item flagged for
 review — the question line is what makes it import clean.
 
+**Every step stands on its own (NON-NEGOTIABLE).** A step's wording may build
+on the CASE, on given data, or on a result the step itself states — NEVER on
+what the student answered in an earlier step ("the concept selected in Step 4",
+"your final decision from Step 3", "4-qadamda tanlangan…", "3-qadamdagi
+qaroringiz…"). The platform tells a wrong student they were wrong but neither
+reveals the answer nor offers a retry, so a step leaning on the student's
+history becomes unanswerable for exactly the student who most needs it. Name
+the concept, the quantity, or the decision itself instead — and never mention
+another step by its number anywhere in a step's body.
+
 - `### 1-qadam — Qaror (kind: decision)` (heading label per the language table above) — the first call the expert must make.
   - **3–4 options**, one per line, each formatted `A) <option>` … `D) <option>`
     (capital letter + `)` — the letters are machine-parsed; a leading `-` bullet
@@ -160,8 +170,15 @@ review — the question line is what makes it import clean.
   - **3–4 concept chips** as a bulleted list (the governing concept plus close
     lesson concepts as distractors). Exactly ONE carries the correctness tag.
 - `### 5-qadam — Asoslash (kind: reasoning)` (label per the table) — a free-text justification.
-  - One open prompt asking the student to tie the concept named in Step 4 to the
-    final decision in Step 3, in their own words.
+  - One open prompt asking the student to justify the correct call in their own
+    words by NAMING the governing concept and the committed decision explicitly
+    — e.g. "Kvadrat funksiyaning noli tushunchasi va $h(t) = 0$ shartidan
+    foydalanib, nima sababdan …". NEVER phrase it through the student's own
+    earlier answers — "4-qadamda tanlangan tushunchadan foydalanib…",
+    "3-qadamdagi yakuniy qaroringiz bilan bog'lab…" are the banned shape: a
+    student who missed Step 4 gets no reveal and no retry, so a backreferencing
+    Step 5 is unanswerable for them, while a named concept still measures
+    whether they can reason with the right rule.
   - Put the minimum length on its own line as `**Minimum length (min_chars):**
     80` (an integer, 20–1000; use 80 unless the lesson warrants otherwise).
 

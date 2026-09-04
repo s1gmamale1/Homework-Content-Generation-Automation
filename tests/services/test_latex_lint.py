@@ -182,3 +182,23 @@ def test_visual_placeholder_lines_exempt_from_caret_check():
     md = ("![visual: diagram — y = x^2 parabola, x va y o'qlari — "
           "image gen required](placeholder)\n")
     assert lint_md("case-based-preview", md) == []
+
+
+def test_step_backreference_flagged():
+    md = ("### 5-qadam — Asoslash (kind: reasoning)\n"
+          "4-qadamda tanlangan tushunchani 3-qadamdagi qaroringiz bilan "
+          "bog'lab asoslang.\n")
+    out = lint_md("practice-rlc", md)
+    assert sum("step referenced by number" in v for v in out) >= 1
+    good = ("### 5-qadam — Asoslash (kind: reasoning)\n"
+            "Kvadrat funksiyaning noli tushunchasi va $h(t) = 0$ shartidan "
+            "foydalanib, nima sababdan javob musbat ildiz ekanini asoslang.\n")
+    assert lint_md("practice-rlc", good) == []
+
+
+def test_checkpoint_backreference_flagged():
+    md = "Savol: Checkpoint 1 da tanlagan tushunchaga tayanib javob bering?\n"
+    assert any("step referenced" in v
+               for v in lint_md("case-based-preview", md))
+    ru = "Свяжите это с вашим решением из шага 3 и обоснуйте.\n"
+    assert any("step referenced" in v for v in lint_md("practice-rlc", ru))

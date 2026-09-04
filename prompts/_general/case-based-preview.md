@@ -83,6 +83,13 @@ Emit these sections in exactly this order:
 ## Checkpoint rules
 
 - **Exactly 3** checkpoints, in order: Identify → Decide → Justify-or-avoid-mistake.
+- **Every checkpoint stands on its own.** Its question builds on the CASE, on
+  given data, or on a result it states itself — NEVER on what the student
+  answered at an earlier checkpoint ("the concept you identified in
+  Checkpoint 1", "your choice from Checkpoint 2"): a wrong earlier answer gets
+  no reveal and no retry, so a backreferencing question is unanswerable for
+  that student. Name the concept/method itself, and never mention another
+  checkpoint by number inside a question or its options.
 - Each is a multiple-choice question — a single click, not a written answer. Keep the
   FORMAT low-friction; do NOT hollow out the thinking. Picking the right option must
   require APPLYING the lesson's rule to this case's specifics, not recognising which

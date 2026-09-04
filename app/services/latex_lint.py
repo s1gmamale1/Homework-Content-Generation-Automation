@@ -83,6 +83,15 @@ _BARE_GREEK_RE = re.compile(
     r"(?<![\\A-Za-z])(alpha|beta|gamma|theta|pi|phi|omega)(?![A-Za-z])")
 _MATH_SIGNAL_RE = re.compile(r"[\\^_=]|\d\s*/\s*\d")
 _BARE_CARET_RE = re.compile(r"[\w)\]}]\^[\w{(]")
+# A step/checkpoint must stand on its own (directive 2026-09-04 §6): a body
+# line that points at another step by number is the unanswerable-backreference
+# shape — the platform reveals nothing and offers no retry after a wrong pick.
+_STEP_BACKREF_RE = re.compile(
+    r"\d\s*-\s*(?:qadam|bosqich|nazorat)"
+    r"|(?:step|checkpoint)\s*\d"
+    r"|шаг[а-яё]*\s*\d|\d\s*-\s*шаг"
+    r"|контрольн[а-яё]*\s+точк[а-яё]*\s*\d",
+    re.IGNORECASE)
 # Element-JSON fields that hold TYPED student answers. `correct_answers` is
 # typed only for these element types (tap/select answers copy option text
 # verbatim, math span included).
@@ -252,6 +261,17 @@ def lint_md(phase_name: str, md: str) -> list[str]:
                         "memory-check: symbolic fill_blank answer "
                         f"({val[:30]!r}) — formula questions must be "
                         "multiple_choice")
+
+    # Multi-step surfaces: a step's body may reference the case, given data, or
+    # a result it states itself — never another step by number (headings carry
+    # their own step number legitimately and are exempt).
+    if phase_name in ("practice-rlc", "case-based-preview"):
+        for line in body.splitlines():
+            if line.lstrip().startswith("#"):
+                continue
+            if _STEP_BACKREF_RE.search(line):
+                out.append(f"{phase_name}: step referenced by number in step "
+                           f"body ({line.strip()[:50]!r})")
 
     # Typed-answer fields: ED backticked accepted variants are compared against
     # what the math keyboard emits, so they follow keyboard form (directive
