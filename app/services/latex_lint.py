@@ -70,6 +70,64 @@ _FILL_ANSWER_RE = re.compile(
     r"\*\*(?:Kutilayotgan javob|Muqobil javoblar):\*\*\s*(.+)")
 _LETTER_SLASH_RE = re.compile(r"[A-Za-z]/[A-Za-z]")
 _SPACED_OP_RE = re.compile(r" [+\-·×*/÷] ")
+# Keyboard-form answer keys (importer directive 2026-09-04): the student's
+# answer comes out of the app's math keyboard, so a typed key must be spelled
+# exactly as the keyboard serialises it — braced scripts, backslashed function
+# names and greek, no \operatorname (the keyboard parser lacks it), balanced
+# braces, no $ delimiters (a key is a math field, not prose).
+_SCRIPT_PAREN_RE = re.compile(r"[\w)\]}]\s*[\^_]\(")
+_BARE_FUNC_RE = re.compile(
+    r"(?<![\\A-Za-z])(arcsin|arccos|arctan|arctg|arcctg|sin|cos|tan|tg|ctg"
+    r"|log|ln|lg)\s*\(")
+_BARE_GREEK_RE = re.compile(
+    r"(?<![\\A-Za-z])(alpha|beta|gamma|theta|pi|phi|omega)(?![A-Za-z])")
+_MATH_SIGNAL_RE = re.compile(r"[\\^_=]|\d\s*/\s*\d")
+_BARE_CARET_RE = re.compile(r"[\w)\]}]\^[\w{(]")
+# Element-JSON fields that hold TYPED student answers. `correct_answers` is
+# typed only for these element types (tap/select answers copy option text
+# verbatim, math span included).
+_TYPED_ANSWER_KINDS = {"short_text", "fill_blank"}
+
+
+def _check_answer_key(val: str, where: str, out: list[str]) -> None:
+    if "$" in val:
+        out.append(f"{where}: $ delimiter inside typed answer key")
+    if "\\operatorname" in val:
+        out.append(f"{where}: \\operatorname in answer key — keyboard has no "
+                   "\\operatorname; write \\tg, \\sin …")
+    if _SCRIPT_PAREN_RE.search(val):
+        out.append(f"{where}: parenthesised script ^(…)/_(…) — keyboard form "
+                   "is ^{…} (e.g. 64^{\\frac{2}{3}})")
+    if _BARE_FUNC_RE.search(val):
+        out.append(f"{where}: bare function name in answer key — write "
+                   "\\sin(, \\tg( … (bare names render as letters)")
+    if _MATH_SIGNAL_RE.search(val) and _BARE_GREEK_RE.search(val):
+        out.append(f"{where}: bare greek word in answer key — write \\alpha …")
+    if val.count("{") != val.count("}") or val.count("(") != val.count(")"):
+        out.append(f"{where}: unbalanced braces/parens in answer key")
+
+
+def _walk_answer_keys(node, where: str, out: list[str]) -> None:
+    if isinstance(node, dict):
+        kind = node.get("type")
+        for k, v in node.items():
+            if k == "expected" and isinstance(v, str):
+                _check_answer_key(v, f"{where}.{k}", out)
+            elif (k in ("accepted_variants", "answers", "word_bank")
+                    and isinstance(v, list)):
+                for item in v:
+                    if isinstance(item, str):
+                        _check_answer_key(item, f"{where}.{k}", out)
+            elif (k == "correct_answers" and isinstance(v, list)
+                    and kind in _TYPED_ANSWER_KINDS):
+                for item in v:
+                    if isinstance(item, str):
+                        _check_answer_key(item, f"{where}.{k}", out)
+            else:
+                _walk_answer_keys(v, where, out)
+    elif isinstance(node, list):
+        for item in node:
+            _walk_answer_keys(item, where, out)
 
 
 def _scan_commands(text: str, where: str, out: list[str]) -> None:
@@ -128,6 +186,7 @@ def lint_md(phase_name: str, md: str) -> list[str]:
                     out.append(f"{phase_name}/fence({kind}): control character "
                                "after decode (corrupted escape)")
                 _scan_commands(flat, f"{phase_name}/fence({kind})", out)
+                _walk_answer_keys(decoded, f"{phase_name}/fence({kind})", out)
         body = _FENCE_RE.sub("", md)
 
     # Hidden QA/answer-key HTML comments are invisible to students, stripped
@@ -154,9 +213,22 @@ def lint_md(phase_name: str, md: str) -> list[str]:
             out.append(f"{phase_name}: ____ blank inside $ span")
 
     # Bare LaTeX outside any span renders as literal text — the classic mangle.
-    prose = _SPAN_RE.sub(" ", body)
+    # Backticked segments are typed-answer material (checked separately above)
+    # and exempt from the prose-level scans.
+    prose = _BACKTICK_RE.sub(" ", _SPAN_RE.sub(" ", body))
     for m in _CMD_RE.finditer(prose):
         out.append(f"{phase_name}: bare \\{m.group(1)} outside $ span")
+
+    # Undelimited ASCII math in prose (`y = -5t^2 + 15t + 50`) reaches the
+    # student as a literal caret — maths lives inside $…$. Image-placeholder
+    # lines (`![visual: …](placeholder)`) feed the image generator, are never
+    # rendered to the student, and are exempt.
+    for line in prose.splitlines():
+        if line.lstrip().startswith("!["):
+            continue
+        if _BARE_CARET_RE.search(line):
+            out.append(f"{phase_name}: undelimited math outside $ span "
+                       f"({line.strip()[:50]!r})")
 
     # Memory-check (owner rule 2026-09-03): formula questions are
     # multiple_choice, never fill_blank — reject symbolic typed answers and
@@ -181,12 +253,15 @@ def lint_md(phase_name: str, md: str) -> list[str]:
                         f"({val[:30]!r}) — formula questions must be "
                         "multiple_choice")
 
-    # Typed-answer fields: ED backticked accepted variants are keyboard text.
+    # Typed-answer fields: ED backticked accepted variants are compared against
+    # what the math keyboard emits, so they follow keyboard form (directive
+    # 2026-09-04) — backslashed commands from the contract vocabulary are now
+    # legal there; $ delimiters, \operatorname, parenthesised scripts and bare
+    # function/greek names are not.
     if phase_name == "practice-error-detection":
         for t in _BACKTICK_RE.findall(md):
-            if "$" in t or "\\" in t:
-                out.append(f"{phase_name}: math markup inside backticked "
-                           f"accepted variant ({t[:40]!r})")
+            _check_answer_key(t, f"{phase_name}/variant", out)
+            _scan_commands(t, f"{phase_name}/variant", out)
 
     return out
 

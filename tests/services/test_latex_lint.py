@@ -42,12 +42,24 @@ def test_nested_frac_flagged():
     assert lint_md("memory-check", "$\\frac{a}{b} + \\frac{c}{d}$") == []
 
 
-def test_ed_backticked_variants_must_be_plain():
+def test_ed_backticked_variants_keyboard_form():
     good = "## To'g'ri versiya\nQabul qilinadigan variantlar:\n`x = 5`, `x=5`\n"
     assert lint_md("practice-error-detection", good) == []
+    latex = ("Qabul qilinadigan variantlar:\n"
+             "`\\sin(\\alpha) = -\\frac{3}{5}`, `y = 5t^2`\n")
+    assert lint_md("practice-error-detection", latex) == []
     bad = "Qabul qilinadigan variantlar:\n`$x = 5$`\n"
-    assert any("accepted variant" in v
+    assert any("typed answer key" in v
                for v in lint_md("practice-error-detection", bad))
+    paren = "Qabul qilinadigan variantlar:\n`x = 64^(2/3)`\n"
+    assert any("parenthesised script" in v
+               for v in lint_md("practice-error-detection", paren))
+    bare = "Qabul qilinadigan variantlar:\n`sin(a) = -3/5`\n"
+    assert any("bare function name" in v
+               for v in lint_md("practice-error-detection", bare))
+    op = "Qabul qilinadigan variantlar:\n`\\operatorname{tg}\\alpha`\n"
+    assert any("operatorname" in v
+               for v in lint_md("practice-error-detection", op))
 
 
 def test_teacher_pack_fence_requires_doubled_backslashes():
@@ -128,3 +140,45 @@ def test_word_blank_between_two_spans_is_fine():
     md = ("$v = 20$ m/s tezlik va $t = 3$ s vaqt uchun bosib o'tilgan yo'l "
           "_____ formula bilan topiladi.\n**Kutilayotgan javob:** masofa\n")
     assert lint_md("memory-check", md) == []
+
+def test_typed_element_answers_keyboard_form():
+    bad = ('```ELEMENT: test\n{"type": "short_text", "question": "Q $x$?", '
+           '"correct_answers": ["x = 64^(2/3)"]}\n```\n')
+    assert any("parenthesised script" in v for v in lint_md("teacher-pack", bad))
+    good = ('```ELEMENT: test\n{"type": "short_text", "question": "Q $x$?", '
+            '"correct_answers": ["x = 64^{\\\\frac{2}{3}}"]}\n```\n')
+    assert lint_md("teacher-pack", good) == []
+
+
+def test_tap_select_answers_exempt_from_keyboard_form():
+    md = ('```ELEMENT: test\n{"type": "single_choice", "question": "Q?", '
+          '"options": ["$x^{2}$", "$x^{3}$"], '
+          '"correct_answers": ["$x^{2}$"]}\n```\n')
+    assert lint_md("teacher-pack", md) == []
+
+
+def test_answer_key_directive_fields_checked():
+    md = ('```ELEMENT: exercise\n{"prompt": "p", '
+          '"answer_spec": {"expected": "sin(alpha) = -3/5"}}\n```\n')
+    out = lint_md("teacher-pack", md)
+    assert any("bare function name" in v for v in out)
+    assert any("bare greek word" in v for v in out)
+
+
+def test_unbalanced_answer_key_flagged():
+    md = ('```ELEMENT: test\n{"type": "fill_blank", "question": "Q?", '
+          '"correct_answers": ["{ x^{2} + y"]}\n```\n')
+    assert any("unbalanced" in v for v in lint_md("teacher-pack", md))
+
+
+def test_undelimited_caret_prose_flagged():
+    md = "Funksiya y = -5t^2 + 15t + 50 ko'rinishida berilgan.\n"
+    assert any("undelimited math" in v for v in lint_md("flashcards", md))
+    ok = "Funksiya $y = -5t^{2} + 15t + 50$ ko'rinishida berilgan.\n"
+    assert lint_md("flashcards", ok) == []
+
+
+def test_visual_placeholder_lines_exempt_from_caret_check():
+    md = ("![visual: diagram — y = x^2 parabola, x va y o'qlari — "
+          "image gen required](placeholder)\n")
+    assert lint_md("case-based-preview", md) == []

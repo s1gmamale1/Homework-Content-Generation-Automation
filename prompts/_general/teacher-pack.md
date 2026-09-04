@@ -701,8 +701,23 @@ BARE LaTeX stays forbidden everywhere (self-check 18): a backslash command or
 text — every LaTeX expression sits inside its dollar pair. Answer values
 follow their input mode: a `correct_answers` value for a tap/select item still
 copies its option text character-for-character (math span included), while any
-answer the student must TYPE stays plain keyboard text — no `$`, no backslash
-commands.
+answer the student must TYPE (`short_text` / `fill_blank`) is compared against
+what the app's MATH KEYBOARD emits, so it is written exactly as the keyboard
+serialises it — no `$` delimiters:
+
+| Write | Not |
+|---|---|
+| `x = 64^{\frac{2}{3}}` | `x = 64^(2/3)` |
+| `\frac{3}{4}` when a fraction is meant | `3/4` |
+| `\sqrt{16}`, `\sqrt[3]{27}` | `sqrt(16)` |
+| `\sin(x)`, `\log_{2}(8)`, `\alpha` | `sin(x)`, `sin(alpha)`, `alpha` |
+| `\tg`, `\ctg` | `\operatorname{tg}` — the keyboard has no `\operatorname` |
+| `x^2`, `a_1`, `x^{12}` | `x^{2}`, `a_{1}`, `x^12` — braces only when the script is more than one token |
+
+Braces and parentheses stay balanced — a key that opens `{ …` and never closes
+is a broken key. A plain word or number answer stays plain. JSON escaping still
+applies on top: every backslash in these values is DOUBLED in the JSON source
+(`\\frac`, `\\sin`) like every other ELEMENT string.
 
 ## Language — the deck follows the homework (NON-NEGOTIABLE)
 
@@ -860,7 +875,10 @@ Fix what fails. Do not report the check.
     of 3–4 consecutive question fences, never one lonely question. And is
     EVERY element inside a ``` code fence — no bare `ELEMENT:` line anywhere?
     And is every backslash inside ELEMENT JSON strings DOUBLED (`\\frac`,
-    `\\oplus`) — no raw single-backslash LaTeX in any JSON value?
+    `\\oplus`) — no raw single-backslash LaTeX in any JSON value? And is every
+    TYPED `correct_answers` value (short_text / fill_blank) in keyboard form —
+    braced scripts (never `^(…)`), backslashed `\sin`/`\alpha`, `\tg` never
+    `\operatorname`, balanced braces, no `$`?
 21. **Read every visible line as the student would.** Any analyst word
     (auxiliary, interrogative, infinitive, syntax, procedure, formulating,
     clause, indicator, evidential, classification, bank)? Rewrite it in the
