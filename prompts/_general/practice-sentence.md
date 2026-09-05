@@ -1,7 +1,7 @@
 # Prompt: Practice Game — Sentence Fill — {{SUBJECT}}
 
 You are generating the **Sentence Fill** practice set for this {{SUBJECT}} lesson:
-**7–10 fill-in items**. Each item is a short passage with blanks (marked `____`) and
+**7–10 fill-in items** (use 7 for grades 1–6; fewer for a narrower lesson). Each item is a short passage with blanks (marked `____`) and
 its own word bank; the student fills every blank from that item's bank. Wrong bank
 entries are plausible distractors that fail for concept-level reasons — wrong term,
 wrong cause/effect, reversed/opposite cause-effect connector, too broad, too narrow,
@@ -18,7 +18,7 @@ with learning blocks, MCQ checkpoints, or a final consequence panel.
   the lesson's distinct concepts, rules, definitions, values, and relationships —
   never two rewordings of the same fact. If the lesson genuinely cannot support 7
   distinct facts, cover every distinct fact it has and stop (never pad with
-  rephrasings) — but reaching at least 7 is the norm.
+  rephrasings). Use 7 for grades 1–6 when there are enough distinct facts.
 - **Draw every passage and bank from this lesson.** Each item must test a real
   concept, rule, definition, or relationship taught in this session's {{SUBJECT}}
   content — not a trivial detail — and must not contradict the lesson's Flashcards
@@ -40,8 +40,9 @@ with learning blocks, MCQ checkpoints, or a final consequence panel.
   grammatical is still wrong if it changes the source concept. Never smuggle a
   changed formula, unit, chronology, term, or safety rule in as a "wrong" entry.
 - **What the blank IS for this {{SUBJECT}}.** When {{SUBJECT}} is a mathematics
-  lesson, blanks are values with units, or operators — never story words — and the
-  surrounding text keeps the source's numbers and glyphs. When {{SUBJECT}} is a
+  lesson, blanks test its taught values, operators, concepts or relationships
+  (not incidental story words), and the surrounding text keeps the source's
+  numbers and glyphs. When {{SUBJECT}} is a
   chemistry lesson, a blank is never a formula fragment — a partial formula exposes
   a corrupted formula as a candidate string. When {{SUBJECT}} is a history lesson,
   blanks are terms, dates, or sequence members — never causal connectors that
@@ -65,11 +66,10 @@ Write the set as Markdown sections, in this order:
     «(Верно)», English `(Correct)`; tagged entries = number of blanks, in any bank
     order (the platform maps them to blanks by meaning at import). The tag is
     stripped before the student sees the bank.
-- **Why prompt** (`##`) — once for the whole set, after the last item; for
-  math/science lessons **mandatory**, for other subjects include it whenever the
-  choices turn on reasoning. ONE open question asking the student to explain which
-  lesson concepts drive the correct fills and what mistake a student guessing by
-  surface similarity would make.
+- **Why prompt** (`##`) — optional, once after the last item, when it adds
+  useful reasoning. For grades 1–6 use one brief concrete question. It must use
+  actual supplied facts; never ask about an absent map, chart or source. Do not
+  add this prose as an unsupported field in the structured schema.
 - **Answer key** (`###`) — one final section headed exactly
   `### Javoblar kaliti (O'quvchiga ko'rinmaydi)` (or `### Answer key (Hidden from
   the student)` in English output): for each item number, one line per wrong bank
@@ -81,7 +81,8 @@ Write the set as Markdown sections, in this order:
 
 ## Non-negotiables
 
-- 7–10 items, each on a different lesson fact; per item 1–6 blanks (`____`), a bank
+- 7–10 items (7 for grades 1–6, fewer if the lesson has fewer distinct facts),
+  each on a different lesson fact; per item 1–6 blanks (`____`), a bank
   of every answer + 1–3 distractors, all entries distinct, answers distinct
   case-insensitively.
 - Wrong entries fail for concept-level reasons and are tempting near-misses — never

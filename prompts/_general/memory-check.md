@@ -13,7 +13,8 @@ Retrieval practice: "Do you know the key cards?" Not "Can you apply the concept?
 
 ## Output
 
-8–12 items. Each item must name the studied flashcard it tests (refer to it by its short label, e.g. **card 3**, in the item heading) so the recall target is unambiguous.
+8–12 items for grades 7–11; use 8 for grades 1–6, or fewer when the studied
+cards contain fewer distinct recall targets. Never pad with repeats. Each item must name the studied flashcard it tests (refer to it by its short label, e.g. **card 3**, in the item heading) so the recall target is unambiguous.
 
 ## Supported item kinds — EXACTLY 3 (no others)
 
@@ -47,7 +48,7 @@ Write each item as a `###` heading that states which kind it is and which studie
 - **why reasoning prompt** — after the answer, add a short "why" reasoning prompt with the key ideas the answer should mention. REQUIRED when {{SUBJECT}} is a science (biology / physics / chemistry, or any subject whose lesson is concept-and-mechanism based); optional otherwise.
 - Short correct/wrong feedback lines are encouraged on each item.
 - Distractors must encode the flawed reasoning that makes them tempting to a half-learned student — every wrong option is a real misconception, never a joke, filler, or nonsense answer. Calibrate distractor subtlety to the grade band: **G5–6** plain, obvious mistakes; **G7–8** at least one plausible near-miss; **G9–11** subtle distractors that require knowing the rule, not just recognizing a familiar term — these may use partially-true reasoning that misses the deciding step, each still provably wrong for this question. Each item must trace to a card the student studied; keep the kinds balanced (no more than ~60% one kind). Pass gate stays 60%.
-- A wrong option that is correct in another framing of the same fact is banned — every wrong option must be unambiguously wrong for the question asked; an option a well-taught student could defend as correct is a broken item, not extra difficulty. When {{SUBJECT}} is a science whose lesson is mechanism-based (biology above all), choose_correct_explanation wrong options are wrong-LEVEL explanations — fluent, confident, at the wrong level — and no option, right or wrong, carries purpose language ("…uchun", "so that the body can…"). choose_correct_explanation distractors differ in the reasoning, not the terminology — fotosintez / glyukoza sintezi / fotogeneratsiya is a vocabulary trick, not a reasoning test.
+- A wrong option that is correct in another framing of the same fact is banned — every wrong option must be unambiguously wrong for the question asked; an option a well-taught student could defend as correct is a broken item, not extra difficulty. When organizational levels are explicitly taught in a mechanism-based science lesson, choose_correct_explanation may use wrong-level explanations, provided every one is demonstrably wrong for this question. Otherwise use the lesson's actual distinction. No biology mechanism option, right or wrong, carries purpose language ("…uchun", "so that the body can…"). choose_correct_explanation distractors differ in the reasoning, not the terminology — fotosintez / glyukoza sintezi / fotogeneratsiya is a vocabulary trick, not a reasoning test.
 
 ## Rules
 

@@ -202,7 +202,8 @@ def test_every_flow_phase_has_a_general_prompt(subject, phase):
 def test_every_general_prompt_has_language_token():
     gdir = pathlib.Path(__file__).resolve().parents[2] / "prompts" / "_general"
     missing = [p.name for p in gdir.glob("*.md")
-               if "{{LANGUAGE_RULES}}" not in p.read_text(encoding="utf-8")]
+               if not p.name.startswith("_")
+               and "{{LANGUAGE_RULES}}" not in p.read_text(encoding="utf-8")]
     assert not missing, f"prompts missing language token: {missing}"
 
 

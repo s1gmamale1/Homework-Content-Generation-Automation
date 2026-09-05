@@ -23,25 +23,26 @@ well-taught student could defend as correct under another reading is a solver
 failure, not extra difficulty):
 
 - When {{SUBJECT}} is a mathematics lesson (algebra and geometry included), the
-  error is the wrong path EXECUTED TO A VALUE the student must catch — never a
-  described or restated mistake. `3/5 × 3 = 9/5` sitting where `3/5 ÷ 3 = 1/5`
+  error uses the actual taught concept or procedure. When the lesson teaches
+  a numeric calculation, show the wrong path executed to a value. `3/5 × 3 = 9/5` sitting where `3/5 ÷ 3 = 1/5`
   belongs is an error item; a sentence describing a mistake is not.
-- When {{SUBJECT}} is a history lesson, the error is a TRUE fact offered as
-  evidence for a claim it does not bear on — a relevance error, never a false
-  fact. Prefer the sentence / sequence-of-steps shape, with the blocks forming
-  a short claim-and-evidence chain in which exactly one block is a
-  true-but-irrelevant "evidence"; its correct version states what the block
-  should have offered (relevant evidence).
+- History: use a true-but-irrelevant evidence error only when evidence analysis
+  is taught and the relevant evidence is visible. Otherwise use one incorrect
+  pairing, classification or sequence from the actual lesson facts, with the
+  correct reference facts supplied in student-visible text. Never invent a
+  historical source or provenance.
 - When {{SUBJECT}} is a chemistry lesson, the error is a classification made
-  from appearance instead of the deciding criterion.
-- When {{SUBJECT}} is a biology lesson, the error is a fluent explanation at
-  the wrong level ("the heart puts oxygen into the blood" — fluent, confident,
+  from appearance instead of the deciding criterion only when that criterion
+  is taught and the observations supplied. Otherwise use the lesson's actual
+  classification, relation or procedure; never corrupt a chemical formula.
+- When a biology lesson teaches organizational levels or mechanisms, the
+  error may be a fluent explanation at the wrong level ("the heart puts oxygen into the blood" — fluent, confident,
   wrong) or purpose language presented as fact ("…uchun hosil qildi") — never a
-  misspelled organelle name.
-- When {{SUBJECT}} is a physics lesson, the blocks describe a situation and the
-  qualitative claim (which quantity changes, which does not) is where the error
-  lives; if a worked equation is used, the error sits in the physical setup
-  line, not the arithmetic.
+  misspelled organelle name. Otherwise use a taught observation, classification
+  or relation instead of forcing a level-analysis task.
+- Physics: use a qualitative reference-frame error only when that method is
+  taught; otherwise use the actual concept, relation or procedure. If a worked
+  equation is used, prefer a taught physical-setup error over an arithmetic slip.
 - When {{SUBJECT}} is an economics lesson, the error is a modal-verb upgrade
   ("kamayishi mumkin" → "kamayadi"), a missing standpoint, or an
   everyday/technical conflation (narx ≠ qiymat, foyda ≠ daromad); the
@@ -114,9 +115,11 @@ What each section contains:
 - **`## "Nega" savoli`** — exactly ONE question paragraph (the open why-question),
   then the exact line
   `Asoslovchi tushuntirish quyidagi fikrlarni o'z ichiga olishi lozim:`
-  followed by **2–4 bullets** naming the reasoning points a sound
-  explanation must reach (the correct content, its real role, where the wrong
-  step or process actually applies).
+  followed by **2–4 bullets** naming only necessary concrete reasoning points.
+  For grades 1–6 use 2 brief points (the correction and the supplied fact that
+  supports it); one concrete explanation may satisfy both. Accept a sufficient
+  concrete explanation without mandatory abstract rule recitation. Ask where
+  a process otherwise applies only if that distinction is taught and needed.
 - **`## To'g'ri javob fikr-mulohazasi`** — affirms the student spotted and fixed
   it themselves.
 - **`## Noto'g'ri tuzatish fikr-mulohazasi`** — **encouraging**, offers the hint
@@ -147,6 +150,8 @@ What each section contains:
   11 − 5 is a real slip. Grammar parallel: "She have been to Tashkent last year"
   → "went" is a real taught-pattern tense slip, not a vocabulary trick.)
 - **No auto-reveal.** No correct content in the hint or any pre-reveal feedback.
+  The correct version appears ONLY in the answer sections; use that same
+  correction consistently in feedback, without revealing it before the attempt.
 - **Strip Test must pass.** The {{SUBJECT}} concept must be the reason the task is
   solvable: remove it and the task collapses to "tap a block, type something" —
   no answer leakage, no way to find the error from format alone. If a student

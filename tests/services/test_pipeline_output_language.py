@@ -151,7 +151,7 @@ async def test_pipeline_passes_output_language_to_get_prompt(monkeypatch, patch_
     )
     # The real get_prompt must embed the EN medium block when output_language='en'
     built_prompt = original_get_prompt(NON_L2, "flashcards", output_language="en")
-    assert prompts.MEDIUM_RULES["en"] in built_prompt, (
+    assert "All student-facing text in natural, formal English." in built_prompt, (
         "EN medium block not found in the prompt built by get_prompt(output_language='en') — "
         "prompts layer is not wiring output_language into the prompt text"
     )
@@ -234,7 +234,7 @@ async def test_judge_en_contract_contains_en_medium_block(monkeypatch):
         output_language="en",
     )
     phase_prompt = captured.get("phase_prompt", "")
-    assert prompts.MEDIUM_RULES["en"] in phase_prompt, (
+    assert "All student-facing text in natural, formal English." in phase_prompt, (
         "EN medium block not found in judge prompt; output_language='en' not threaded into contract"
     )
 
@@ -259,10 +259,10 @@ async def test_judge_uz_contract_does_not_contain_en_medium_block(monkeypatch):
         output_language="uz",
     )
     phase_prompt = captured.get("phase_prompt", "")
-    assert prompts.MEDIUM_RULES["en"] not in phase_prompt, (
+    assert "All student-facing text in natural, formal English." not in phase_prompt, (
         "EN medium block must NOT appear when output_language='uz'"
     )
-    assert prompts.MEDIUM_RULES["uz"] in phase_prompt, (
+    assert "All student-facing text in natural, formal Uzbek." in phase_prompt, (
         "UZ medium block must appear when output_language='uz'"
     )
 

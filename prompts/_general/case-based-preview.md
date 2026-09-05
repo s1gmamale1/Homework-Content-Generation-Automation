@@ -124,8 +124,9 @@ Emit these sections in exactly this order:
 
 Scale the case to the lesson's grade (the pipeline supplies it in context — there is
 no grade template variable, so read it from the surrounding material):
-- **Lower grades** — one concrete, familiar context; obvious distractors; a short,
-  guided DPE.
+- **Grades 1–6** — one concrete, familiar context; plain distractors; the DPE
+  may be one concrete question answered in 1–2 short sentences. Score only the
+  components needed to answer that question. Keep all ten section headings.
 - **Upper grades** — layered context; subtle distractors that require *applying* the
   rule, not keyword-spotting; a fuller DPE that explicitly weighs the rejected option.
 
@@ -149,22 +150,26 @@ Two short teaching moments — call them Learning Block 1 and Learning Block 2.
 
 After Checkpoint 3 and **before** the final simulation, present ONE open-ended
 reasoning prompt — never a fourth multiple-choice question, never any answer choices.
-The student writes 2–4 sentences answering all three of:
+For grades 7–11, the student writes 2–4 sentences answering the relevant
+lesson-grounded questions below. For grades 1–6, combine only the necessary
+parts into ONE concrete question answered in 1–2 short sentences:
 
 1. Which {{SUBJECT}} concept/structure did you spot in the situation?
 2. Why did you pick this method over the alternatives?
 3. What wrong interpretation would the common mistake have caused?
 
-**Expected components:** name THIS lesson's three items concretely — the specific
-concept/structure, the specific method/rule that selected the answer, and the
-specific mistake avoided (for language subjects: the produced sentence — see below).
-Never write the bare generic words "tushuncha · usul · xato" as the components line;
-the standard treats that generic triple as an invalid rubric. Score the answer
-**Full** (all three present), **Partial** (one or two present), or **Retry** (none
-present) — partial credit is allowed.
+**Expected components:** name only what this question actually asks and the
+visible lesson evidence supports. For grades 7–11 this normally includes the
+specific concept, the method/rule and the mistake avoided. For grades 1–6, a
+concrete fact linked to the decision can be sufficient; do not demand a separate
+abstract rule recital. For language subjects retain the production task below.
+Never use the generic triple "tushuncha · usul · xato" as a rubric. Score **Full**
+when all necessary components are present, **Partial** for a substantively correct
+but incomplete answer, and **Retry** when no necessary component is present.
 
-Where the family rules give subject-specific phrasings of these three questions,
-use them. For language subjects the family rules REPLACE question 3 with a
+Use family-specific question phrasings only when that method is taught and
+its prerequisites and evidence are supplied; the grade-band DPE length still
+applies. For language subjects the family rules REPLACE question 3 with a
 PRODUCTION task (the standard's PROVE step): the student writes one NEW sentence
 using the target form with a word this lesson never used — graded on the form,
 not the topic (explaining the form is not producing it; reusing a lesson word
@@ -174,7 +179,7 @@ produced sentence.
 **Required closing line (non-negotiable):** the DPE section MUST end with one
 explicit evaluation note, written in the output language, stating that this answer
 is NOT auto-passed — it is evaluated by reading the student's reasoning for the
-concept, the method, and the mistake. Omitting this note violates the contract.
+necessary components of this question. Omitting this note violates the contract.
 The note must assert this evaluation — never defer it to a human, never deny it:
 "o'qituvchi tomonidan baholanadi", "avtomatik tekshirilmaydi" and equivalents in
 any output language are banned. Placing the DPE AFTER the consequence is
@@ -183,7 +188,8 @@ forbidden (the student would rationalise backwards).
 ## Final simulation rules
 
 Show both paths so the consequence reveals the {{SUBJECT}} content, not just a verdict:
-- **Correct path** — walk through the successful outcome when the student's decision is applied.
+- **Correct path** — walk through the successful outcome of the stated correct
+  decision, independent of what the student selected.
 - **Wrong path** — RENDER the actual failure artifact, never describe it: quote the
   wrong sentence/message exactly as its reader would see it, run the wrong
   calculation through to its wrong value, state the mislabeled result. "Readers
@@ -334,7 +340,7 @@ turns on a real-world appearance the student has to look at.
 8. ✓ Visuals follow the family policy above (right medium, no fabricated URLs)?
 9. ✓ DPE ends with the required not-auto-passed evaluation note?
 10. ✓ Each checkpoint has 3–4 same-shape options, exactly one correct, with ≥1 distractor being the common mistake (anti-leak)?
-11. ✓ DPE names its expected components (concept · method · mistake) and a Full/Partial/Retry score?
+11. ✓ DPE names only the necessary, visible-evidence components at this grade and a Full/Partial/Retry score?
 12. ✓ Feedback summary has all four parts, and the completion part describes a
     CONDITIONAL app-owned redo route (no decided pass/fail label)?
 13. ✓ No checkpoint feedback declares a partial condition "sufficient" when the rule has more cases; no "impossible" claims for merely-inconvenient methods; no fake authorities?
@@ -351,6 +357,6 @@ turns on a real-world appearance the student has to look at.
 19. ✓ Correct option is not the longest and not the only one giving a reason; no absolutes confined to distractors?
 20. ✓ Setup visual depicts the GIVEN data (labelled diagram preferred over a mood photo) without depicting the inference?
 21. ✓ Closing note asserts the evaluation — no deferral to a human, no denial?
-22. ✓ Family case-shape and distractor-dimension requirements for this subject met?
+22. ✓ Family methods used only where taught, with visible prerequisites/data, and DPE scaled to grade?
 
 {{NOTATION_RULES}}

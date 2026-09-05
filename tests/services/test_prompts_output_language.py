@@ -11,10 +11,22 @@ def _uz_subject():
             return c
     raise AssertionError("no uz subject in registry")
 
-def test_uz_default_is_byte_identical_to_legacy_default():
+def _assert_learner_medium(body, language):
+    # The authorized learner change replaces only the compulsory professional
+    # setting. All language/fidelity instructions before and after it survive.
+    context = ("Modern professional (non-bazaar) contexts." if language == "uz"
+               else "Modern, professional (non-casual) contexts.")
+    before, after = prompts.MEDIUM_RULES[language].split(context)
+    assert before in body
+    assert after.strip() in body
+    assert context not in body
+    assert "Age-appropriate contexts; familiar everyday roles for grades 1–6." in body
+
+
+def test_uz_learner_preserves_language_rules_with_age_appropriate_context():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "flashcards", output_language="uz")
-    assert prompts.LANGUAGE_RULES["_default"] in body
+    _assert_learner_medium(body, "uz")
     # the en/ru medium blocks must NOT leak into a uz render
     assert prompts.MEDIUM_RULES["en"] not in body
     assert prompts.MEDIUM_RULES["ru"] not in body
@@ -22,13 +34,13 @@ def test_uz_default_is_byte_identical_to_legacy_default():
 def test_en_medium_injects_english_block_for_non_l2_subject():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "flashcards", output_language="en")
-    assert prompts.MEDIUM_RULES["en"] in body
+    _assert_learner_medium(body, "en")
     assert prompts.LANGUAGE_RULES["_default"] not in body
 
 def test_ru_medium_injects_russian_block_for_non_l2_subject():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "flashcards", output_language="ru")
-    assert prompts.MEDIUM_RULES["ru"] in body
+    _assert_learner_medium(body, "ru")
 
 # Frozen copies of the pre-change L2 blocks (uz bridge). Copied verbatim from
 # app/services/prompts.py @ origin/Nggaev-v2. Do NOT edit to match a code change —
@@ -122,7 +134,7 @@ def test_l2_bridge_follows_medium():
 def test_unknown_language_falls_back_to_uz():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "flashcards", output_language="zz")
-    assert prompts.MEDIUM_RULES["uz"] in body
+    _assert_learner_medium(body, "uz")
 
 def test_hash_differs_by_language():
     subj = _uz_subject()
@@ -157,8 +169,13 @@ def test_uz_medium_gets_uz_localize_clause():
     subj = _uz_subject()
     body = prompts.get_prompt(subj, "flashcards", output_language="uz")
     assert prompts._LOCALIZE_HEADINGS_CLAUSE_UZ in body
-    # frozen base still present (append-only un-freeze)
-    assert prompts.LANGUAGE_RULES["_default"] in body
+    _assert_learner_medium(body, "uz")
+
+
+@pytest.mark.parametrize("language", ("uz", "ru", "en"))
+def test_teacher_medium_retains_existing_language_contract(language):
+    body = prompts.get_prompt(_uz_subject(), "teacher-pack", output_language=language)
+    assert prompts.MEDIUM_RULES[language] in body
 
 
 def test_en_ru_keep_their_own_clause_not_uz():

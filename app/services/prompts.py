@@ -359,23 +359,17 @@ _CBP_SCIENCES = (
     "**Visual policy:** *photo* for labs, organisms, phenomena; *diagram* for the "
     "conceptual layer (particles, forces); none unless it carries the concept.\n\n"
     "**Case framing** (never apply one science's flow, DPE, or distractor rule to "
-    "another's): Physics — the frame truly in doubt; the prediction (which "
-    "quantity changes, which does not) comes before any number; derivation steps "
-    "carry reasons, not assertions; distractors hold the situation, vary only "
-    "the reference body; DPE: the frame used · why it · the other frame's answer. "
-    "Chemistry — a case appearance cannot settle; observation → deciding "
-    "criterion → particles → formula LAST; distractors hold the observation, vary "
-    "whether the composition changed; DPE: the deciding observation · why it "
-    "decides, not appearance · appearance's answer. Biology — a system under "
-    "change, level (cell/organ/organism/population) unnamed in the setup; "
-    "checkpoint 1 MUST ask which organizational level the change belongs to, its "
-    "wrong options being the other levels; then level → structure → function → "
-    "prediction; never a formula biology does not have; distractors hold the "
-    "structure, vary the level; DPE: the level asked · the mechanism there · its "
-    "failure at another level. Other sciences: whichever frame fits, or the "
-    "general framing. Every DPE closing note names the SYSTEM as the evaluator "
-    "in active voice (\"tizim ... o'qib chiqib baholaydi\") — a bare passive "
-    "\"baholanadi\" is not an assertion.\n\n"
+    "another's). Use these methods only when taught and their prerequisites/data "
+    "are supplied. Physics: for reference-frame lessons, compare named observers "
+    "and predict qualitatively before computing; otherwise use the actual taught "
+    "relation, concept or procedure. Chemistry: when composition change is taught, "
+    "use supplied observations and the taught deciding criterion before particles "
+    "and formulas; otherwise use this lesson's actual classification or relation. "
+    "Biology: when organizational levels and mechanisms are taught, relate the "
+    "named level, structure, function and prediction; otherwise test the actual "
+    "observation, classification or relation. Never force levels or a formula onto "
+    "a lesson without them. Distractors and DPE ask only for the taught distinction "
+    "and conclusions supported by visible facts; use the grade-band DPE length.\n\n"
     "**Hard lines:** a corrupted chemical formula (CaCl for CaCl₂) never appears "
     "as an MCQ option — exposure teaches it; a corrupted-formula common mistake "
     "gets a non-formula distractor. Every quantity carries its unit; every "
@@ -390,28 +384,29 @@ _CBP_MATH = (
     "figures, number lines, step states; every geometry figure gets one; *photo* "
     "only for real-world context; none unless it carries the concept.\n\n"
     "**Case framing:** practical sharing, money/measurement, or error detection. A "
-    "mathematics case MUST open, inside one of these shapes, on a contested value — "
-    "two answers that cannot both be right (a checker vs a total), structural, never "
-    "settled by a keyword. Delete every sentence naming a method, rule, or "
+    "contested numeric value is useful only when the lesson teaches the required "
+    "calculation and supplies its inputs. Otherwise build a decision using the "
+    "lesson's actual concept, classification, relation or procedure. "
+    "Delete every sentence naming a method, rule, or "
     "operation: a decision the student can get wrong must remain, or it is a worked "
     "example in case's clothes — rebuild. A checkpoint answerable without noticing "
     "the structure is drill — rebuild.\n\n"
-    "**Distractors:** hold the operand, vary the operator or parameter — never four "
-    "number-sets under one operation; the dimension options differ on — extending, "
-    "never replacing, anti-leak.\n\n"
+    "**Distractors:** for an operation-choice lesson, hold the operand and vary "
+    "the operator or parameter; for other lessons vary the taught distinction. "
+    "All options must be mutually exclusive for the stated question.\n\n"
     "**Teaching:** shortcuts state their bound — \"remove as many zeros as the "
     "divisor has\" gives 450 for 45 000 ÷ 500 (true value 90); never "
     "PEMDAS/BODMAS/BIDMAS or any translation — precedence is the textbook's "
     "I/II/III bosqich tiers; one glyph per operation, per the source "
-    "(`:` vs `÷`, `·` vs `×`); both simulation paths run to a value, the separating "
-    "rule named, the dispute settled.\n\n"
+    "(`:` vs `÷`, `·` vs `×`); for numeric cases both simulation paths run to a "
+    "value; otherwise show the resulting classification, relation or procedure.\n\n"
     "**Avoid:** copying textbook artwork; unverified domain restrictions for "
     "rational expressions; asserting a geometric property (diagonal lengths, "
     "perpendicularity, angle sums, or polygon class membership) without the "
     "standard condition that makes it true.\n\n"
-    "**DPE (mathematics):** which rule governs, known before computing · why it, "
-    "not the rejected one · the common mistake's wrong result, and where the rule "
-    "stops applying."
+    "**DPE (mathematics):** explain the taught rule or relation that supports the "
+    "decision; ask for a wrong numeric result or domain limit only if the lesson "
+    "teaches it. Follow the grade-band length and necessary scoring components."
 )
 
 _CBP_LANGUAGES = (
@@ -449,18 +444,15 @@ _CBP_HUMANITIES = (
     "**Visual policy:** *diagram* for the structural layer (timelines, maps, "
     "dynasty trees); *photo* for figures, objects; none unless it carries "
     "the concept.\n\n"
-    "**History:** the case centres a source on a question the student must "
-    "settle; who made it and why comes before what it says; sources display "
-    "maker, date, primary/secondary; distractors hold the event and vary the "
-    "SOURCE it is known through — at least two of the three checkpoints' option "
-    "sets MUST differ by source (a chronicle vs a coin vs a traveler's account), "
-    "not by fact. Plant exactly one true but irrelevant fact, named in "
-    "feedback as the planted distractor; DPE: who made the source and "
-    "why · what it can and cannot answer · which true fact was set aside — and "
-    "the set-aside question itself never names that fact (asking \"which fact "
-    "(X)?\" answers itself). The DPE closing note names the SYSTEM as the "
-    "evaluator in active voice (\"tizim ... o'qib chiqib baholaydi\"), never a "
-    "bare passive \"baholanadi\".\n\n"
+    "**History:** use source analysis only when it is taught AND an actual source "
+    "is supplied. Display an identified excerpt with its supplied maker, date and "
+    "source type; ask about purpose only when the visible excerpt/metadata supports "
+    "it, and limit conclusions to what the source can establish. Otherwise use "
+    "labelled lesson information cards and assess the supplied facts and how they "
+    "support one concrete decision. Do not require author/purpose questions or "
+    "source-category option sets in a factual lesson. A coin, chronicle or account "
+    "label alone proves nothing. DPE asks for the actual supporting fact and its "
+    "link to the decision, following the grade-band length.\n\n"
     "**Economics:** a decision under a real constraint, in so'm, with instruments "
     "the student could meet (household budget, bazaar, family loan — never "
     "credit scores, mortgages, index funds); checkpoints: 1 the chooser and what "
@@ -474,7 +466,7 @@ _CBP_HUMANITIES = (
     "An arithmetic step exists only to compare two alternatives — never as a "
     "checkpoint of its own. Never claim the output measures the student's "
     "real-world conduct — a written case measures simulated judgement. A case "
-    "may press its stakes onto the student's in-fiction professional role — "
+    "may press its stakes onto the student's in-fiction role — "
     "never their out-of-fiction identity — and a pressured case still resolves "
     "through the standard consequence and feedback, naming the pressure.\n\n"
     "Law, upbringing, pre-conscription: the general "
@@ -523,8 +515,8 @@ _FC_SCIENCES = (
     "— role of chlorophyll. One retrievable atom per card.\n\n"
     "**Per-science:** physics — term cards only where the term is a prerequisite "
     "for the lesson's skill, never as trivia. Chemistry — classification cards "
-    "drill the criterion, never the noun: the observation that decides "
-    "acid/base/salt, not the category label; a corrupted chemical formula never "
+    "drill a deciding criterion when it is taught with the needed observations; "
+    "otherwise recall this lesson's actual terms and relations. A corrupted chemical formula never "
     "appears anywhere on a card — front, back, hint, example, or misconception — "
     "a wrong subscript is a different substance, and exposure teaches it (this "
     "extends the unbalanced-equations rule below). Biology — retrieval on terms "
@@ -705,6 +697,14 @@ FAMILY_RULES: dict[str, dict[str, str]] = {
 _cache: dict[str, dict[str, str]] = {}
 _hash_cache: dict[str, dict[str, str]] = {}
 
+# Include the optional English glossary; teacher material and retired phases are
+# deliberately outside this policy. Central injection also covers future subject
+# overrides, whose files need not remember a new template token.
+_LEARNER_PHASES = frozenset({
+    "vocabulary", "case-based-preview", "flashcards", "memory-check",
+    "practice-rlc", "practice-error-detection", "practice-sentence",
+})
+
 
 def _resolve_dir(subject: str, phase_name: str) -> str:
     if USE_SUBJECT_PROMPTS and (PROMPTS_DIR / subject / f"{phase_name}.md").is_file():
@@ -746,7 +746,8 @@ def _raw(dirname: str, phase_name: str) -> tuple[str, str]:
     return _cache[dirname][phase_name], _hash_cache[dirname][phase_name]
 
 
-def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
+def _apply_substitutions(body: str, subject: str, output_language: str,
+                         *, learner: bool = False) -> str:
     """Shared `{{SUBJECT}}` / `{{LANGUAGE_RULES}}` / `{{NOTATION_RULES}}`
     substitution.
 
@@ -759,12 +760,38 @@ def _apply_substitutions(body: str, subject: str, output_language: str) -> str:
     next to `_SUBJECT_FAMILY` above).
     """
     body = body.replace("{{SUBJECT}}", SUBJECT_LABELS.get(subject, subject))
-    body = body.replace("{{LANGUAGE_RULES}}",
-                        _resolve_language_rule(subject, output_language))
+    language_rule = _resolve_language_rule(subject, output_language)
+    if learner:
+        for professional_context in (
+            "Modern professional (non-bazaar) contexts.",
+            "Modern, professional (non-casual) contexts.",
+        ):
+            language_rule = language_rule.replace(
+                professional_context,
+                "Age-appropriate contexts; familiar everyday roles for grades 1–6."
+            )
+    body = body.replace("{{LANGUAGE_RULES}}", language_rule)
     family = _SUBJECT_FAMILY.get(subject)
-    body = body.replace("{{NOTATION_RULES}}",
-                        _NOTATION_EXACT if family in ("math", "sciences")
-                        else _NOTATION_PROSE)
+    notation_rule = (_NOTATION_EXACT if family in ("math", "sciences")
+                     else _NOTATION_PROSE)
+    if learner:
+        # Error detection's keyboard uses LaTeX; recall's typed fields accept
+        # plain words/numbers. The generic prohibition contradicted the former.
+        typed_syntax = (
+            "no $ delimiters. Follow the phase's typed-answer syntax: plain "
+            "words/numbers in recall; keyboard-serialized LaTeX in error detection."
+        )
+        notation_rule = notation_rule.replace(
+            "no $, no backslash commands, nothing a student cannot type.", typed_syntax
+        ).replace("no $ and no backslash commands.", typed_syntax)
+    body = body.replace("{{NOTATION_RULES}}", notation_rule)
+    return body
+
+
+def _with_learner_quality(body: str, phase: str) -> str:
+    if phase in _LEARNER_PHASES:
+        policy, _ = _raw(GENERAL_DIR, "_learner-quality")
+        return policy.rstrip() + "\n\n" + body
     return body
 
 
@@ -772,7 +799,9 @@ def get_prompt(subject: str, phase_name: str, provider_suffix: str = "",
                output_language: str = "uz") -> str:
     dirname = _resolve_dir(subject, phase_name)
     body, _h = _raw(dirname, phase_name)
-    body = _apply_substitutions(body, subject, output_language)
+    body = _with_learner_quality(body, phase_name)
+    body = _apply_substitutions(body, subject, output_language,
+                                learner=phase_name in _LEARNER_PHASES)
     phase_blocks = FAMILY_RULES.get(phase_name, {})
     family = _SUBJECT_FAMILY.get(subject)
     family_block = phase_blocks.get(family) or phase_blocks.get("_default", "")
@@ -798,7 +827,9 @@ def get_structured_prompt(
     if not path.exists():
         return None
     body = path.read_text(encoding="utf-8")
-    return _apply_substitutions(body, subject, output_language)
+    body = _with_learner_quality(body, phase)
+    return _apply_substitutions(body, subject, output_language,
+                                learner=phase in _LEARNER_PHASES)
 
 
 _TEACHER_DECK_FIDELITY_PATH = (

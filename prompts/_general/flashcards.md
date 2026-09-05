@@ -12,7 +12,8 @@ Flash Cards are a simple active-recall tool: one retrievable atom per card, stud
 ## Output — deck size by grade band
 
 The pipeline injects the grade, never a mode. Size the deck to the grade band:
-- **G5-6 → 6-8 cards** — core atoms only, plainest wording.
+- **G1-6 → 6-8 cards** — core atoms only, plainest wording.
+  Prefer 6 for grades 1–6; fewer if the lesson has fewer distinct core atoms.
 - **G7-8 → 8-10 cards** — core atoms plus one `misconception` card.
 - **G9-11 → 10-12 cards** — the full atom set, including subtler distinctions.
 

@@ -1,11 +1,12 @@
 # Prompt: Real-Life Challenge — first-person expert decision game — {{SUBJECT}}
 
 You are generating the **Real-Life Challenge** for this {{SUBJECT}} lesson. The
-student is NOT answering questions *about* a scenario — they ARE the expert
-inside it. They predict, decide, gather information, commit, name the governing
+student makes decisions inside a scenario in a concrete role; a familiar
+role is suitable for grades 1–6. They predict, decide, gather information, commit, name the governing
 concept, and justify their reasoning. Build ONE realistic decision scenario
-grounded only in this session's {{SUBJECT}} content, with a named expert role
-appropriate to {{SUBJECT}}.
+grounded only in this session's {{SUBJECT}} content, with a named role
+appropriate to the lesson and grade. Use a different situation and a different
+use of the lesson knowledge than the preview.
 
 > **Why the shape below is exact.** This phase targets the platform's
 > `rlc_config` block, which renders as a five-step game only when the five steps
@@ -35,21 +36,21 @@ appropriate to {{SUBJECT}}.
     conduct: every feedback line judges the call inside the fiction, not the
     student's character. Keep the Role line on an existing `expert_role` value
     (e.g. `business_consultant`) — never invent one.
-  - When {{SUBJECT}} is a history lesson, the challenge settles the question
-    through a source: Step 2's tagged-correct info_request is the account or
-    source that resolves the call, and the distracting datum (where the grade
-    band requires one) is specifically a TRUE-but-irrelevant fact the student
-    must discard.
-  - When {{SUBJECT}} is a biology lesson, the scenario is a system under a
-    named change. The Prediction prompt itself asks the student to name the
-    organizational level (cell / organ / system / organism) before predicting —
-    folded into the Prediction wording, never a new step — and Step 1's options
-    differ by level, so the wrong ones are wrong-level reads: each still
-    demonstrably wrong for this call, never a defensible alternative framing.
-  - When {{SUBJECT}} is a physics lesson, the frame is live: Context names who
-    observes, Step 1's decision is the qualitative call (which quantity
-    changes, which does not) committed before any number appears, and numeric
-    readings arrive only as Step 2 info_request material.
+  - History: source analysis applies only when taught and an actual source is
+    supplied. Show the identified excerpt and its supplied metadata; ask only
+    what it can establish. Otherwise use labelled lesson information cards to
+    support one concrete decision about the actual lesson facts. A source name
+    alone cannot settle it.
+  - Biology: use organizational-level predictions only when those levels and
+    mechanisms are taught. Otherwise use the actual classification, observation
+    or relation; no wrong-level template is required.
+  - Physics: compare named observers before computing only for a taught
+    reference-frame method. Otherwise use this lesson's actual concept, relation
+    or procedure with all needed readings supplied before the question.
+  - Chemistry: use composition-change criteria only when taught and observations
+    are supplied; otherwise use the actual taught classification or relation.
+  - Mathematics: a numeric dispute applies only to a taught calculation with
+    its inputs supplied; other concepts, classifications and procedures are valid.
   - For other subjects, keep the general rules above.
 - **Pressure is narrative.** Stakes belong to the in-fiction role ("the stall
   loses the day's profit"), never to the student's clock or score; urgency
@@ -97,8 +98,9 @@ different label wording — these strings are machine-recognized.
   EXACTLY one of: `fire_inspector`, `structural_engineer`, `business_consultant`,
   `medical_diagnostician`, `agronomist`, `teacher`, `lawyer`, `city_planner`,
   `epidemiologist`, `ethicist`, `historian`, `general`. Choose the closest fit,
-  and give a concrete named professional after the dash (never a generic "Siz
-  olimsiz"). Directly on the NEXT line, add the machine-parsed role label in the
+  and give a concrete role after the dash. For grades 1–6, use a familiar role
+  (e.g. a class helper), with `general` when no specialist enum fits; no
+  professional title is required. Directly on the NEXT line, add the machine-parsed role label in the
   output language: `**Rol nomi (expert_role_label):** <role name in the lesson
   language>` (uz e.g. `Qurilish muhandisi`; ru `Инженер-строитель`; en lessons
   the plain English role name). The platform shows THIS label to the student —
@@ -152,19 +154,23 @@ another step by its number anywhere in a step's body.
     correctness tag.
     The wrong ones are **real {{SUBJECT}} misconceptions students actually hold**
     (drawn from the lesson's typical confusions), not nonsense.
-  - A mandatory **Why** prompt — the student justifies the call in 1–2 sentences.
-    Name the reasoning a sound Why should reach.
-  - A mandatory **confidence** prompt — the student rates Sure / Maybe / Guess.
+  - Grades 1–6: omit per-choice Why and confidence prose. The final reasoning
+    step provides the brief justification. For grades 7–11 these prompts are
+    optional prose; never add unsupported fields or extra steps.
 - `### 2-qadam — Ma'lumot so'rovi (kind: info_request)` (label per the table) — before committing,
   what should the expert check, measure, or ask for next?
   - **3–4 options** (candidate readings / tests / questions). Exactly ONE carries
     the correctness tag — the piece of information that actually resolves the
-    call. The distractors are plausible-but-uninformative checks.
-  - A mandatory **Why** prompt and **confidence** prompt, as in Step 1.
+    call. The distractors are plausible-but-uninformative checks. Selecting
+    a check does not supply its result. Before the final decision, put the
+    actual result in student-visible context for everyone, regardless of choice.
+    Keep each step's first body line a question: needed data can sit in that
+    question or in the shared Context, never only in feedback or an answer key.
+  - Omit per-choice Why/confidence for grades 1–6; optional prose for grades 7–11.
 - `### 3-qadam — Yakuniy qaror (kind: final_decision)` (label per the table) — the committed call now
   that the information is in hand.
   - **3–4 options**; exactly ONE carries the correctness tag.
-  - A mandatory **Why** prompt and **confidence** prompt.
+  - Omit per-choice Why/confidence for grades 1–6; optional prose for grades 7–11.
 - `### 4-qadam — Asosiy tushuncha (kind: concept_select)` (label per the table) — which lesson concept
   actually drove the correct decision?
   - **3–4 concept chips** as a bulleted list (the governing concept plus close
@@ -180,7 +186,9 @@ another step by its number anywhere in a step's body.
     Step 5 is unanswerable for them, while a named concept still measures
     whether they can reason with the right rule.
   - Put the minimum length on its own line as `**Minimum length (min_chars):**
-    80` (an integer, 20–1000; use 80 unless the lesson warrants otherwise).
+    20` for grades 1–6 (one brief explanation, 1–2 short sentences); use 80
+    for older grades unless the lesson warrants otherwise. Keep the integer
+    within 20–1000; the required field cannot be omitted.
 
 ### Feedback (per decision step)
 
@@ -193,7 +201,7 @@ For Steps 1–3 provide, after the options:
   LANGUAGE (Uzbek «Hali emas», Russian «Пока нет», English «Not yet») — never a
   flat "wrong" (Uzbek "Noto'g'ri", Russian «Неправильно»); re-aim with a
   guiding question, not the answer.
-- **Color the feedback by the confidence + correctness pattern** (this steers the
+- **For grades 7–11 only, if confidence prose is included, color feedback by the confidence + correctness pattern** (this steers the
   *tone*, not a points rubric): when the student was **Sure but wrong**, gently
   name it as a confident misconception — the case most worth correcting, so be
   direct about the faulty belief, not just the call. When the student was **Guess
@@ -221,10 +229,10 @@ symptoms without linking to the mechanism the lesson taught.
   chips, never omitted (see the machine-parsed prompt rule above).
 - Steps 1–3 and Step 4 each have exactly ONE tagged-correct entry; the correctness
   tag is the only correctness signal and is stripped before the student sees it.
-- The student is the expert: first person, named role, specific decisions — never
-  generic "What do you think?" role-play.
-- Prediction checkpoint, Why justification, and confidence rating fire on every
-  decision step (1–3). None optional.
+- The student has a named role and specific decisions; familiar roles suit
+  lower grades. Avoid generic "What do you think?" role-play.
+- Keep the Prediction prompt and the final reasoning step. For grades 1–6 omit
+  redundant per-choice Why/confidence prose and keep reasoning brief.
 - Distractors are genuine {{SUBJECT}} misconceptions, not filler.
 - **No within-scenario branching** — the same step sequence for all students.
 - Feedback is in-character senior-expert voice, not a rubric read aloud.
