@@ -62,6 +62,8 @@ SLOT_SATURATION_MARKER = "fleet credential slot wait exhausted"
 
 def is_slot_saturation(exc: "BaseException | str") -> bool:
     """True when an error/text carries the fleet slot-exhaustion marker."""
+    if isinstance(exc, (PersistentContentQualityFailure, PersistentSolverMismatch)):
+        return False  # quoted exercise/reviewer text is not a provider signal
     return SLOT_SATURATION_MARKER in str(exc)
 
 
@@ -121,6 +123,28 @@ class PersistentSolverMismatch(Exception):
             f"{shown}{suffix}"
         )
         super().__init__(self._clip(message, self._MAX_MESSAGE_CHARS))
+
+
+class PersistentContentQualityFailure(Exception):
+    """A known major learner defect remains unresolved after bounded repair.
+
+    Carries the full warnings for inspection; the exception message is bounded.
+    This type is terminal even when quoted content contains provider error words.
+    """
+
+    def __init__(self, phase_name: str, warnings: list[str],
+                 repair_error: BaseException | None = None) -> None:
+        self.phase_name = phase_name
+        self.warnings = tuple(warnings)
+        self.repair_error = repair_error
+        clip = PersistentSolverMismatch._clip
+        detail = clip("; ".join(warnings[:3]) or "major defect unresolved", 400)
+        suffix = ""
+        if repair_error is not None:
+            suffix = f"; repair failed ({type(repair_error).__name__}): {clip(str(repair_error), 220)}"
+        super().__init__(clip(
+            f"{clip(phase_name, 80)}: persistent content-quality failure: {detail}{suffix}", 900,
+        ))
 
 
 # ── Fenced-lease control signals (fenced job leases, Task 7) ─────────────────

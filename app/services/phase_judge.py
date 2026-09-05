@@ -6,8 +6,9 @@
 A single CLI call lists contract violations — each citing the exact offending
 text — then refutes its own list, dropping anything it cannot substantiate, so a
 hallucinated failure never triggers a needless regeneration. The judge model is
-one capability tier above the ACTUAL producer (`model_tiers`). On any CLI/parse
-error the judge degrades to "unavailable" and never blocks generation.
+one capability tier above the ACTUAL producer (`model_tiers`). CLI/parse errors
+return "unavailable"; the pipeline retains known-major blocking state. Typed
+control signals and API authentication failures propagate.
 """
 
 from __future__ import annotations
@@ -21,7 +22,10 @@ from loguru import logger
 from pydantic import BaseModel
 
 from app.services import agent
-from app.services.errors import SlotSaturation, is_slot_saturation
+from app.services.errors import (
+    CancelWonSignal, LeaseLostSignal, SessionLimitPause, SlotSaturation,
+    TransientPhaseError, is_slot_saturation,
+)
 from app.services.prompts import get_prompt
 
 
@@ -69,9 +73,24 @@ _INSTRUCTIONS = (
     "student's learning; default borderline length/wording issues to `minor`.\n\n"
     "Visual rule (do NOT over-flag): the CONTRACT tells the generator to emit "
     "`![placeholder: … — image gen required](placeholder)` for any raster/photo "
-    "instead of creating one. A correctly-emitted placeholder is COMPLIANT — never "
-    "raise a 'missing image / incomplete visual' failure over it. But a fabricated "
+    "instead of creating one. A correctly-emitted decorative placeholder is COMPLIANT. "
+    "A placeholder is NOT supplied visual evidence: if solving requires unseen "
+    "features of that image, flag the missing evidence as major. A fabricated "
     "image or an invented http(s) image URL IS a violation — the contract forbids it."
+    "\n\nSemantic answerability (all subjects and output languages): independently "
+    "check visible prerequisites and every premise needed by each question. Hidden "
+    "answer keys, feedback, rubrics, metadata, and previous student answers are not "
+    "student-visible supplied evidence. Quote the exact question and the missing "
+    "required evidence, or the conflicting text, before alleging a major. Check "
+    "that open reasoning tasks have sufficient supplied evidence and that their "
+    "rubrics can fairly grade defensible answers under the actual wording. Reject "
+    "references to unavailable passages, sources, data or visuals when these are "
+    "needed to answer. Flag grade-inappropriate untaught methods required for "
+    "success, misleading extra certainty that drops lesson qualifiers, and "
+    "cross-phase repeated application that merely repeats an earlier task's "
+    "scenario and reasoning. Prior outputs let you inspect repetition; they do "
+    "not prove a learner has supplied an answer. Preserve target-language practice "
+    "separately from scaffolding/output language in L2 subjects."
 )
 
 _FIDELITY_RULE = (
@@ -80,8 +99,13 @@ _FIDELITY_RULE = (
     "`major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS "
     "the LESSON CONTEXT (a changed date, number, name, definition, rule, or causal claim). "
     "A world claim that is merely ABSENT from the LESSON CONTEXT but not contradicted by it "
-    "(supporting context, standard curriculum facts) is at most `minor` — never `major`, "
-    "never a reason to regenerate. DO NOT flag numbers the OUTPUT generates for teaching — "
+    "(supporting context, standard curriculum facts) is at most `minor` on absence "
+    "alone. Exceptions: missing REQUIRED evidence or premises, fabricated source "
+    "authors, quotations, data or provenance, and unsupported claims needed to make "
+    "a rubric answerable are `major` when demonstrated by quoted evidence. Do not "
+    "turn every unmentioned ordinary fact into a major. Retain the lesson's facts "
+    "and qualifiers except an explicitly documented lesson-scoped correction. "
+    "DO NOT flag numbers the OUTPUT generates for teaching — "
     "practice-problem values, worked-example arithmetic, invented student names, hypothetical "
     "scenarios — these are expected and are NOT fidelity violations. A hint list of candidate "
     "issues may appear below; verify each against the LESSON CONTEXT before trusting it, and "
@@ -217,9 +241,8 @@ async def judge(
 ) -> JudgeOutcome:
     """Grade `output_md` against its phase contract (the custom override when
     supplied, else the built-in prompt). Returns a JudgeOutcome;
-    for cli transport NEVER raises — any error (bad subject/phase, CLI failure,
-    unparseable verdict) degrades to 'unavailable' so validation can't block
-    generation. For api transport an auth/401 error is RE-RAISED instead of
+    Ordinary CLI/parse errors degrade to 'unavailable', which is not a verified
+    pass. Control signals propagate. For api transport an auth/401 error is RE-RAISED instead of
     swallowed: an api job must fail loudly, not ship unjudged."""
     try:
         # judge_provider/judge_model are resolved upstream by
@@ -247,7 +270,9 @@ async def judge(
         verdict = result.parsed
         if not isinstance(verdict, Verdict):
             raise RuntimeError("judge produced no parsed Verdict")
-    except Exception as exc:  # noqa: BLE001 — judge must NEVER block generation
+    except (CancelWonSignal, LeaseLostSignal, SessionLimitPause, SlotSaturation, TransientPhaseError):
+        raise
+    except Exception as exc:  # noqa: BLE001 — unavailable review is recorded separately
         if is_slot_saturation(exc):
             raise SlotSaturation(str(exc))  # park the job — do not ship unjudged
         # An api job that hit an auth/401 error must fail LOUDLY (job-level
@@ -267,7 +292,7 @@ async def judge(
             warnings=[f"judge-unavailable: {type(exc).__name__}"], feedback="",
         )
 
-    if verdict.passed or not verdict.failures:
+    if not verdict.failures:
         return JudgeOutcome(available=True, passed=True, warnings=[], feedback="")
     warnings = _serialize_failures(verdict.failures)
     has_major = any(f.severity == "major" for f in verdict.failures)

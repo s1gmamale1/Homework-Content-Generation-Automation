@@ -24,6 +24,7 @@ from app.services.errors import (
     CancelWonSignal,
     LeaseLostSignal,
     PhaseAttemptTimeout,
+    PersistentContentQualityFailure,
     PersistentSolverMismatch,
     SessionLimitPause,
     SlotSaturation,
@@ -57,7 +58,10 @@ _INTERNAL_PHASES = {"extract", "classify"}
 
 # CQ-C: key-bearing phases the independent answer-key solver re-checks after
 # the judge has run (so it checks the FINAL, possibly judge-regenerated output).
-_SOLVER_PHASES = ("memory-check", "practice-error-detection", "practice-rlc", "boss-arena")
+_SOLVER_PHASES = (
+    "case-based-preview", "memory-check", "practice-sentence",
+    "practice-error-detection", "practice-rlc", "boss-arena",
+)
 
 
 def _inject_grade(lesson_context: Optional[str], grade: Optional[str]) -> Optional[str]:
@@ -175,6 +179,26 @@ async def _persist_solver_blocked_phase(
             content_schema_version=artifact.content_schema_version,
             renderer_version=artifact.renderer_version,
             claim_token=claim_token,
+        )
+        await session.commit()
+    _raise_on_lease_signal(result)
+
+
+async def _persist_content_blocked_phase(
+    *, po_id: UUID, artifact: PhaseArtifact, tin: Optional[int], tout: Optional[int],
+    produced_by: str, warnings: list[str], error: PersistentContentQualityFailure,
+    solver_status: Optional[str], claim_token: Optional[UUID],
+) -> None:
+    """Keep the inspected artifact for review; a cancelled/lost lease still wins."""
+    async with SessionLocal() as session:
+        result = await phase_repo.set_status(
+            session, po_id, "failed", completed_at=_utcnow(),
+            output_md=artifact.output_md, tokens_input=tin, tokens_output=tout,
+            error_message=str(error), validation_warnings=warnings or None,
+            provider=produced_by, judge_status="major_blocked", solver_status=solver_status,
+            content_json=artifact.content_json, authoring_mode=artifact.authoring_mode,
+            content_schema_version=artifact.content_schema_version,
+            renderer_version=artifact.renderer_version, claim_token=claim_token,
         )
         await session.commit()
     _raise_on_lease_signal(result)
@@ -1720,6 +1744,8 @@ def _requeue_worthy(exc: BaseException) -> bool:
     """Transient-only queue-retry policy (user-locked 2026-07-20): attempt
     timeouts, rate-limit 429s, and transient net errors get the bounded
     queue retry; hard errors and walls stay terminal (retries bill real $)."""
+    if isinstance(exc, (PersistentContentQualityFailure, PersistentSolverMismatch)):
+        return False
     if isinstance(exc, PhaseAttemptTimeout):
         return True
     if agent._is_rate_limited(str(exc)):
@@ -2240,8 +2266,7 @@ async def _execute_phase(
     if phase_name != "extract":
         # Judge against the phase's own contract, keyed off the ACTUAL producer
         # (produced_by + its resolved model). Capped regen loop (default 1 iter)
-        # feeds cited failures back; budget exhausted → accept with warnings.
-        # Never blocks the job.
+        # feeds cited failures back; unresolved learner majors block acceptance.
         def _gen_model_of(prod: str) -> Optional[str]:
             # After failover, the fallback ran on model=None (provider default), so
             # tier selection uses the provider's DEFAULT model — errs toward a
@@ -2249,128 +2274,105 @@ async def _execute_phase(
             # default. Approximate-but-safe; do not mistake it for exact.
             return model if prod == provider else None
 
-        _jp, _jm = model_tiers.resolve_judge(
-            produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
-        )
-        outcome = await _judge_with_timeout(
-            subject=subject, phase_name=phase_name, output_md=output_md,
-            lesson_context=lesson_context, prior_outputs=prior_outputs,
-            gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
-            judge_provider=_jp, judge_model=_jm,
-            homework_job_id=job_id, phase_output_id=po_id,
-            transport=judge_transport,
-            contract_override=_custom_md,
-            output_language=output_language,
-        )
-        # Retry-once on unavailable: a transient CLI/parse failure (or timeout
-        # degraded by C1's _judge_with_timeout) is worth one free retry.
-        # Auth errors never reach here — phase_judge re-raises them before
-        # degrading to unavailable — so retrying unavailable is always safe.
-        # A content-policy refusal (outcome.refused) is recorded distinctly and
-        # is NOT retried — it won't self-heal.
-        if not outcome.available and not outcome.refused:
-            logger.info(
-                f"[job {job_id}] {phase_name} judge unavailable on first attempt — retrying once"
+        # Learner repair has one phase-wide budget, including reviews after a
+        # solver repair. Teacher artifacts retain their separate advisory policy.
+        learner_phase = not phase_name.startswith("teacher-")
+        judge_regens_left = settings.max_judge_regens
+
+        async def _block_content(
+            major_warnings: list[str], repair_error: BaseException | None = None,
+        ) -> NoReturn:
+            blocked = PersistentContentQualityFailure(phase_name, major_warnings, repair_error)
+            await _persist_content_blocked_phase(
+                po_id=po_id, artifact=artifact, tin=tin, tout=tout,
+                produced_by=produced_by, warnings=major_warnings,
+                error=blocked, solver_status=solver_status, claim_token=_token,
             )
-            outcome = await _judge_with_timeout(
-                subject=subject, phase_name=phase_name, output_md=output_md,
-                lesson_context=lesson_context, prior_outputs=prior_outputs,
-                gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
-                judge_provider=_jp, judge_model=_jm,
-                homework_job_id=job_id, phase_output_id=po_id,
-                transport=judge_transport,
-                output_language=output_language,
-            )
-        # Regenerate ONLY on a MAJOR issue; minor (stylistic/length) nits are
-        # recorded as warnings but never trigger an expensive regen.
-        # Loop is bounded by settings.max_judge_regens (default 1 → byte-identical
-        # to the previous single-regen behavior).
-        for _regen_attempt in range(settings.max_judge_regens):
-            if not (outcome.available and outcome.has_major):
-                break
-            logger.info(
-                f"[job {job_id}] {phase_name} judge found major issue(s) "
-                f"({len(outcome.warnings)} total) — regenerating "
-                f"(attempt {_regen_attempt + 1}/{settings.max_judge_regens}). "
-                f"Issues: {outcome.warnings}"
-            )
-            # The regen runs through the failover driver, which CAN exhaust all
-            # providers and raise. This block is OUTSIDE the generation try/except
-            # (which marks the phase failed), so an unguarded raise here would fail
-            # the whole job — violating "validation never fails a job". Guard it: on
-            # regen failure keep the judge-rejected-but-complete original output +
-            # its warnings and proceed to `done`.
-            try:
-                r_art, r_tin, r_tout, r_prod = await _generate(
-                    feedback=outcome.feedback,
-                    req_provider=produced_by,
-                    req_model=_gen_model_of(produced_by),
-                )
-                # Commit to the regenerated output only after it actually succeeded.
-                # The WHOLE artifact is swapped — a regen that falls back to
-                # markdown carries content_json=None with it, so new markdown can
-                # never be persisted beside the previous attempt's JSON.
-                artifact, tin, tout, produced_by = r_art, r_tin, r_tout, r_prod
-                output_md = artifact.output_md
-                _jp2, _jm2 = model_tiers.resolve_judge(
+            raise blocked
+
+        async def _review_current_artifact() -> phase_judge.JudgeOutcome:
+            nonlocal artifact, output_md, tin, tout, produced_by, judge_status, judge_regens_left
+            judge_status = None  # a previous artifact's verdict cannot describe this one
+            known_major: list[str] | None = None
+            while True:
+                _jp, _jm = model_tiers.resolve_judge(
                     produced_by, _gen_model_of(produced_by), judge_provider_ov, judge_model_ov,
                 )
-                outcome = await _judge_with_timeout(
+                review_kwargs = dict(
                     subject=subject, phase_name=phase_name, output_md=output_md,
                     lesson_context=lesson_context, prior_outputs=prior_outputs,
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
-                    judge_provider=_jp2, judge_model=_jm2,
+                    judge_provider=_jp, judge_model=_jm,
                     homework_job_id=job_id, phase_output_id=po_id,
-                    transport=judge_transport,
-                    contract_override=_custom_md,
+                    transport=judge_transport, contract_override=_custom_md,
                     output_language=output_language,
                 )
-            except (LeaseLostSignal, CancelWonSignal):
-                raise  # control signal — never degrade into the soft-keep path
-            except SessionLimitPause:
-                raise  # quota-pause during regen must propagate — not a content failure
-            except Exception as exc:  # noqa: BLE001 — validation must NEVER fail a job (except api auth, below)
-                if is_slot_saturation(exc):
-                    raise SlotSaturation(str(exc)) from exc  # park, don't degrade
-                if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
-                    # This try-block contains TWO spawns with potentially different
-                    # transports: the regen GENERATION (content → `transport`) and
-                    # the POST-REGEN JUDGE (→ `judge_transport`). An auth error here
-                    # belongs to one of those two; if EITHER ran under api, the
-                    # failure must be LOUD, consistent with the initial judge
-                    # (spec §3) — don't silently degrade to the pre-regen output.
-                    # Only pure cli+cli keeps the soft degrade.
-                    logger.error(
-                        f"[job {job_id}] {phase_name} api auth failure during regen/judge ({exc!r})"
-                    )
+                try:
+                    checked = await _judge_with_timeout(**review_kwargs)
+                    if not checked.available and not checked.refused:
+                        checked = await _judge_with_timeout(**review_kwargs)
+                except (LeaseLostSignal, CancelWonSignal, SessionLimitPause, SlotSaturation, TransientPhaseError):
                     raise
-                logger.warning(
-                    f"[job {job_id}] {phase_name} regen failed ({exc!r}); "
-                    f"keeping the judge-rejected original output + warnings"
-                )
-                # output_md/tin/tout/produced_by and `outcome` retain their original
-                # pre-regen values — the phase still completes `done` with warnings.
-                judge_status = "major_regen_failed"
-                break
-        # Compute judge_status from the final outcome (or the soft-degrade above).
-        # judge_status is None for non-judged phases (e.g. extract).
-        if judge_status is None:
-            if getattr(outcome, "refused", False):
-                judge_status = "refused"
-            elif not outcome.available:
-                judge_status = "unavailable"
-            elif outcome.passed or not outcome.has_major:
-                judge_status = "ok"
-            else:
-                judge_status = "major_shipped"
+                except Exception as exc:
+                    if is_slot_saturation(exc):
+                        raise SlotSaturation(str(exc)) from exc
+                    if learner_phase and _requeue_worthy(exc):
+                        raise
+                    if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                        raise
+                    if learner_phase and known_major is not None:
+                        await _block_content(known_major, exc)
+                    if known_major is not None:
+                        judge_status = "major_regen_failed"
+                        return checked
+                    raise
 
-        # CQ-C (R21.2): independent answer-key solver over the key-bearing phases.
-        # Runs AFTER the judge so it checks the FINAL (possibly judge-regenerated)
-        # output. Initial infrastructure unavailability remains advisory. Once a
-        # HIGH-confidence mismatch is proven, however, this path is fail-closed:
-        # only a regenerated artifact that the solver accepts may reach `done`.
-        # The solver-regen output is adopted WITHOUT re-judging (accepted risk —
-        # the solver only fixes the key).
+                if not checked.available:
+                    judge_status = "refused" if checked.refused else "unavailable"
+                    if learner_phase and known_major is not None:
+                        await _block_content(
+                            known_major + checked.warnings,
+                            RuntimeError("judge recheck " + judge_status),
+                        )
+                    return checked
+                if not checked.has_major:
+                    judge_status = "ok"
+                    return checked
+
+                known_major = list(checked.warnings)
+                if judge_regens_left <= 0:
+                    if learner_phase:
+                        await _block_content(known_major)
+                    judge_status = "major_shipped"
+                    return checked
+                judge_regens_left -= 1
+                try:
+                    r_art, r_tin, r_tout, r_prod = await _generate(
+                        feedback=checked.feedback, req_provider=produced_by,
+                        req_model=_gen_model_of(produced_by),
+                    )
+                    # Metadata and rendered output always move as one artifact.
+                    artifact, tin, tout, produced_by = r_art, r_tin, r_tout, r_prod
+                    output_md = artifact.output_md
+                except (LeaseLostSignal, CancelWonSignal, SessionLimitPause, SlotSaturation, TransientPhaseError):
+                    raise
+                except Exception as exc:
+                    if is_slot_saturation(exc):
+                        raise SlotSaturation(str(exc)) from exc
+                    if learner_phase and _requeue_worthy(exc):
+                        raise
+                    if (transport == "api" or judge_transport == "api") and phase_judge._is_auth_error(exc):
+                        raise
+                    if learner_phase:
+                        await _block_content(known_major, exc)
+                    logger.warning(f"[job {job_id}] {phase_name} regen failed ({exc!r})")
+                    judge_status = "major_regen_failed"
+                    return checked
+
+        outcome = await _review_current_artifact()
+
+        # A solver repair is a whole new deliverable: review it before solving
+        # again. A judge repair here must also be solved before acceptance.
         _solver_on = (
             settings.solver_enabled
             and phase_name in _SOLVER_PHASES
@@ -2426,6 +2428,7 @@ async def _execute_phase(
                         # markdown and content_json move together or not at all.
                         artifact, tin, tout, produced_by = r_art, r_tin, r_tout, r_prod
                         output_md = artifact.output_md
+                        outcome = await _review_current_artifact()
                         _sp2, _sm2 = model_tiers.resolve_solver(
                             produced_by, _gen_model_of(produced_by), solver_provider_ov, solver_model_ov,
                         )
@@ -2462,7 +2465,7 @@ async def _execute_phase(
                                 prior_mismatch_warnings, repair_error
                             )
                         prior_mismatch_warnings = list(s_outcome.warnings)
-                    except PersistentSolverMismatch:
+                    except (PersistentSolverMismatch, PersistentContentQualityFailure):
                         raise
                     except (
                         LeaseLostSignal,
@@ -2487,8 +2490,7 @@ async def _execute_phase(
 
         # Infra states (unavailable/refused) carry ONLY the infra string — keep it
         # out of validation_warnings (content defects); judge_status records it and
-        # the ExcType stays in the logs. major_shipped/major_regen_failed keep
-        # available=True so their genuine content warnings survive.
+        # the ExcType stays in the logs. Available content warnings survive.
         warnings = outcome.warnings if outcome.available else []
 
         # Deterministic gate (teacher-pack only): coverage/citations + banned

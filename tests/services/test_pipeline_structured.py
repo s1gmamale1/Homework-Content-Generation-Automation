@@ -41,7 +41,7 @@ from app.services.phase_artifact import (
 from app.services.phase_judge import JudgeOutcome
 from app.services.solver import SolveOutcome
 
-STRUCTURED_PHASE = "practice-sentence"          # in SCHEMAS, NOT in _SOLVER_PHASES
+STRUCTURED_PHASE = "practice-sentence"          # in SCHEMAS and in _SOLVER_PHASES
 STRUCTURED_SOLVER_PHASE = "practice-rlc"        # in SCHEMAS *and* in _SOLVER_PHASES
 PLAIN_PHASE = "preview"                         # no structured schema at all
 
@@ -444,7 +444,7 @@ async def test_solver_regen_falling_back_to_markdown_clears_structured_fields(
         StructuredPhaseError("solver regen emitted invalid JSON"),
     ]
     patch_io.markdown_results = [("# solver regenned markdown", 120, 70, "claude")]
-    patch_io.judge_outcomes = [_judge_ok()]
+    patch_io.judge_outcomes = [_judge_ok(), _judge_ok()]
     patch_io.solve_outcomes = [_solve_mismatch(), _solve_agree()]
 
     await pipeline._execute_phase(**_make_kwargs(phase_name=STRUCTURED_SOLVER_PHASE))
@@ -462,7 +462,7 @@ async def test_solver_regen_structured_persists_the_regenerated_json(patch_io, m
     art_a = artifact_from_config(STRUCTURED_SOLVER_PHASE, _rlc_cfg("alpha"))
     art_b = artifact_from_config(STRUCTURED_SOLVER_PHASE, _rlc_cfg("bravo"))
     patch_io.structured_results = [(art_a, 100, 50, "claude"), (art_b, 130, 80, "claude")]
-    patch_io.judge_outcomes = [_judge_ok()]
+    patch_io.judge_outcomes = [_judge_ok(), _judge_ok()]
     patch_io.solve_outcomes = [_solve_mismatch(), _solve_agree()]
 
     await pipeline._execute_phase(**_make_kwargs(phase_name=STRUCTURED_SOLVER_PHASE))
@@ -490,7 +490,7 @@ async def test_exactly_one_terminal_write_across_both_regens(patch_io, monkeypat
     arts = [artifact_from_config(STRUCTURED_SOLVER_PHASE, _rlc_cfg(w))
             for w in ("alpha", "bravo", "charlie")]
     patch_io.structured_results = [(a, 100, 50, "claude") for a in arts]
-    patch_io.judge_outcomes = [_judge_major(), _judge_ok()]
+    patch_io.judge_outcomes = [_judge_major(), _judge_ok(), _judge_ok()]
     patch_io.solve_outcomes = [_solve_mismatch(), _solve_agree()]
 
     await pipeline._execute_phase(**_make_kwargs(phase_name=STRUCTURED_SOLVER_PHASE))

@@ -110,6 +110,17 @@ def _call_judge():
     ))
 
 
+def test_passed_boolean_cannot_erase_explicit_major_failure(monkeypatch):
+    monkeypatch.setattr(agent, "run_phase", _fake_run_phase(pj.Verdict(
+        passed=True, failures=[pj.Failure(
+            requirement="Visible evidence", evidence="Compare the missing chart", severity="major",
+        )],
+    )))
+    outcome = _call_judge()
+    assert outcome.has_major and not outcome.passed
+    assert "missing chart" in outcome.feedback
+
+
 def test_judge_pass_outcome(monkeypatch):
     monkeypatch.setattr(pj, "get_prompt", lambda s, p, **kw: "CONTRACT")
     monkeypatch.setattr(agent, "run_phase", _fake_run_phase(pj.Verdict(passed=True)))

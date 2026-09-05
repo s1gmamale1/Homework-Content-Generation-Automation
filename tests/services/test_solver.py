@@ -16,6 +16,25 @@ COMMON = dict(subject="matematika", phase_name="memory-check", phase_output_md="
               homework_job_id=None, phase_output_id=None)
 
 
+@pytest.mark.parametrize("subject,item,key,alternative,reason", [
+    ("math", "Which equals half? A: 1/2 B: 0.5", "A only", "A and B", "math-equivalent options"),
+    ("english", "Choose a synonym of glad: happy / pleased", "happy only", "happy and pleased", "language synonyms without restricting context"),
+    ("biology", "Classify a whale: mammal / vertebrate", "mammal only", "both categories", "scientific category overlap"),
+    ("history", "Name the ruler: sovereign / monarch", "monarch only", "both terms", "historical terminology permits both"),
+])
+async def test_agrees_boolean_cannot_erase_defensible_second_answer(
+    monkeypatch, subject, item, key, alternative, reason,
+):
+    verdict = SolveVerdict(agrees=True, discrepancies=[Discrepancy(
+        item=item, generated_key=key, solver_answer=alternative,
+        explanation=reason, confidence="high",
+    )])
+    monkeypatch.setattr("app.services.agent.run_phase", _run_stub(verdict))
+    out = await solver.solve(**{**COMMON, "subject": subject, "contract_override": "Check all options"})
+    assert out.has_mismatch and not out.agrees
+    assert alternative in out.feedback
+
+
 @pytest.mark.asyncio
 async def test_agree_yields_no_mismatch(monkeypatch):
     monkeypatch.setattr("app.services.agent.run_phase", _run_stub(SolveVerdict(agrees=True, discrepancies=[])))

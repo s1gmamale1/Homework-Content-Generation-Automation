@@ -1,11 +1,8 @@
-"""api post-regen-judge (and regen-gen) auth failures fail the job LOUDLY.
+"""API auth failures remain loud; known learner majors cannot ship after repair failure.
 
-The regen block in ``_execute_phase`` is wrapped in a broad ``except`` whose
-job is to keep the pre-regen output when a regen exhausts providers (the common
-cli case). Spec §3 carves out one exception: under ``transport="api"``, an
-auth/401 error from the regen GENERATION or the POST-REGEN JUDGE must re-raise
-and fail the job — consistent with the initial judge — rather than silently
-degrading to the pre-regen output. A cli job keeps the graceful swallow.
+Under API transport an auth error keeps its original exception. Under CLI,
+an unavailable review after a known major remains a typed content block with
+the review failure attached as its cause.
 
 These drive the real ``pipeline._execute_phase`` with DB-free mocks
 (``SessionLocal`` / ``phase_repo`` / ``jobs_repo`` stubbed) so the actual guard
@@ -21,6 +18,7 @@ from uuid import uuid4
 import pytest
 
 from app.services import agent, pipeline
+from app.services.errors import PersistentContentQualityFailure
 from app.services import phase_judge
 from app.services.phase_judge import JudgeOutcome
 
@@ -48,6 +46,7 @@ async def _fake_session():
 def _install_harness(monkeypatch):
     """Stub out everything _execute_phase needs to reach the judge/regen path,
     minus the LLM calls and the judge (the caller wires those per-test)."""
+    monkeypatch.setattr(pipeline.settings, "solver_enabled", False)
     monkeypatch.setattr(pipeline, "SessionLocal", _fake_session)
 
     async def _create_or_reset(session, **kwargs):
@@ -143,9 +142,8 @@ def test_api_post_regen_judge_auth_error_reraises(monkeypatch):
         _run_execute_phase("api")
 
 
-def test_cli_post_regen_judge_auth_error_swallowed(monkeypatch):
-    """cli + same post-regen judge auth error → swallowed; phase completes
-    with the pre-regen output (no raise). Proves the guard still shields cli."""
+def test_cli_post_regen_judge_auth_error_blocks_known_major(monkeypatch):
+    """CLI review failure cannot erase the already established major defect."""
     _install_harness(monkeypatch)
     monkeypatch.setattr(pipeline.agent, "run_phase_prompt", _gen_ok)
     monkeypatch.setattr(
@@ -153,15 +151,13 @@ def test_cli_post_regen_judge_auth_error_swallowed(monkeypatch):
         _make_judge_then_raise(RuntimeError(_AUTH_ERR)),
     )
 
-    out_md, tin, tout, prompt_hash, parsed = _run_execute_phase("cli")
-    # Regen ran (generation succeeded) but post-regen judge auth error was
-    # swallowed → phase still completes 'done'.
-    assert out_md == "GENERATED"
+    with pytest.raises(PersistentContentQualityFailure) as caught:
+        _run_execute_phase("cli")
+    assert "401" in str(caught.value.repair_error)
 
 
-def test_api_non_auth_regen_failure_swallowed(monkeypatch):
-    """api + NON-auth regen GENERATION failure → swallowed (keeps pre-regen
-    output, no raise). Proves we didn't break the guard's primary purpose."""
+def test_api_non_auth_regen_failure_blocks_known_major(monkeypatch):
+    """A hard repair failure keeps the original only as a failed artifact."""
     _install_harness(monkeypatch)
 
     gen_calls = {"n": 0}
@@ -186,9 +182,9 @@ def test_api_non_auth_regen_failure_swallowed(monkeypatch):
         RuntimeError("all providers exhausted :: malformed response envelope")
     )
 
-    out_md, tin, tout, prompt_hash, parsed = _run_execute_phase("api")
-    # Non-auth regen failure is swallowed → keep the pre-regen output.
-    assert out_md == "PRE_REGEN"
+    with pytest.raises(PersistentContentQualityFailure) as caught:
+        _run_execute_phase("api")
+    assert "malformed response envelope" in str(caught.value.repair_error)
 
 
 # --- Phase 4.1 §5: per-role transport routing --------------------------------

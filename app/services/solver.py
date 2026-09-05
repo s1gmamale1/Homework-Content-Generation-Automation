@@ -3,7 +3,8 @@
 `solve()` re-derives the answer to every item in a generated phase from
 first principles (the current lesson's concepts only) and reports where the
 generated key disagrees. It is a near-clone of `phase_judge.judge()`: same
-single-call shape, same never-block-the-job degrade contract. Only a
+single-call shape and unavailable outcomes for ordinary call/parse failures.
+The pipeline decides whether a prior defect still blocks acceptance. Only a
 `high`-confidence discrepancy triggers a regen (Task 7) — low/medium are
 advisory, to avoid false-positive regens (the validate_toc lesson).
 """
@@ -18,7 +19,10 @@ from loguru import logger
 
 from app.schemas.solver import Discrepancy, SolveVerdict
 from app.services import agent
-from app.services.errors import SlotSaturation, is_slot_saturation
+from app.services.errors import (
+    CancelWonSignal, LeaseLostSignal, SessionLimitPause, SlotSaturation,
+    TransientPhaseError, is_slot_saturation,
+)
 from app.services.phase_judge import _is_auth_error, _is_refusal
 from app.services.prompts import get_prompt
 
@@ -36,16 +40,28 @@ class SolveOutcome:
 
 _INSTRUCTIONS = (
     "You are an expert who independently SOLVES each item, then checks the "
-    "provided answer key.\n\n"
+    "provided answer key, every option, and the feedback.\n\n"
     "Solve using ONLY the current lesson's concepts (respect the CURRICULUM "
     "BOUNDARY note in the lesson context — if a key is 'correct' only by using "
     "next-lesson material, that is a discrepancy).\n\n"
-    "Report a discrepancy ONLY when the key is demonstrably wrong: a wrong "
-    "option marked correct, a numerically/logically wrong expected answer, a "
-    "wrong 'correct version', a mis-identified broken block. Do NOT flag "
-    "phrasing, ordering, accepted-alternative wording, formatting, or anything "
-    "you are not certain is wrong — set confidence honestly; reserve `high` for "
-    "unambiguous errors. If every key is correct, return `agrees=true` with an "
+    "Independently judge EVERY option against the exact question wording, not only "
+    "the marked key. A defensible second answer in a single-answer item, no answer "
+    "under the wording, or feedback that rejects a defensible answer is a discrepancy. "
+    "Check mathematical equivalence (1/2 and 0.5), language synonyms and "
+    "context-dependent alternatives, overlapping scientific categories (a whale is "
+    "both a mammal and a vertebrate), and historical terminology (sovereign and "
+    "monarch may both fit). Do not assume distractors are wrong because unmarked. "
+    "Re-solve sentence blanks with each word-bank option and check accepted "
+    "alternatives, grammar, meaning and feedback. Check wrong numeric answers, "
+    "wrong 'correct versions', and misidentified broken blocks. Quote the question, "
+    "options or feedback that establish the discrepancy in your explanation. "
+    "Only student-visible premises count as evidence; hidden keys, rubrics, "
+    "metadata and earlier student answers cannot supply missing premises. "
+    "Accept genuinely open tasks with sufficient evidence and aligned rubrics; "
+    "do not demand a unique answer or a hidden key for these tasks. Do NOT flag "
+    "harmless phrasing, ordering or formatting. Set confidence honestly; reserve "
+    "`high` for demonstrable errors; low/medium remain advisory. "
+    "If every key, option and feedback is correct, return `agrees=true` with an "
     "empty list."
 )
 
@@ -66,13 +82,26 @@ _BOSS_ARENA_ADDENDUM = (
     "`high` for an unambiguous objective error.\n\n"
     "If a question is genuinely OPEN — interpretive, evaluative, design/opinion, "
     "or admitting several defensible answers — it has NO objective key: treat it "
-    "as agreeing and do NOT flag it. Never flag phrasing, difficulty, pedagogy, "
+    "as agreeing when supplied evidence is sufficient and its feedback/rubric "
+    "accepts defensible answers. Never flag harmless phrasing, difficulty, pedagogy, "
     "hint quality, or the Why/How/What structure."
 )
 
 # Per-phase solver-contract addenda appended to _INSTRUCTIONS for phases whose
 # shape differs from the standard marked-key phases. Absent phase → no addendum.
-_PHASE_SOLVE_ADDENDUM = {"boss-arena": _BOSS_ARENA_ADDENDUM}
+_PHASE_SOLVE_ADDENDUM = {
+    "boss-arena": _BOSS_ARENA_ADDENDUM,
+    "case-based-preview": (
+        "Case-based preview: inspect checkpoints, examples, implied answers and "
+        "feedback throughout the ten sections. Open prompts need sufficient "
+        "visible evidence and aligned rubrics, not an invented unique key."
+    ),
+    "practice-sentence": (
+        "Sentence-fill: independently fill every blank using its visible sentence "
+        "and context; test all word-bank entries and defensible alternatives. "
+        "Check accepted answers and feedback, without rewriting the output grammar."
+    ),
+}
 
 
 def _build_solver_prompt(
@@ -127,9 +156,8 @@ async def solve(
     contract_override: Optional[str] = None,
 ) -> SolveOutcome:
     """Independently re-solve `phase_output_md`'s items and report where the
-    generated answer key is wrong. Returns a SolveOutcome; for cli transport
-    NEVER raises — any error (bad subject/phase, CLI failure, unparseable
-    verdict) degrades to 'unavailable' so solving can't block generation. For
+    generated answer key is wrong. Returns a SolveOutcome; ordinary CLI/parse
+    failures degrade to 'unavailable'. Typed control signals propagate. For
     api transport an auth/401 error is RE-RAISED instead of swallowed: an api
     job must fail loudly, not ship unsolved."""
     try:
@@ -153,7 +181,9 @@ async def solve(
         verdict = result.parsed
         if not isinstance(verdict, SolveVerdict):
             raise RuntimeError("solver produced no parsed SolveVerdict")
-    except Exception as exc:  # noqa: BLE001 — solver must NEVER block generation
+    except (CancelWonSignal, LeaseLostSignal, SessionLimitPause, SlotSaturation, TransientPhaseError):
+        raise
+    except Exception as exc:  # noqa: BLE001 — unavailable review is recorded separately
         if is_slot_saturation(exc):
             raise SlotSaturation(str(exc))  # park the job — do not ship unsolved
         # An api job that hit an auth/401 error must fail LOUDLY (job-level
@@ -173,7 +203,7 @@ async def solve(
             warnings=[f"solver-unavailable: {type(exc).__name__}"], feedback="", failure=exc,
         )
 
-    if verdict.agrees or not verdict.discrepancies:
+    if not verdict.discrepancies:
         return SolveOutcome(available=True, agrees=True, warnings=[], feedback="")
     warnings = _serialize(verdict.discrepancies)
     high_conf = [d for d in verdict.discrepancies if d.confidence == "high"]

@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock, call
 import pytest
 
 from app.services import pipeline
+from app.services.errors import PersistentContentQualityFailure
 from app.services.phase_judge import JudgeOutcome
 from app.config import settings as _settings
 
@@ -50,7 +51,7 @@ def _unavail() -> JudgeOutcome:
 # ---------------------------------------------------------------------------
 
 def _make_kwargs(
-    phase_name: str = "preview",
+    phase_name: str = "case-based-preview",
     provider: str = "claude",
     model: Optional[str] = None,
 ) -> dict:
@@ -135,6 +136,7 @@ def patch_io(monkeypatch):
     # ---- model_tiers.resolve_judge ----------------------------------------
     monkeypatch.setattr(pipeline.model_tiers, "resolve_judge", lambda *a, **kw: ("claude", None))
 
+    monkeypatch.setattr(_settings, "solver_enabled", False)
     return ns
 
 
@@ -186,11 +188,11 @@ async def test_judge_status_major_regen_then_ok(monkeypatch, patch_io):
 
 
 # ===========================================================================
-# Test (iii): MAJOR → regen → still MAJOR → judge_status = "major_shipped"
+# Test (iii): MAJOR → regen → still MAJOR → judge_status = "major_blocked"
 # ===========================================================================
 
 async def test_judge_status_major_regen_still_major(monkeypatch, patch_io):
-    """MAJOR → regen → still MAJOR → budget exhausted → judge_status='major_shipped'."""
+    """MAJOR → regen → still MAJOR → budget exhausted → judge_status='major_blocked'."""
     patch_io.failover_outputs = [
         ("# initial output", 100, 50, "claude"),
         ("# regenned output", 110, 55, "claude"),
@@ -204,9 +206,12 @@ async def test_judge_status_major_regen_still_major(monkeypatch, patch_io):
     monkeypatch.setattr(_settings, "max_judge_regens", 1)
 
     kw = _make_kwargs()
-    await pipeline._execute_phase(**kw)
+    with pytest.raises(PersistentContentQualityFailure):
+        await pipeline._execute_phase(**kw)
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = next(c[1] for c in patch_io.set_status_calls if c[0] == "failed")
 
-    assert patch_io.judge_status == "major_shipped", f"got {patch_io.judge_status!r}"
+    assert failed["judge_status"] == "major_blocked", f"got {patch_io.judge_status!r}"
     assert judge_responses == [], "both judge calls should have been consumed"
 
 
@@ -234,11 +239,11 @@ async def test_judge_status_unavailable_retry_once(monkeypatch, patch_io):
 
 
 # ===========================================================================
-# Test (v): max_judge_regens=0 → MAJOR recorded "major_shipped", zero regen calls
+# Test (v): max_judge_regens=0 → MAJOR recorded "major_blocked", zero regen calls
 # ===========================================================================
 
 async def test_judge_status_no_regen_budget(monkeypatch, patch_io):
-    """With max_judge_regens=0, a MAJOR outcome is immediately major_shipped
+    """With max_judge_regens=0, a MAJOR outcome is immediately major_blocked
     with NO regen generation call."""
     patch_io.failover_outputs = [
         ("# initial output", 100, 50, "claude"),
@@ -254,9 +259,12 @@ async def test_judge_status_no_regen_budget(monkeypatch, patch_io):
     monkeypatch.setattr(_settings, "max_judge_regens", 0)
 
     kw = _make_kwargs()
-    await pipeline._execute_phase(**kw)
+    with pytest.raises(PersistentContentQualityFailure):
+        await pipeline._execute_phase(**kw)
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = next(c[1] for c in patch_io.set_status_calls if c[0] == "failed")
 
-    assert patch_io.judge_status == "major_shipped", f"got {patch_io.judge_status!r}"
+    assert failed["judge_status"] == "major_blocked", f"got {patch_io.judge_status!r}"
     # Only the initial judge call; no regen judge call
     assert len(judge_calls) == 1, f"expected 1 judge call (no regen budget), got {len(judge_calls)}"
     # failover_outputs still has regen entry → confirms regen generation was NOT called
@@ -264,12 +272,12 @@ async def test_judge_status_no_regen_budget(monkeypatch, patch_io):
 
 
 # ===========================================================================
-# Test (vi): regen raises non-auth → soft-degrade → judge_status="major_regen_failed"
+# Test (vi): hard repair failure → terminal judge_status="major_blocked"
 # ===========================================================================
 
 async def test_judge_status_regen_raises_non_auth(monkeypatch, patch_io):
     """If regen generation raises a non-auth error, the original output is kept
-    and judge_status='major_regen_failed'."""
+    and judge_status='major_blocked'."""
     patch_io.failover_outputs = [
         ("# initial output", 100, 50, "claude"),
         # second call for regen will raise
@@ -290,10 +298,13 @@ async def test_judge_status_regen_raises_non_auth(monkeypatch, patch_io):
     monkeypatch.setattr(_settings, "max_judge_regens", 1)
 
     kw = _make_kwargs()
-    # Should NOT raise; soft-degrade keeps original output
-    await pipeline._execute_phase(**kw)
+    # The original is retained only as a failed artifact.
+    with pytest.raises(PersistentContentQualityFailure):
+        await pipeline._execute_phase(**kw)
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = next(c[1] for c in patch_io.set_status_calls if c[0] == "failed")
 
-    assert patch_io.judge_status == "major_regen_failed", f"got {patch_io.judge_status!r}"
+    assert failed["judge_status"] == "major_blocked", f"got {patch_io.judge_status!r}"
     # Only the initial judge call fired; no post-regen judge
     assert len(judge_calls) == 1, f"expected 1 judge call, got {len(judge_calls)}"
 
@@ -340,7 +351,7 @@ async def test_unavailable_does_not_comingle_into_validation_warnings(monkeypatc
     assert patch_io.judge_status == "unavailable"
 
 
-async def test_major_shipped_keeps_content_warnings(monkeypatch, patch_io):
+async def test_major_blocked_keeps_content_warnings(monkeypatch, patch_io):
     """A real MAJOR content failure (available=True) keeps its warnings."""
     monkeypatch.setattr(_settings, "max_judge_regens", 0)
 
@@ -350,8 +361,10 @@ async def test_major_shipped_keeps_content_warnings(monkeypatch, patch_io):
     monkeypatch.setattr(pipeline, "_judge_with_timeout", fake_judge)
 
     kw = _make_kwargs()
-    await pipeline._execute_phase(**kw)
+    with pytest.raises(PersistentContentQualityFailure):
+        await pipeline._execute_phase(**kw)
+    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    failed = next(c[1] for c in patch_io.set_status_calls if c[0] == "failed")
 
-    done_call = next(c for c in patch_io.set_status_calls if c[0] == "done")
-    assert done_call[1].get("validation_warnings") == ["MAJOR: content issue"]
-    assert patch_io.judge_status == "major_shipped"
+    assert failed.get("validation_warnings") == ["MAJOR: content issue"]
+    assert failed["judge_status"] == "major_blocked"
