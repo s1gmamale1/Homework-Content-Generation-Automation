@@ -52,7 +52,7 @@ async def test_known_mismatch_plus_transient_regen_failure_escapes_for_queue_ret
     assert not [c for c in patch_io.set_status_calls if c[0] in {"done", "failed"}]
 
 
-async def test_known_mismatch_plus_api_auth_repair_failure_is_blocked(
+async def test_known_mismatch_plus_api_auth_repair_failure_preserves_auth_error(
     monkeypatch, patch_io
 ):
     patch_io.failover_outputs = [("# initial output", 100, 50, "claude")]
@@ -67,13 +67,11 @@ async def test_known_mismatch_plus_api_auth_repair_failure_is_blocked(
     kw = _make_kwargs("memory-check")
     kw["transport"] = "api"
 
-    with pytest.raises(PersistentSolverMismatch) as caught:
+    with pytest.raises(RuntimeError) as caught:
         await pipeline._execute_phase(**kw)
 
     assert "401 unauthenticated" in str(caught.value)
-    failed = [c for c in patch_io.set_status_calls if c[0] == "failed"][-1][1]
-    assert failed["solver_status"] == "mismatch_blocked"
-    assert not [c for c in patch_io.set_status_calls if c[0] == "done"]
+    assert not [c for c in patch_io.set_status_calls if c[0] in {"done", "failed"}]
 
 
 async def test_known_mismatch_plus_hard_recheck_unavailable_becomes_blocked(patch_io):

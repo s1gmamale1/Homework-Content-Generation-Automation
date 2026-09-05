@@ -2478,6 +2478,10 @@ async def _execute_phase(
                     except Exception as exc:  # noqa: BLE001 — classify the repair failure
                         if is_slot_saturation(exc):
                             raise SlotSaturation(str(exc)) from exc
+                        # This block includes generation, judge and solver calls.
+                        # An API credential failure keeps its infrastructure type.
+                        if "api" in (transport, judge_transport, solver_transport) and phase_judge._is_auth_error(exc):
+                            raise
                         if _requeue_worthy(exc):
                             raise
                         await _block_solver(prior_mismatch_warnings, exc)

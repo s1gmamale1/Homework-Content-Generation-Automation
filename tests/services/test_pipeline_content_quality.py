@@ -208,6 +208,39 @@ async def test_failed_judge_call_after_solver_repair_cannot_retain_old_ok(monkey
     assert failed["judge_status"] != "ok"
 
 
+@pytest.mark.parametrize("stage,api_transport", [
+    ("generation", "transport"),
+    ("judge", "judge_transport"),
+    ("solver", "solver_transport"),
+])
+@pytest.mark.parametrize("auth_error", [
+    RuntimeError("api_error_status: 401 Invalid API key"),
+    errors.AuthEnvError("required provider credential missing"),
+])
+async def test_auth_error_after_solver_repair_preserves_infrastructure_failure(
+    monkeypatch, patch_io, stage, api_transport, auth_error,
+):
+    patch_io.failover_outputs = [
+        ("# initial", 10, 5, "claude"), ("# solver repair", 20, 8, "gemini"),
+    ]
+    patch_io.solve_outputs = [_mismatch()]
+    judge = review(monkeypatch, _ok(), auth_error if stage == "judge" else _ok())
+    if stage == "generation":
+        monkeypatch.setattr(pipeline, "_run_with_failover", AsyncMock(side_effect=[
+            ("# initial", 10, 5, "claude"), auth_error,
+        ]))
+    elif stage == "solver":
+        monkeypatch.setattr(pipeline.solver, "solve", AsyncMock(side_effect=[_mismatch(), auth_error]))
+    kw = _make_kwargs()
+    kw[api_transport] = "api"
+    with pytest.raises(type(auth_error)) as caught:
+        await pipeline._execute_phase(**kw)
+    assert caught.value is auth_error
+    assert not [c for c in patch_io.set_status_calls if c[0] in {"done", "failed"}]
+    if stage == "judge":
+        assert judge.call_args.kwargs["output_md"] == "# solver repair"
+
+
 @pytest.mark.parametrize("reviewer", ["judge", "solver"])
 @pytest.mark.parametrize("signal", [errors.LeaseLostSignal(), errors.CancelWonSignal(),
     errors.SessionLimitPause(None), errors.TransientPhaseError("provider error")])
