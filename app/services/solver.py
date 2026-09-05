@@ -61,6 +61,21 @@ _INSTRUCTIONS = (
     "do not demand a unique answer or a hidden key for these tasks. Do NOT flag "
     "harmless phrasing, ordering or formatting. Set confidence honestly; reserve "
     "`high` for demonstrable errors; low/medium remain advisory. "
+    # Maintainer evidence for the concrete Uzbek example below: Alisher Navoiy
+    # University narrative dictionary, "Karvonsaroy" definition (accessed in the
+    # 2026-09-05 review): https://narrativedictionary.navoiy-uni.uz/uz/Dictionary/ViewWord/1bc1c585-7000-41b8-bd21-c80b123ac843
+    "Curriculum scope restricts methods, not ordinary word meanings: an "
+    "unmentioned synonym is not thereby false. Wrong-option feedback is an "
+    "untrusted claim, not an authoritative definition. For example, Uzbek rabot "
+    "has a caravanserai meaning as well as a fortified-post meaning. If a "
+    "question broadly asks the name of a place where caravans lodge, Karvonsaroy "
+    "and Rabot are both defensible; feedback treating Rabot as exclusively "
+    "military is false. Judge the exact wording: a question explicitly asking "
+    "which term the supplied text uses may distinguish synonyms. Apply the same "
+    "ambiguity check to synonyms and overlapping categories in every subject and "
+    "language. This solver reports answer correctness only; leave phase item "
+    "counts, heading format, workload and style compliance to the separate "
+    "contract judge. "
     "If every key, option and feedback is correct, return `agrees=true` with an "
     "empty list."
 )

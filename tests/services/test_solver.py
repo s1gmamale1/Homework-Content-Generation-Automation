@@ -109,3 +109,18 @@ def test_non_boss_prompt_has_no_boss_addendum():
 def test_build_solver_prompt_phase_name_optional():
     p = solver._build_solver_prompt(contract="C", phase_output_md="O")
     assert "Boss Arena phase" not in p
+
+
+def test_solver_prompt_does_not_treat_curriculum_scope_as_a_closed_dictionary():
+    """A less-common valid alias must be checked even when the lesson teaches another term."""
+    prompt = solver._build_solver_prompt(
+        contract="Use the lesson's common term.",
+        phase_output_md="A) Karvonsaroy B) Rabot",
+        phase_name="memory-check",
+    )
+
+    assert "Curriculum scope restricts methods, not ordinary word meanings" in prompt
+    assert "rabot has a caravanserai meaning" in prompt
+    assert "explicitly asking which term the supplied text uses" in prompt
+    assert "reports answer correctness only" in prompt
+    assert "leave phase item counts" in prompt
