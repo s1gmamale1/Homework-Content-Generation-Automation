@@ -348,10 +348,12 @@
               "Darius's Royal Road fact"
             ],
             [
-              "repeats",
+              "repeats the preview",
+              "repeats the earlier preview",
               "same task as the preview",
               "duplicates the preview",
-              "same situation and reasoning"
+              "duplicates the earlier preview",
+              "same situation and reasoning as the preview"
             ]
           ],
           "output_md": "Information card: The lesson says the Silk Road began at Sian in the second century BCE. Darius I built the separate Royal Road.\n\nMuseum application: choose Sian as the Silk Road starting city and explain why Darius's Royal Road fact does not answer that question."
@@ -471,8 +473,7 @@
               "untaught",
               "overloaded",
               "not taught",
-              "too many required parts",
-              "Grade 5"
+              "too many required parts"
             ]
           ],
           "output_md": "## Ma’lumot kartochkasi\nLa’l yo‘li miloddan avvalgi 3–2-ming yilliklarda Pomirdan boshlangan. Buyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nEpigrafik va yakka numizmatik manbalarni taqqoslang. Boshqaruvchi tarixiy tushunchani tanlang. To‘liq baho uchun uchala talab shart: muallif va maqsadni aniqlang, manba chegaralarini tahlil qiling va aloqasiz faktni kamida 80 belgida rad eting."

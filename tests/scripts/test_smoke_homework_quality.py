@@ -216,6 +216,49 @@ def test_same_question_unrelated_finding_cannot_prove_repetition():
     assert smoke.classify_result(fixture, outcome).status == "unmet"
 
 
+def test_same_question_answer_leak_cannot_prove_cross_phase_repetition():
+    fixture = _fixture("F09-repetition-negative")
+    unrelated = _judge_outcome(
+        has_major=True,
+        warnings=[
+            "[major] Museum application repeats the answer 'Sian' in 'choose Sian "
+            "as the Silk Road starting city', giving away the choice before the "
+            "learner answers."
+        ],
+    )
+    intended = _judge_outcome(
+        has_major=True,
+        warnings=[
+            "[major] Museum application duplicates the earlier preview: it uses "
+            "the same task, situation, and reasoning."
+        ],
+    )
+
+    assert smoke.classify_result(fixture, unrelated).status == "unmet"
+    assert smoke.classify_result(fixture, intended).status == "met"
+
+
+def test_missing_sources_for_grade_cannot_prove_untaught_or_overloaded_rubric():
+    fixture = _fixture("F12-rubric-negative")
+    unrelated = _judge_outcome(
+        has_major=True,
+        warnings=[
+            "[major] Visible evidence is missing for this Grade 5 task: "
+            "'Epigrafik va yakka numizmatik manbalarni taqqoslang' asks to compare "
+            "sources, but no epigraphic or numismatic source is supplied."
+        ],
+    )
+    intended = _judge_outcome(
+        warnings=[
+            "[minor] 'Epigrafik va yakka numizmatik manbalarni taqqoslang' uses "
+            "untaught terminology and an untaught source-comparison method."
+        ],
+    )
+
+    assert smoke.classify_result(fixture, unrelated).status == "unmet"
+    assert smoke.classify_result(fixture, intended).status == "met"
+
+
 def test_same_question_missing_action_finding_cannot_prove_unclear_referents():
     fixture = _fixture("F14-referent-negative")
     outcome = JudgeOutcome(
