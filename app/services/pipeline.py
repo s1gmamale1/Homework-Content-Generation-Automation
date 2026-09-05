@@ -32,6 +32,7 @@ from app.services.errors import (
     is_slot_saturation,
 )
 from app.services.lease import CancelRequested, JobLease, LeaseLost
+from app.services.lesson_errata import apply_lesson_errata
 from app.services.flows import (
     flow_for,
     teacher_material_flow_for,
@@ -419,6 +420,43 @@ async def run(job_id: UUID, lease: Optional[JobLease] = None) -> None:
         async with SessionLocal() as session:
             _existing_rows = await phase_repo.list_for_job(session, job_id)
         _done_md = _done_phase_md(_existing_rows)
+        if "extract" in _done_md:
+            corrected = apply_lesson_errata(
+                _done_md["extract"], section_id=str(section_data["id"]), subject=subject,
+            )
+            if corrected != _done_md["extract"]:
+                # Every downstream artifact used the old primer, including
+                # done structured rows whose markdown is empty. Reset them
+                # with the primer in ONE transaction: a crash must never leave
+                # corrected extract + stale done exercises on the next resume.
+                extract_row = next(r for r in _existing_rows if r.phase_name == "extract")
+                extract_id = extract_row.id
+                extract_tokens = (extract_row.tokens_input, extract_row.tokens_output)
+                async with SessionLocal() as session:
+                    _r = await jobs_repo.set_status(
+                        session, job_id, "running", current_phase="extract",
+                        claim_token=_token_of(lease),
+                    )
+                    if _r is LeaseLost or _r is CancelRequested:
+                        await session.commit()
+                        _raise_on_lease_signal(_r)
+                    for row in _existing_rows:
+                        reset = await phase_repo.create_or_reset(
+                            session, job_id=job_id, phase_name=row.phase_name,
+                            phase_order=row.phase_order, prompt_hash=row.prompt_hash,
+                            model_name=row.model_name, lease=lease,
+                        )
+                        _raise_on_lease_signal(reset)
+                    _r = await phase_repo.set_status(
+                        session, extract_id, "done", output_md=corrected,
+                        completed_at=_utcnow(), tokens_input=extract_tokens[0],
+                        tokens_output=extract_tokens[1], authoring_mode="markdown_builtin",
+                        claim_token=_token_of(lease),
+                    )
+                    _raise_on_lease_signal(_r)
+                    await session.commit()
+                _done_md = {"extract": corrected}
+                log.info(f"[job {job_id}] source errata: corrected primer; downstream phases reset")
         if _done_md:
             log.info(f"[job {job_id}] resume: {len(_done_md)} done phase(s) skipped: {sorted(_done_md)}")
 
@@ -2032,6 +2070,9 @@ async def _execute_phase(
                     )
 
             if cached_extract is not None and cached_extract.output_md:
+                corrected_extract = apply_lesson_errata(
+                    cached_extract.output_md, section_id=str(section_id), subject=subject,
+                )
                 logger.info(
                     f"[job {job_id}] lesson.extract REUSED from job={cached_extract.job_id} "
                     f"po={cached_extract.id} (skipping agent call)"
@@ -2042,7 +2083,7 @@ async def _execute_phase(
                         po_id,
                         "done",
                         completed_at=_utcnow(),
-                        output_md=cached_extract.output_md,
+                        output_md=corrected_extract,
                         tokens_input=0,
                         tokens_output=0,
                         # Same provenance as the non-cached extract path: a
@@ -2062,7 +2103,7 @@ async def _execute_phase(
                     source_job_id=cached_extract.job_id,
                     source_phase_output_id=cached_extract.id,
                 )
-                return cached_extract.output_md, 0, 0, prompt_hash, None
+                return corrected_extract, 0, 0, prompt_hash, None
 
             # Pin lesson.extract to the cheap-extractor model regardless of the
             # job's per-phase provider/model: high-input/low-value factual summary.
@@ -2171,6 +2212,9 @@ async def _execute_phase(
                     session_limit_strategy=session_limit_strategy,
                 )
                 parsed_struct = None
+            output_md = apply_lesson_errata(
+                output_md, section_id=str(section_id), subject=subject,
+            )
             # Extract-completeness (warn-only): the only check that reads the
             # SOURCE instead of trusting the extract. Runs on the ACCEPTED
             # output — once per job, not once per failover attempt — and never

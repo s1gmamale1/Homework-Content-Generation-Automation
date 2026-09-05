@@ -292,3 +292,38 @@ def test_lease_and_cancel_signals_are_never_swallowed(monkeypatch):
         _install_coverage_spy(monkeypatch, boom=signal())
         with pytest.raises(signal):
             _run_extract_phase()
+
+
+@pytest.mark.parametrize("subject, section_id", [
+    ("history", "768820b7-54ea-45d2-bbb4-d95275ef95e6"),
+    ("texnologiya", "d93f33a7-8120-4895-bc51-d2055c8ef7d4"),
+])
+@pytest.mark.parametrize("lane", ["fresh", "vision", "cache"])
+def test_errata_reaches_return_persistence_and_coverage(monkeypatch, subject, section_id, lane):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import UUID
+
+    original = (Path(__file__).parents[1] / "fixtures" / "lesson_errata" /
+                f"{subject}-original.md").read_text(encoding="utf-8")
+    cached = SimpleNamespace(id=uuid4(), job_id=uuid4(), output_md=original) if lane == "cache" else None
+    writes = _install_harness(monkeypatch, cached_extract=cached)
+    calls = _install_coverage_spy(monkeypatch)
+    generation = AsyncMock(return_value=(original, 5, 7))
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson", generation)
+    monkeypatch.setattr(pipeline.agent, "summarize_lesson_vision", generation)
+    monkeypatch.setattr(pipeline.agent, "record_cached_lesson_extract", AsyncMock())
+    if lane == "vision":
+        monkeypatch.setattr(pipeline.agent, "read_whole_book_text", lambda path: "x")
+    out, *_ = _run_extract_phase(subject=subject, section={
+        "id": UUID(section_id), "title": "T", "number": "1", "page_start": 1, "page_end": 2})
+    assert "Xuanxe" not in out and "количество песка" not in out
+    assert out != original
+    assert next(kw["output_md"] for status, kw in writes if status == "done") == out
+    if lane == "cache":
+        generation.assert_not_awaited()
+        assert calls["n"] == 0
+        assert cached.output_md == original  # never rewrite another job's evidence
+    else:
+        generation.assert_awaited_once()
+        assert calls["kwargs"]["summary"] == out
