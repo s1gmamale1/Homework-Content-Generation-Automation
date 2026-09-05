@@ -42,7 +42,7 @@
           "variant": "positive",
           "expected_outcome": "no_major",
           "decisive_evidence_all": [],
-          "output_md": "## Supplied source\nHerodotus, *Histories*, Book V, section 52; translated by George Rawlinson (1858): ?Royal stations exist along its whole length, and excellent caravanserais;?\n\nWhat does this attributed excerpt directly support about facilities on the Royal Road? Answer in one sentence and do not infer who used every station."
+          "output_md": "## Supplied source\nHerodotus, *Histories*, Book V, section 52; translated by George Rawlinson (1858): \"Royal stations exist along its whole length, and excellent caravanserais;\"\n\nWhat does this attributed excerpt directly support about facilities on the Royal Road? Answer in one sentence and do not infer who used every station."
         }
       ]
     },

@@ -115,7 +115,7 @@ def test_f01_positive_uses_verified_rawlinson_excerpt_and_source():
         "https://classics.mit.edu/Herodotus/history.5.v.html",
     )
     assert (
-        "Royal stations exist along its whole length, and excellent caravanserais;"
+        '"Royal stations exist along its whole length, and excellent caravanserais;"'
         in fixture.output_md
     )
     assert "All along the road there are royal stations" not in fixture.output_md
