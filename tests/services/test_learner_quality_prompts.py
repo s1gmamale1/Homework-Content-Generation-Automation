@@ -114,3 +114,23 @@ def test_learner_notation_defers_typed_syntax_to_phase_contract(subject):
     assert "keyboard-serialized LaTeX in error detection" not in prompts.get_prompt(
         subject, "teacher-pack"
     )
+
+
+@pytest.mark.parametrize("language", ("uz", "ru", "en"))
+def test_memory_diversity_respects_narrow_lesson_item_count(language):
+    # This checks the resolved authoring contract, not model compliance. A
+    # one/two-target lesson must not need extra facts to satisfy diversity.
+    body = " ".join(prompts.get_prompt(
+        "history", "memory-check", output_language=language
+    ).split())
+    assert "one lettered item has no letter-diversity requirement" in body
+    assert "two lettered items use two different correct letters" in body
+    assert "three or more lettered items use at least three different correct letters" in body
+    assert "One item may use one kind" in body
+    assert "two or more items, use at least two suitable kinds when the distinct targets support them" in body
+    assert "60% per kind only when the item count and suitable kinds make that feasible" in body
+    assert "Never add items or repeat facts to meet diversity" in body
+    # Catch stale unconditional copies in the format/rules/self-check sections.
+    assert "Use at least 2 of the 3 kinds. No more than 60%" not in body
+    assert "At least 2 of the 3 kinds represented? No kind exceeds ~60%?" not in body
+    assert "keep the kinds balanced (no more than ~60% one kind)" not in body
