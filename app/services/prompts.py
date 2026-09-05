@@ -816,9 +816,10 @@ def get_structured_prompt(
 ) -> "str | None":
     """The JSON-authoring prompt for a structured phase, or None if it has none.
 
-    Separate from `get_prompt`: that one is the MARKDOWN evaluation contract the
-    judge, solver and lint read, and it says "Markdown only". A single prompt
-    cannot both demand JSON and serve as the markdown contract. Structured
+    Separate from `get_prompt`, the hand-authored Markdown contract. Judge and
+    solver evaluation of structured artifacts combines this authoring contract
+    with the actual renderer projection mapping in phase_artifact.review_contract;
+    the JSON transport requirement does not apply to that Markdown projection. Structured
     prompts live under `prompts/_general/structured/` — a subdirectory of
     `_general`, deliberately not picked up by the `*.md` (non-recursive) globs
     that scan `_general` itself for the markdown contracts.

@@ -32,6 +32,17 @@ def test_build_judge_prompt_contains_contract_output_and_protocol():
     assert "VISUAL / SVG RULES" not in p
 
 
+def test_reference_clarity_overlay_reaches_review_without_relaxing_missing_evidence():
+    # Wiring regression only; actual model evidence is recorded in the controller's
+    # live-visual-clarity-prototype.json (F13 and required-chart paired trial).
+    prompt = pj._build_judge_prompt(contract="Present references only", output_md="Use these dates.")
+    assert "flag it as minor if it only creates unnecessary confusion" in prompt
+    assert "retain major only when necessary evidence is actually missing" in prompt
+    assert "Do not flag an explicitly decorative placeholder" in prompt
+    assert "a general mention of maps as a topic" in prompt
+    assert "directs the learner to supplied text or data" in prompt
+
+
 def test_build_judge_prompt_has_fidelity_rule_and_flags():
     p = pj._build_judge_prompt(
         contract="CONTRACT-TEXT", output_md="OUTPUT-TEXT",

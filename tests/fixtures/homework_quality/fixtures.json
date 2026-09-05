@@ -15,7 +15,7 @@
       "phase_name": "case-based-preview",
       "output_language": "en",
       "control_tags": ["attributed-history-excerpt"],
-      "lesson_context": "Lesson fact: royal roads used stations where travellers and caravans could stop. Source analysis is valid only when the source and identifying information are shown to the learner.",
+      "lesson_context": "Supplied authentic source for authoring: Herodotus, Histories, Book V, section 52; translated by George Rawlinson: \"Royal stations exist along its whole length, and excellent caravanserais;\" Source: https://classics.mit.edu/Herodotus/history.5.v.html. No Sian chronicle, author or purpose is supplied.",
       "source_refs": ["https://classics.mit.edu/Herodotus/history.5.v.html"],
       "cases": [
         {
@@ -32,7 +32,10 @@
               "no author is supplied",
               "author is not supplied",
               "missing author",
-              "author or excerpt"
+              "author or excerpt",
+              "show an identified excerpt",
+              "asking about provenance or purpose",
+              "never invent authors, quotations, data or provenance"
             ]
           ],
           "output_md": "## Source task\nAn ancient Sian chronicle confirms caravan travel.\n\nWho wrote the Sian chronicle, why was it written, and what are its limitations? Full credit requires the author's identity and purpose."
@@ -42,7 +45,7 @@
           "variant": "positive",
           "expected_outcome": "no_major",
           "decisive_evidence_all": [],
-          "output_md": "## Supplied source\nHerodotus, *Histories*, Book V, section 52; translated by George Rawlinson (1858): \"Royal stations exist along its whole length, and excellent caravanserais;\"\n\nWhat does this attributed excerpt directly support about facilities on the Royal Road? Answer in one sentence and do not infer who used every station."
+          "output_md": "## Supplied source\nHerodotus, Histories, Book V, section 52; translated by George Rawlinson: \"Royal stations exist along its whole length, and excellent caravanserais;\"\n\nWhat does this excerpt directly support about facilities on the Royal Road? Answer in one sentence."
         }
       ]
     },
@@ -133,7 +136,7 @@
       "phase_name": "practice-rlc",
       "output_language": "en",
       "control_tags": [],
-      "lesson_context": "Sian is a city. Pomir, Mesopotamiya, and the Mediterranean are regions. The application must remain coherent after any answer because the learner may not receive the correct answer before the follow-up.",
+      "lesson_context": "Information card: The lesson says the Silk Road began at Sian. Sian is a city. Pomir and Mesopotamia are regions; the Mediterranean coast is a coastal area.\n\nWhich option is the starting city named in the card? Choose one: A) Pomir region B) Sian city C) Mesopotamia region D) Mediterranean coast.\n\nLater prompts must remain answerable after any option.",
       "cases": [
         {
           "fixture_id": "F04-branch-negative",
@@ -149,17 +152,19 @@
               "presupposes",
               "after choosing a region",
               "not answerable after every choice",
-              "region is not a city"
+              "region is not a city",
+              "answerable after any earlier choice",
+              "rely on a previous answer"
             ]
           ],
-          "output_md": "Choose one: A) Pomir region B) Sian city C) Mesopotamia D) Mediterranean coast.\n\nWhy did you choose this city as the route's starting city?"
+          "output_md": "Information card: The lesson says the Silk Road began at Sian. Sian is a city. Pomir and Mesopotamia are regions; the Mediterranean coast is a coastal area.\n\nWhich option is the starting city named in the card? Choose one: A) Pomir region B) Sian city C) Mesopotamia region D) Mediterranean coast.\n\nWhy did you choose this city as the route's starting city?"
         },
         {
           "fixture_id": "F04-branch-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
           "decisive_evidence_all": [],
-          "output_md": "Choose one: A) Pomir region B) Sian city C) Mesopotamia D) Mediterranean coast.\n\nExplain your choice. Is the place you chose a city or a region, and does that fit a question asking for a starting city?"
+          "output_md": "Information card: The lesson says the Silk Road began at Sian. Sian is a city. Pomir and Mesopotamia are regions; the Mediterranean coast is a coastal area.\n\nWhich option is the starting city named in the card? Choose one: A) Pomir region B) Sian city C) Mesopotamia region D) Mediterranean coast.\n\nWhichever option you chose, use the card to name the starting city and explain why a region would not answer a question asking for a city."
         }
       ]
     },
@@ -229,7 +234,9 @@
               "changes the approximation",
               "unsupported certainty",
               "not supplied",
-              "changing routes"
+              "changing routes",
+              "preserve approximate quantities",
+              "turn an estimate into an exact fact"
             ]
           ],
           "output_md": "The Silk Road operated for exactly seventeen centuries without interruption along one fixed route."
@@ -271,7 +278,9 @@
               "false equivalence",
               "not synonyms",
               "distinct",
-              "incorrectly equates"
+              "incorrectly equates",
+              "distinguished from blue lojuvard",
+              "must not be asserted to be synonyms"
             ]
           ],
           "output_md": "### Card\n**Front:** La’l\n**Back:** La’l and lojuvard are two names for exactly the same blue gemstone."
@@ -353,7 +362,8 @@
               "same task as the preview",
               "duplicates the preview",
               "duplicates the earlier preview",
-              "same situation and reasoning as the preview"
+              "same situation and reasoning as the preview",
+              "different situation and a different use of the lesson knowledge from the preview"
             ]
           ],
           "output_md": "Information card: The lesson says the Silk Road began at Sian in the second century BCE. Darius I built the separate Royal Road.\n\nMuseum application: choose Sian as the Silk Road starting city and explain why Darius's Royal Road fact does not answer that question."
@@ -394,7 +404,9 @@
               "signals the key",
               "absolute wording",
               "only appears in distractors",
-              "nonparallel"
+              "nonparallel",
+              "signal correctness",
+              "style alone"
             ]
           ],
           "output_md": "What was a caravanserai's main function?\nA) Only collect taxes\nB) Only carry military messages\nC) Give traders rest and store goods safely (correct)\nD) Only serve rulers"
@@ -473,7 +485,9 @@
               "untaught",
               "overloaded",
               "not taught",
-              "too many required parts"
+              "too many required parts",
+              "teach and test only the supplied lesson",
+              "neighbouring lesson's methods"
             ]
           ],
           "output_md": "## Ma’lumot kartochkasi\nLa’l yo‘li miloddan avvalgi 3–2-ming yilliklarda Pomirdan boshlangan. Buyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nEpigrafik va yakka numizmatik manbalarni taqqoslang. Boshqaruvchi tarixiy tushunchani tanlang. To‘liq baho uchun uchala talab shart: muallif va maqsadni aniqlang, manba chegaralarini tahlil qiling va aloqasiz faktni kamida 80 belgida rad eting."
@@ -496,7 +510,7 @@
       "phase_name": "practice-sentence",
       "output_language": "uz",
       "control_tags": [],
-      "lesson_context": "The visible exercise supplies the dates 3–2-ming yilliklar for La’l yo‘li and miloddan avvalgi II asr for Buyuk Ipak yo‘li. Those dates make the chronological distinction answerable; no map is supplied.",
+      "lesson_context": "Ma'lumotlar: La'l yo'li miloddan avvalgi 3-2-ming yilliklarda, Buyuk Ipak yo'li esa miloddan avvalgi II asrda paydo bo'lgan.\n\nThese dates are visible and suffice for the chronological comparison. No map is supplied or needed.",
       "cases": [
         {
           "fixture_id": "F13-map-clarity-negative",
@@ -504,26 +518,24 @@
           "expected_outcome": "finding",
           "decisive_evidence_all": [
             [
-              "Tarixiy xaritalarni tahlil qilmay",
-              "tarixiy omillar"
+              "Tarixiy xaritalarni tahlil qilmay"
             ],
             [
               "absent map",
               "no map is supplied",
               "not shown",
               "unnecessary map reference",
-              "vague",
-              "unclear"
+              "present references only"
             ]
           ],
-          "output_md": "## Ko‘rinadigan sana ma’lumotlari\nLa’l yo‘li — miloddan avvalgi 3–2-ming yilliklar. Buyuk Ipak yo‘li — miloddan avvalgi II asr.\n\nQadimgi savdo yo'llarining davrlari va yo'nalishlarini to'g'ri aniqlashda qaysi tarixiy omillarga tayandingiz? Tarixiy xaritalarni tahlil qilmay, barcha qadimiy yo'llarni Buyuk Ipak yo'li bilan bir davrda vujudga kelgan deb hisoblagan o'quvchi qanday xronologik xatoga yo'l qo'yadi?"
+          "output_md": "Ma'lumotlar: La'l yo'li miloddan avvalgi 3-2-ming yilliklarda, Buyuk Ipak yo'li esa miloddan avvalgi II asrda paydo bo'lgan.\n\nTarixiy xaritalarni tahlil qilmay, barcha qadimiy yo'llarni Buyuk Ipak yo'li bilan bir davrda vujudga kelgan deb hisoblagan o'quvchi qanday xronologik xatoga yo'l qo'yadi?"
         },
         {
           "fixture_id": "F13-map-clarity-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
           "decisive_evidence_all": [],
-          "output_md": "## Ko‘rinadigan sana ma’lumotlari\nLa’l yo‘li — miloddan avvalgi 3–2-ming yilliklar. Buyuk Ipak yo‘li — miloddan avvalgi II asr.\n\nBir o‘quvchi: ‘La’l yo‘li ham Buyuk Ipak yo‘li bilan bir davrda paydo bo‘lgan’, dedi. Yuqoridagi ikki sanadan foydalanib, bu fikr nega xato ekanini 1–2 gapda yozing."
+          "output_md": "Ma'lumotlar: La'l yo'li miloddan avvalgi 3-2-ming yilliklarda, Buyuk Ipak yo'li esa miloddan avvalgi II asrda paydo bo'lgan.\n\nBir o'quvchi: \"La'l yo'li ham Buyuk Ipak yo'li bilan bir davrda paydo bo'lgan\", dedi. Yuqoridagi sanalardan foydalanib, bu fikr nega xato ekanini 1-2 gapda yozing."
         }
       ]
     },
@@ -536,7 +548,7 @@
       "phase_name": "case-based-preview",
       "output_language": "en",
       "control_tags": ["open-l2-passage"],
-      "lesson_context": "Grade 5 English lesson. The visible passage must supply the action. Pronouns must identify whether traders or porters acted and whether boxes or bags were moved. Open answers may quote or paraphrase visible evidence in English.",
+      "lesson_context": "Constructed English reading exercise. The safe room protects goods from rain. When pronouns are used, make their actor and object references clear. An answer may quote or paraphrase the supplied purpose of storing goods safely.",
       "cases": [
         {
           "fixture_id": "F14-referent-negative",
@@ -552,17 +564,18 @@
               "ambiguous pronouns",
               "which group",
               "traders or porters",
-              "boxes or bags"
+              "boxes or bags",
+              "make their actor and object references clear"
             ]
           ],
-          "output_md": "Read: ‘The traders met the porters beside the boxes and bags. They moved them into the safe room before everyone rested.’\n\nWhy did they move them into the safe room? Support your answer with the passage."
+          "output_md": "Read: \"The traders met the porters beside the boxes and bags. The safe room protected stored goods from rain. They moved them into the safe room before everyone rested.\"\n\nWhy did they move them into the safe room? Support your answer with the passage."
         },
         {
           "fixture_id": "F14-referent-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
           "decisive_evidence_all": [],
-          "output_md": "Read: ‘The traders asked the porters to move the boxes and bags into the safe room before everyone rested.’\n\nWhy did the traders ask the porters to move the goods into the safe room? A supported answer may say that the goods needed safe storage."
+          "output_md": "Read: \"The traders met the porters beside the boxes and bags. The safe room protected stored goods from rain. The porters moved both the boxes and the bags into the safe room before everyone rested.\"\n\nWhy did the porters move both the boxes and the bags into the safe room? Support your answer with the passage."
         }
       ]
     },
@@ -747,7 +760,9 @@
             [
               "redundant",
               "grammatically incorrect",
-              "literal insertion"
+              "literal insertion",
+              "must not be inserted before an already visible",
+              "incorrect phrasing"
             ]
           ],
           "output_md": "Ko‘rinadigan so‘zlar bankidagi javobni aynan yozilganidek bo‘sh joyga kiriting.\n\nSo‘zlar banki: Pomir | Pomir tog‘i | Sian | Sian shahri\n\n1. La’l yo‘li _____ tog‘idan boshlangan. Kalit: Pomir. Qabul qilinadi: Pomir tog‘i.\n2. Buyuk Ipak yo‘li _____ shahridan boshlangan. Kalit: Sian. Qabul qilinadi: Sian shahri."

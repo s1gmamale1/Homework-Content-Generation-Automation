@@ -46,6 +46,7 @@ from app.services.phase_artifact import (
     StructuredPhaseError,
     artifact_from_config,
     artifact_from_markdown,
+    review_contract,
 )
 from app.services.prompts import (
     get_prompt,
@@ -2348,7 +2349,10 @@ async def _execute_phase(
                     gen_provider=produced_by, gen_model=_gen_model_of(produced_by),
                     judge_provider=_jp, judge_model=_jm,
                     homework_job_id=job_id, phase_output_id=po_id,
-                    transport=judge_transport, contract_override=_custom_md,
+                    transport=judge_transport, contract_override=review_contract(
+                        artifact, subject=subject, phase_name=phase_name,
+                        output_language=output_language, custom_prompt=_custom_md,
+                    ),
                     output_language=output_language,
                 )
                 try:
@@ -2431,7 +2435,10 @@ async def _execute_phase(
                 lesson_context=lesson_context, prior_outputs=prior_outputs,
                 output_language=output_language,
                 solver_provider=_sp, solver_model=_sm, transport=solver_transport,
-                homework_job_id=job_id, phase_output_id=po_id, contract_override=_custom_md,
+                homework_job_id=job_id, phase_output_id=po_id, contract_override=review_contract(
+                    artifact, subject=subject, phase_name=phase_name,
+                    output_language=output_language, custom_prompt=_custom_md,
+                ),
             )
             if not s_outcome.available:
                 solver_status = "refused" if s_outcome.refused else "unavailable"
@@ -2481,7 +2488,10 @@ async def _execute_phase(
                             lesson_context=lesson_context, prior_outputs=prior_outputs,
                             output_language=output_language,
                             solver_provider=_sp2, solver_model=_sm2, transport=solver_transport,
-                            homework_job_id=job_id, phase_output_id=po_id, contract_override=_custom_md,
+                            homework_job_id=job_id, phase_output_id=po_id, contract_override=review_contract(
+                                artifact, subject=subject, phase_name=phase_name,
+                                output_language=output_language, custom_prompt=_custom_md,
+                            ),
                         )
                         if s_outcome.available and not s_outcome.has_mismatch:
                             solver_status = "mismatch_regen"

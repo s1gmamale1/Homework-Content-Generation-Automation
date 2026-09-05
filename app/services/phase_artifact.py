@@ -14,7 +14,8 @@ from typing import Optional
 from pydantic import BaseModel
 
 from app.models.phase_output import AUTHORING_MODES
-from app.services.phase_render import RENDERER_VERSION, RenderError, render_md
+from app.services.phase_render import RENDERER_VERSION, REVIEW_PROJECTIONS, RenderError, render_md
+from app.services.prompts import get_structured_prompt
 
 _MARKDOWN_MODES = tuple(m for m in AUTHORING_MODES if m != "structured")
 
@@ -58,3 +59,39 @@ def artifact_from_markdown(output_md: str, *, mode: str) -> PhaseArtifact:
     if mode not in _MARKDOWN_MODES:
         raise ValueError(f"'{mode}' is not a markdown authoring mode")
     return PhaseArtifact(output_md=output_md, authoring_mode=mode)
+
+
+def review_contract(
+    artifact: PhaseArtifact, *, subject: str, phase_name: str,
+    output_language: str, custom_prompt: str | None = None,
+) -> str | None:
+    """Resolve from the current artifact on every review, including repairs.
+
+    None retains the reviewers' built-in Markdown resolver. A custom prompt
+    disables structured authoring; fallback artifacts likewise use Markdown.
+    """
+    if artifact.authoring_mode != "structured":
+        return custom_prompt
+    projection = REVIEW_PROJECTIONS[phase_name]
+    contract = get_structured_prompt(subject, phase_name, output_language=output_language)
+    if contract is None:
+        raise ValueError(f"no structured review contract for {phase_name}")
+    return (
+        "## Representation used for this review\n"
+        "OUTPUT is a deterministic Markdown projection of validated structured JSON. "
+        "The representation mapping here governs how to apply the structured "
+        "authoring contract below: JSON-only transport and schema field syntax "
+        "apply to the source JSON, not to this Markdown. Do not demand JSON or "
+        "the ordinary hand-authored Markdown phase's extra sections. "
+        + projection + "\n"
+        "The terminal Answer key is author-only and not student-visible evidence. "
+        "Its correctness still must be independently checked. The fixed renderer labels "
+        "(Role, Minimum, characters, Sentence fill, Word bank, Answer key, open "
+        "response) and expert_role enum are renderer chrome; apply the language "
+        "rules to all authored titles, intros, prompts, passages and choice/bank "
+        "text. This mapping changes representation only: enforce all applicable "
+        "shared learner semantics, grade/language rules, visible evidence, "
+        "lesson fidelity, item counts and answer correctness below.\n\n"
+        "## Structured authoring contract (apply through the mapping above)\n"
+        + contract
+    )

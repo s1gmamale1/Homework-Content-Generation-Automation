@@ -1,0 +1,142 @@
+[
+  {
+    "source_report": "live-pairs-F01-F02-F04-F05.json",
+    "source_revision": "804a8911e2e3c75dc8a99c4673aa1b86f309a176",
+    "fixture_id": "F01-source-negative",
+    "warning": "[major] Visible evidence. Supply all necessary evidence and premises in the content the student can see before answering. If asking about provenance or purpose, show an identified excerpt with only its supplied author/maker, date and source type. — An ancient Sian chronicle confirms caravan travel.\n\nWho wrote the Sian chronicle, why was it written, and what are its limitations? Full credit requires the author's identity and purpose.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F01-F02-F04-F05.json",
+    "source_revision": "804a8911e2e3c75dc8a99c4673aa1b86f309a176",
+    "fixture_id": "F04-branch-negative",
+    "warning": "[major] Keep each later choice and follow-up answerable after any earlier choice; restate needed facts rather than asking the learner to rely on a previous answer. — Why did you choose this city as the route's starting city?",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F06-F07-F08-F10.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F06-certainty-negative",
+    "warning": "[major] Meaning fidelity: Preserve approximate quantities and other qualifiers. Do not silently turn an estimate into an exact fact. Factual claims must not contradict the lesson context. — \"exactly seventeen centuries without interruption along one fixed route.\"",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F06-F07-F08-F10.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F07-terminology-negative",
+    "warning": "[major] Source-fidelity: Do not contradict the LESSON CONTEXT (the lesson context explicitly states that red la'l is distinguished from blue lojuvard and they must not be asserted to be synonyms). — La’l and lojuvard are two names for exactly the same blue gemstone.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F06-F07-F08-F10.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F10-style-negative",
+    "warning": "[major] Do not signal correctness by length, grammar fit, register or style alone. — A) Only collect taxes\nB) Only carry military messages\nD) Only serve rulers",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F09-C04-C05.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F09-repetition-negative",
+    "warning": "[major] The application challenge must use a different situation and a different use of the lesson knowledge from the preview, not the same case with names changed. — choose Sian as the Silk Road starting city and explain why Darius's Royal Road fact does not answer that question.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F09-C04-C05.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "C04-required-data-negative",
+    "warning": "[major] Visible evidence. Supply all necessary evidence and premises in the content the student can see before answering. Refer only to text, data and visuals actually present in the student material. — Use the chart below to calculate the median number of books read by the class. Show the ordered data. [No chart or values are present.]",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F09-C04-C05.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "C05-expanded-recall-negative",
+    "warning": "[high] 1. La’l yo‘li _____ tog‘idan boshlangan.: key says 'Qabul qilinadi: Pomir tog‘i.', solved answer is 'Only \"Pomir\"' — The lesson context explicitly states: \"Expanded names Pomir tog‘i and Sian shahri [...] must not be inserted before an already visible tog‘idan or shahridan suffix.\" Because the sentence continues with \"tog‘idan\", accepting \"Pomir tog‘i\" results in the incorrect phrasing \"Pomir tog‘i tog‘idan\" and violates the lesson constraint.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F09-C04-C05.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "C05-expanded-recall-negative",
+    "warning": "[high] 2. Buyuk Ipak yo‘li _____ shahridan boshlangan.: key says 'Qabul qilinadi: Sian shahri.', solved answer is 'Only \"Sian\"' — The lesson context explicitly states: \"Expanded names Pomir tog‘i and Sian shahri [...] must not be inserted before an already visible tog‘idan or shahridan suffix.\" Because the sentence continues with \"shahridan\", accepting \"Sian shahri\" results in the incorrect phrasing \"Sian shahri shahridan\" and violates the lesson constraint.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F12-rubric-negative",
+    "warning": "[major] Teach and test only the supplied lesson... Do not import a neighbouring lesson's methods — Epigrafik va yakka numizmatik manbalarni taqqoslang.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F12-rubric-negative",
+    "warning": "[major] Visible evidence. Supply all necessary evidence and premises in the content the student can see before answering. — Epigrafik va yakka numizmatik manbalarni taqqoslang.",
+    "expected_status": "unmet"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F12-rubric-negative",
+    "warning": "[major] For grades 1–6 use short, concrete instructions and familiar roles... Avoid professional or bureaucratic wording and never expose authoring jargon such as rubric — To‘liq baho uchun uchala talab shart: muallif va maqsadni aniqlang, manba chegaralarini tahlil qiling va aloqasiz faktni kamida 80 belgida rad eting.",
+    "expected_status": "unmet"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F13-map-clarity-negative",
+    "warning": "[major] Visible evidence. Supply all necessary evidence and premises in the content the student can see before answering. — Qadimgi savdo yo'llarining davrlari va yo'nalishlarini to'g'ri aniqlashda qaysi tarixiy omillarga tayandingiz?",
+    "expected_status": "unmet"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F14-referent-negative",
+    "warning": "[major] Pronouns must identify whether traders or porters acted and whether boxes or bags were moved. — They moved them into the safe room before everyone rested.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-pairs-F11-F12-F13-F14.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F14-referent-negative",
+    "warning": "[major] Supply all necessary evidence and premises in the content the student can see before answering. — Read: ‘The traders met the porters beside the boxes and bags. They moved them into the safe room before everyone rested.’\n\nWhy did they move them into the safe room?",
+    "expected_status": "unmet"
+  },
+  {
+    "source_report": "live-repaired-fixtures-prototype.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F01-source-negative",
+    "warning": "[major] Visible evidence. Supply all necessary evidence and premises in the content the student can see before answering. Never invent authors, quotations, data or provenance. — An ancient Sian chronicle confirms caravan travel.\n\nWho wrote the Sian chronicle, why was it written, and what are its limitations? Full credit requires the author's identity and purpose.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-repaired-fixtures-prototype.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F04-branch-negative",
+    "warning": "[major] Keep each later choice and follow-up answerable after any earlier choice; restate needed facts rather than asking the learner to rely on a previous answer. — Why did you choose this city as the route's starting city?",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-repaired-fixtures-prototype.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F14-referent-negative",
+    "warning": "[major] When pronouns are used, make their actor and object references clear. — They moved them into the safe room before everyone rested.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-visual-clarity-prototype.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "F13-map-clarity-negative",
+    "warning": "[minor] Present references only — Tarixiy xaritalarni tahlil qilmay",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-visual-clarity-prototype.json",
+    "source_revision": "8a4ffdd6c27c7992d1fae6627dfcebb06a5573ee",
+    "fixture_id": "C04-required-data-negative",
+    "warning": "[major] Visible evidence / Present references only — Use the chart below to calculate the median number of books read by the class. Show the ordered data. [No chart or values are present.]",
+    "expected_status": "met"
+  }
+]

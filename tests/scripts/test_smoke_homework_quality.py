@@ -382,7 +382,7 @@ def test_repaired_controls_supply_visible_facts_and_true_ambiguity():
     assert "began at Sian" in f09.output_md
     assert all("Ma’lumot kartochkasi" in item.output_md for item in (f11_negative, f11_positive))
     assert all("3–2" in item.output_md and "II" in item.output_md for item in (f12_negative, f12_positive))
-    assert "3–2" in f13_negative.output_md and "II" in f13_negative.output_md
+    assert "3-2" in f13_negative.output_md and "II" in f13_negative.output_md
     assert all(word in f14_negative.output_md for word in ("traders", "porters", "boxes", "moved"))
     assert "so‘zlar banki" in c05_negative.output_md.casefold()
     assert "aynan yozilganidek" in c05_negative.output_md.casefold()

@@ -24,6 +24,31 @@ RENDERER_VERSION = "2"
 # omitted the key would silently break both.
 _ANSWER_HEADING = "## Answer key"
 
+# Evaluation sees render_md's projection, not the JSON authoring transport.
+# Keep the mapping beside the renderers so changes to their shape are reflected
+# in both judge and solver contracts without duplicating the semantic policy.
+REVIEW_PROJECTIONS = {
+    "practice-rlc": (
+        "The title is an H1, followed by intro and **Role:** expert_role. "
+        "The five ordered steps are H2 headings '<number>. <title>': decision, "
+        "info_request, final_decision, concept_select, reasoning. Each includes "
+        "its prompt; options/chips are untagged bullet labels. The reasoning "
+        "minimum is rendered as '_Minimum N characters._'. Correct option/chip "
+        "labels appear by step number in the terminal Answer key; reasoning is "
+        "an open response with its minimum, not a unique answer. IDs, kind fields "
+        "and boolean correctness flags are represented by this ordering/mapping, "
+        "not printed as JSON. No prediction, per-choice feedback, localized role "
+        "metadata, kind-tagged headings or final summary is supported or required."
+    ),
+    "practice-sentence": (
+        "The fixed H1 is 'Sentence fill'. Each numbered H2 contains the passage "
+        "with ___ blanks and a **Word bank:** line listing its entries. The "
+        "terminal Answer key lists each item's answers in blank order. IDs and "
+        "the word_bank mode field are not printed. No wrong-bank explanatory "
+        "feedback or reflection field is supported or required."
+    ),
+}
+
 
 class RenderError(RuntimeError):
     """No renderer registered for this phase, or the config is the wrong type."""

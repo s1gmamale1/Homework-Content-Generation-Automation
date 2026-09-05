@@ -91,6 +91,14 @@ _INSTRUCTIONS = (
     "scenario and reasoning. Prior outputs let you inspect repetition; they do "
     "not prove a learner has supplied an answer. Preserve target-language practice "
     "separately from scaffolding/output language in L2 subjects."
+    "\n\nReference clarity: A question or reflection that tells or implies the "
+    "learner should inspect an absent map, chart, passage or source violates "
+    "the present-references-only contract even when visible facts suffice "
+    "to answer. Quote that wording and flag it as minor if it only creates "
+    "unnecessary confusion; retain major only when necessary evidence is "
+    "actually missing. Do not flag an explicitly decorative placeholder, "
+    "a general mention of maps as a topic, or an answerable question that "
+    "directs the learner to supplied text or data."
 )
 
 _FIDELITY_RULE = (
