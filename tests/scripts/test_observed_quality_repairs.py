@@ -1,13 +1,18 @@
 """Replay measured reviewer wording; no claim of fresh model behavior."""
+import hashlib
 import json
 from types import SimpleNamespace
 
 import pytest
 
+from app.services.lesson_errata import apply_lesson_errata
 from scripts import smoke_homework_quality as smoke
 
 
-REPLAYS = json.loads((smoke.FIXTURE_ROOT / "observed-warning-replays.json").read_text(encoding="utf-8"))
+REPLAYS = json.loads(
+    (smoke.FIXTURE_ROOT / "observed-warning-replays.json").read_text(encoding="utf-8")
+)
+HISTORY_SECTION_ID = "768820b7-54ea-45d2-bbb4-d95275ef95e6"
 
 
 def fixture(name):
@@ -82,6 +87,106 @@ def test_repaired_referents_share_explicit_purpose_and_action():
         assert "Support your answer with the passage." in target.output_md
     assert "They moved them into the safe room" in neg.output_md
     assert "The porters moved both the boxes and the bags into the safe room" in pos.output_md
+
+
+def test_rabot_pair_uses_complete_reviewed_history_context_and_frozen_artifacts():
+    neg = fixture("F03-history-rabot-negative")
+    pos = fixture("F03-history-rabot-positive")
+    canonical = apply_lesson_errata(
+        "ignored stochastic extract",
+        section_id=HISTORY_SECTION_ID,
+        subject="history",
+    )
+
+    assert neg.lesson_context == pos.lesson_context == canonical
+    for fact in (
+        "Karvonsaroy",
+        "$3-2$",
+        "Pomir",
+        "Eron",
+        "Mesopotamiya",
+        "Misr",
+        "Doro I",
+        "Baqtriya",
+        "Oltoy",
+        "Hindiston",
+        "miloddan avvalgi II asr",
+        "$12000$",
+        "o‘n yetti asr",
+        "Sian shahridan",
+    ):
+        assert fact in canonical
+
+    archived_raw_hashes = {
+        "original-history-memory-negative.md":
+            "af4e24e515fa805d8aed6c73ebb55437524acbeaf3e4fc42099b3cca75cf5783",
+        "original-history-memory-positive.md":
+            "a77b8b07ad92859538ff712376f03d60504ba6df8a70978f03437fa3d1327394",
+    }
+    for name, expected_hash in archived_raw_hashes.items():
+        raw = (smoke.FIXTURE_ROOT / name).read_bytes()
+        assert hashlib.sha256(raw).hexdigest() == expected_hash
+        assert not raw.startswith(b"\xef\xbb\xbf")
+
+    parent = (smoke.FIXTURE_ROOT / "original-history-memory-positive.md").read_bytes()
+    derived = (
+        smoke.FIXTURE_ROOT / "derived-history-memory-bojxona-positive-no-xuanxe.md"
+    ).read_bytes()
+    assert parent.count(b"Xitoyning Xuanxe daryosi bo'yidagi ") == 1
+    assert derived == parent.replace(
+        b"Xitoyning Xuanxe daryosi bo'yidagi ", b"Xitoyning ", 1
+    )
+    assert hashlib.sha256(derived).hexdigest() == (
+        "cd3f956007bdb233ffc3331affbb158297754e01ac6dd8ab29aabc6d89a93621"
+    )
+    assert not derived.startswith(b"\xef\xbb\xbf")
+    assert pos.output_sha256 == (
+        "d05037da1c917712e9cff148745b3b20a8822d4ba8c85aaad0a26ea5ca5eb813"
+    )
+
+    # The archived artifacts retain the known flaw; the active control removes only it.
+    assert "Xuanxe" not in canonical
+    assert "Xuanxe" in neg.output_md
+    assert "Xuanxe" not in pos.output_md
+    assert "Muqobil javoblar:** Pomir tog'i" in neg.output_md
+    assert "Muqobil javoblar:** Pomir tog'i" in pos.output_md
+
+
+def test_repetition_positive_supplies_visible_building_functions_from_shared_context():
+    neg = fixture("F09-repetition-negative")
+    pos = fixture("F09-repetition-positive")
+
+    assert neg.lesson_context == pos.lesson_context
+    for fact in (
+        "caravanserai gives traders a place to rest and stores goods safely",
+        "mint makes coins",
+        "palace is a ruler's residence",
+    ):
+        assert fact in pos.lesson_context.casefold()
+        assert fact in pos.output_md.casefold()
+    assert "Museum application" in neg.output_md
+    assert "Museum preview task" in neg.prior_outputs["case-based-preview"]
+    assert "Museum application" not in pos.output_md
+
+
+@pytest.mark.parametrize(
+    "fixture_id, unrelated_quote",
+    [
+        ("F07-terminology-negative", "Difficulty: unspecified"),
+        ("F08-route-shape-negative", "Sian stands on the Yellow River"),
+    ],
+)
+def test_source_contradiction_rule_cannot_credit_an_unrelated_item(
+    fixture_id, unrelated_quote
+):
+    warning = (
+        "[major] Source-fidelity (CRITICAL): raise a major failure for any factual "
+        "claim about the world in the output that contradicts the lesson context — "
+        + unrelated_quote
+    )
+
+    result = smoke.classify_result(fixture(fixture_id), outcome([warning]))
+    assert result.status == "unmet"
 
 
 @pytest.mark.parametrize("warning", [

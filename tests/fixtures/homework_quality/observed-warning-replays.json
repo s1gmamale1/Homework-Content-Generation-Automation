@@ -138,5 +138,19 @@
     "fixture_id": "C04-required-data-negative",
     "warning": "[major] Visible evidence / Present references only — Use the chart below to calculate the median number of books read by the class. Show the ordered data. [No chart or values are present.]",
     "expected_status": "met"
+  },
+  {
+    "source_report": "live-final-6022e9a-pairs-F06-F07-F09-F10.json",
+    "source_revision": "6022e9a94fb7bbbe715ecb2e21728d8b33f8ebc5",
+    "fixture_id": "F07-terminology-negative",
+    "warning": "[major] Source-fidelity (CRITICAL): raise a `major` failure for any factual claim ABOUT THE WORLD in the OUTPUT that CONTRADICTS the LESSON CONTEXT — La’l and lojuvard are two names for exactly the same blue gemstone.",
+    "expected_status": "met"
+  },
+  {
+    "source_report": "live-final-6022e9a-pairs-F08-F11-C04.json",
+    "source_revision": "6022e9a94fb7bbbe715ecb2e21728d8b33f8ebc5",
+    "fixture_id": "F08-route-shape-negative",
+    "warning": "[major] Meaning fidelity / Source-fidelity (CRITICAL): Preserve chronology and geographic scope. Raise a major failure for any factual claim that contradicts the lesson context (a changed date, definition, rule, or causal claim). — began at the Mediterranean and later continued as one route",
+    "expected_status": "met"
   }
 ]
