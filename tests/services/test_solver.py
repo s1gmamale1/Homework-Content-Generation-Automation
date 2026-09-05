@@ -124,3 +124,90 @@ def test_solver_prompt_does_not_treat_curriculum_scope_as_a_closed_dictionary():
     assert "explicitly asking which term the supplied text uses" in prompt
     assert "reports answer correctness only" in prompt
     assert "leave phase item counts" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "contract_override",
+    [None, "CUSTOM MEMORY CONTRACT"],
+    ids=["resolved-contract", "custom-contract"],
+)
+async def test_memory_solve_request_carries_recall_response_semantics(
+    monkeypatch, contract_override,
+):
+    """Removing the memory-only clarification must break the production request."""
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            text="", parsed=SolveVerdict(agrees=True, discrepancies=[]),
+            usage={}, raw_envelope={},
+        )
+
+    monkeypatch.setattr("app.services.agent.run_phase", _capture)
+    call = {
+        **COMMON,
+        "contract_override": contract_override,
+        "lesson_context": "distinct lesson context",
+        "prior_outputs": {"earlier-phase": "distinct prior output"},
+    }
+
+    await solver.solve(**call)
+
+    prompt = captured.pop("phase_prompt")
+    assert "Free-text recall accepts answers naming the same fact or entity" in prompt
+    assert "including an expanded place name" in prompt
+    assert "grading aliases, not instructions to paste each alias" in prompt
+    assert "An underscored recall stem alone does not require literal insertion" in prompt
+    assert "Pomir and Pomir tog'i" in prompt
+    assert "Sian and Sian shahri" in prompt
+    assert "explicitly told to insert a word-bank entry verbatim" in prompt
+    assert "Complete the review of every item independently" in prompt
+    assert "do not stop after finding problems in other cards" in prompt
+    if contract_override is not None:
+        assert contract_override in prompt
+    assert captured == {
+        "provider": "claude",
+        "model": "claude-opus-4-7",
+        "phase_name": "__solver__",
+        "schema": SolveVerdict,
+        "lesson_context": "distinct lesson context",
+        "prior_outputs": {"earlier-phase": "distinct prior output"},
+        "difficulty": None,
+        "operation": "solve:memory-check",
+        "homework_job_id": None,
+        "phase_output_id": None,
+        "transport": "api",
+    }
+
+
+@pytest.mark.asyncio
+async def test_practice_sentence_request_keeps_its_addendum_without_memory_semantics(
+    monkeypatch,
+):
+    """A memory-specific addendum must not leak into another phase contract."""
+    captured = {}
+
+    async def _capture(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            text="", parsed=SolveVerdict(agrees=True, discrepancies=[]),
+            usage={}, raw_envelope={},
+        )
+
+    monkeypatch.setattr("app.services.agent.run_phase", _capture)
+
+    await solver.solve(
+        **{
+            **COMMON,
+            "phase_name": "practice-sentence",
+            "contract_override": "SENTENCE CONTRACT",
+        }
+    )
+
+    prompt = captured["phase_prompt"]
+    assert "Sentence-fill: independently fill every blank" in prompt
+    assert "test all word-bank entries and defensible alternatives" in prompt
+    assert "Free-text recall accepts answers" not in prompt
+    assert "An underscored recall stem alone" not in prompt

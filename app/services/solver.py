@@ -111,6 +111,24 @@ _PHASE_SOLVE_ADDENDUM = {
         "feedback throughout the ten sections. Open prompts need sufficient "
         "visible evidence and aligned rubrics, not an invented unique key."
     ),
+    "memory-check": (
+        "Memory-check response semantics: Free-text recall accepts answers naming the "
+        "same fact or entity, including an expanded place name. Accepted alternatives "
+        "(for example Muqobil javoblar) are grading aliases, not instructions to paste "
+        "each alias into the displayed sentence. An underscored recall stem alone "
+        "does not require literal insertion. For example, Pomir and Pomir tog'i, or "
+        "Sian and Sian shahri, can be correct recall aliases even when the stem "
+        "already contains tog'idan or shahridan. Check literal concatenation only "
+        "when the learner is explicitly told to insert a word-bank entry verbatim "
+        "or is completing a sentence-fill task. Incorrect entities, dates, values, "
+        "and ambiguous multiple-choice answers still require discrepancies.\n\n"
+        "Complete the review of every item independently. For each single-choice "
+        "question, evaluate all offered options against its exact visible wording "
+        "and ordinary meanings before using the key or feedback. A lesson naming "
+        "one term does not make the question text-exclusive unless the question "
+        "explicitly asks which term that text uses. Report every independently "
+        "established discrepancy; do not stop after finding problems in other cards."
+    ),
     "practice-sentence": (
         "Sentence-fill: independently fill every blank using its visible sentence "
         "and context; test all word-bank entries and defensible alternatives. "
