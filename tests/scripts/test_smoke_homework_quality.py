@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
+import sys
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from app.services.phase_judge import JudgeOutcome
+from app.services.solver import SolveOutcome
 from scripts import smoke_homework_quality as smoke
 
 
@@ -89,6 +95,32 @@ def test_catalog_validation_rejects_a_missing_counterpart():
         smoke.validate_fixtures(broken)
 
 
+def test_negative_evidence_requires_item_and_defect_relationship_groups():
+    fixtures = smoke.load_fixtures()
+    target = _fixture("F10-style-negative")
+    broken = [
+        replace(item, decisive_evidence_groups=(("Only collect",),))
+        if item.fixture_id == target.fixture_id else item
+        for item in fixtures
+    ]
+
+    with pytest.raises(smoke.FixtureError, match="item and defect relationship"):
+        smoke.validate_fixtures(broken)
+
+
+def test_f01_positive_uses_verified_rawlinson_excerpt_and_source():
+    fixture = _fixture("F01-source-positive")
+
+    assert fixture.source_refs == (
+        "https://classics.mit.edu/Herodotus/history.5.v.html",
+    )
+    assert (
+        "Royal stations exist along its whole length, and excellent caravanserais;"
+        in fixture.output_md
+    )
+    assert "All along the road there are royal stations" not in fixture.output_md
+
+
 def test_negative_judge_needs_expected_severity_and_decisive_evidence():
     fixture = _fixture("F01-source-negative")
 
@@ -110,6 +142,49 @@ def test_negative_judge_needs_expected_severity_and_decisive_evidence():
     assert "Sian chronicle" in intended.decisive_evidence[0]
 
 
+def test_major_detection_requires_intended_evidence_in_that_major_warning():
+    fixture = _fixture("F01-source-negative")
+    outcome = JudgeOutcome(
+        available=True,
+        passed=False,
+        has_major=True,
+        warnings=[
+            "[major] format — wrong number of headings",
+            "[minor] wording — `Who wrote the Sian chronicle?` has no supplied author",
+        ],
+        feedback=(
+            "Fix all findings: [major] wrong number of headings; [minor] "
+            "`Who wrote the Sian chronicle?` has no supplied author"
+        ),
+    )
+
+    result = smoke.classify_result(fixture, outcome)
+
+    assert result.status == "unmet"
+    assert result.decisive_evidence == ()
+
+
+def test_solver_mismatch_requires_intended_evidence_in_that_high_warning():
+    fixture = _fixture("F03-history-rabot-negative")
+    outcome = SolveOutcome(
+        available=True,
+        agrees=False,
+        has_mismatch=True,
+        warnings=[
+            "[high] fill_blank — accepted Pomir tog'i makes the literal sentence redundant",
+            "[medium] card 1 — B) Rabot may also be defensible",
+        ],
+        feedback=(
+            "Fix high errors: Pomir tog'i is redundant. Advisory: B) Rabot may also be defensible."
+        ),
+    )
+
+    result = smoke.classify_result(fixture, outcome)
+
+    assert result.status == "unmet"
+    assert result.decisive_evidence == ()
+
+
 def test_clarity_case_does_not_require_a_major_but_still_needs_matching_evidence():
     fixture = _fixture("F13-map-clarity-negative")
 
@@ -123,6 +198,38 @@ def test_clarity_case_does_not_require_a_major_but_still_needs_matching_evidence
 
     assert fixture.expected_outcome == "finding"
     assert result.status == "met"
+
+
+def test_same_question_unrelated_finding_cannot_prove_repetition():
+    fixture = _fixture("F09-repetition-negative")
+    outcome = JudgeOutcome(
+        available=True,
+        passed=False,
+        has_major=True,
+        warnings=[
+            "[major] visible evidence — Museum application asks for a written chronicle, "
+            "but no chronicle is supplied."
+        ],
+        feedback="Museum application lacks the written chronicle it requests.",
+    )
+
+    assert smoke.classify_result(fixture, outcome).status == "unmet"
+
+
+def test_same_question_missing_action_finding_cannot_prove_unclear_referents():
+    fixture = _fixture("F14-referent-negative")
+    outcome = JudgeOutcome(
+        available=True,
+        passed=False,
+        has_major=True,
+        warnings=[
+            "[major] visible evidence — Passage gives no post-arrival action needed to "
+            "answer `What did they do with them there?`."
+        ],
+        feedback="The action is absent.",
+    )
+
+    assert smoke.classify_result(fixture, outcome).status == "unmet"
 
 
 def test_unavailable_or_refused_is_unverified_for_both_variants():
@@ -218,6 +325,46 @@ def test_reported_model_is_never_filled_from_the_requested_model():
     assert smoke.reported_model({"model": "claude-actual"}) == "claude-actual"
 
 
+def test_repaired_controls_supply_visible_facts_and_true_ambiguity():
+    f09 = _fixture("F09-repetition-negative")
+    f11_negative = _fixture("F11-register-negative")
+    f11_positive = _fixture("F11-register-positive")
+    f12_negative = _fixture("F12-rubric-negative")
+    f12_positive = _fixture("F12-rubric-positive")
+    f13_negative = _fixture("F13-map-clarity-negative")
+    f14_negative = _fixture("F14-referent-negative")
+    c05_negative = _fixture("C05-expanded-recall-negative")
+
+    assert "Information card:" in f09.output_md
+    assert "began at Sian" in f09.output_md
+    assert all("Ma’lumot kartochkasi" in item.output_md for item in (f11_negative, f11_positive))
+    assert all("3–2" in item.output_md and "II" in item.output_md for item in (f12_negative, f12_positive))
+    assert "3–2" in f13_negative.output_md and "II" in f13_negative.output_md
+    assert all(word in f14_negative.output_md for word in ("traders", "porters", "boxes", "moved"))
+    assert "so‘zlar banki" in c05_negative.output_md.casefold()
+    assert "aynan yozilganidek" in c05_negative.output_md.casefold()
+
+
+def test_language_metadata_and_contract_describe_the_actual_probe_text():
+    expected_english = {
+        "F01-source-negative", "F02-proof-negative", "F04-branch-negative",
+        "F05-geography-negative", "F06-certainty-negative", "F07-terminology-negative",
+        "F08-route-shape-negative", "F09-repetition-negative", "F10-style-negative",
+        "F14-referent-negative", "C01-math-equivalence-negative",
+        "C02-science-category-negative", "C04-required-data-negative",
+    }
+    fixtures = {fixture.fixture_id: fixture for fixture in smoke.load_fixtures()}
+
+    for fixture_id in expected_english:
+        fixture = fixtures[fixture_id]
+        assert fixture.output_language == "en"
+        assert "learner-facing microfixture is in English" in fixture.contract
+    assert fixtures["C03-l2-synonym-negative"].output_language == "uz"
+    assert "Uzbek scaffolding with English target-language terms" in fixtures[
+        "C03-l2-synonym-negative"
+    ].contract
+
+
 @pytest.mark.asyncio
 async def test_runner_calls_production_judge_boundary_with_standalone_probe_fields():
     fixture = _fixture("F01-source-negative")
@@ -236,10 +383,10 @@ async def test_runner_calls_production_judge_boundary_with_standalone_probe_fiel
     assert result["status"] == "met"
     assert result["subject"] == "history"
     assert result["phase_name"] == "case-based-preview"
-    assert result["output_language"] == "uz"
+    assert result["output_language"] == "en"
     assert result["control_tags"] == ["attributed-history-excerpt"]
     assert result["source_refs"] == [
-        "https://www.perseus.tufts.edu/hopper/text?doc=Hdt.%205.52"
+        "https://classics.mit.edu/Herodotus/history.5.v.html"
     ]
     assert calls[0]["contract_override"] == fixture.contract
     assert calls[0]["homework_job_id"] is None
@@ -297,6 +444,40 @@ def test_real_run_refuses_to_overwrite_a_credential_named_file(monkeypatch, tmp_
             "--transport", "api", "--pair", "F01-source",
             "--output", str(tmp_path / ".qa-credentials.json"),
         ])
+
+
+@pytest.mark.skipif(
+    bool(os.environ.get("GUARDED_TEST_REPO")),
+    reason="the session audit hook forbids every subprocess; run this safe invalid-provider check directly",
+)
+def test_documented_script_entrypoint_reaches_safe_invalid_provider_error(tmp_path):
+    output = tmp_path / "must-not-exist.json"
+    env = os.environ.copy()
+    env.pop("PYTHONPATH", None)
+    for credential in (
+        "GEMINI_API_KEY", "ANTHROPIC_API_KEY", "CLODEX_API_KEY",
+        "GOOGLE_APPLICATION_CREDENTIALS", "GOOGLE_CLOUD_PROJECT",
+    ):
+        env.pop(credential, None)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(smoke.ROOT / "scripts" / "smoke_homework_quality.py"),
+            "--run", "--provider", "invalid-review-provider", "--model", "no-model",
+            "--transport", "api", "--pair", "F01-source", "--output", str(output),
+        ],
+        cwd=smoke.ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+
+    assert completed.returncode == 2
+    assert "production manifest entry" in completed.stderr
+    assert "ModuleNotFoundError" not in completed.stderr
+    assert not output.exists()
 
 
 def test_write_report_persists_only_sanitized_json(tmp_path: Path):

@@ -13,24 +13,36 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "case-based-preview",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": ["attributed-history-excerpt"],
       "lesson_context": "Lesson fact: royal roads used stations where travellers and caravans could stop. Source analysis is valid only when the source and identifying information are shown to the learner.",
-      "source_refs": ["https://www.perseus.tufts.edu/hopper/text?doc=Hdt.%205.52"],
+      "source_refs": ["https://classics.mit.edu/Herodotus/history.5.v.html"],
       "cases": [
         {
           "fixture_id": "F01-source-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["Who wrote the Sian chronicle", "Sian chronicle", "author or excerpt", "no supplied author"],
+          "decisive_evidence_all": [
+            [
+              "Who wrote the Sian chronicle",
+              "Sian chronicle"
+            ],
+            [
+              "no supplied author",
+              "no author is supplied",
+              "author is not supplied",
+              "missing author",
+              "author or excerpt"
+            ]
+          ],
           "output_md": "## Source task\nAn ancient Sian chronicle confirms caravan travel.\n\nWho wrote the Sian chronicle, why was it written, and what are its limitations? Full credit requires the author's identity and purpose."
         },
         {
           "fixture_id": "F01-source-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
-          "output_md": "## Supplied source\nHerodotus, *Histories*, Book V, section 52; translated by George Rawlinson (1858): ‘All along the road there are royal stations and excellent caravanserais.’\n\nWhat does this attributed excerpt directly support about facilities on the Royal Road? Answer in one sentence and do not infer who used every station."
+          "decisive_evidence_all": [],
+          "output_md": "## Supplied source\nHerodotus, *Histories*, Book V, section 52; translated by George Rawlinson (1858): ?Royal stations exist along its whole length, and excellent caravanserais;?\n\nWhat does this attributed excerpt directly support about facilities on the Royal Road? Answer in one sentence and do not infer who used every station."
         }
       ]
     },
@@ -49,14 +61,25 @@
           "fixture_id": "F02-proof-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["proves that fertilizer makes every plant", "No measurements", "observations are not shown", "without results"],
+          "decisive_evidence_all": [
+            [
+              "proves that fertilizer makes every plant",
+              "proof is conclusive"
+            ],
+            [
+              "observations are not shown",
+              "without results",
+              "no measurements",
+              "unsupported conclusion"
+            ]
+          ],
           "output_md": "## Experiment\nTwo seedlings will receive equal light and water. One will also receive fertilizer. No measurements are shown.\n\nThe experiment proves that fertilizer makes every plant exactly 3 cm taller. Explain why this proof is conclusive."
         },
         {
           "fixture_id": "F02-proof-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "## Constructed classroom experiment\nBoth seedlings began at 10 cm. After seven days, the fertilized seedling measured 14 cm and the other measured 11 cm. Light and water were equal.\n\nWhat difference was observed in this trial? State one limit on applying this result to every plant."
         }
       ]
@@ -77,14 +100,26 @@
           "fixture_id": "F03-history-rabot-negative",
           "variant": "negative",
           "expected_outcome": "mismatch",
-          "decisive_evidence_any": ["B) Rabot", "Rabot is also", "rabot can mean", "Karvonsaroy and Rabot"],
+          "decisive_evidence_all": [
+            [
+              "B) Rabot",
+              "Rabot"
+            ],
+            [
+              "also defensible",
+              "both defensible",
+              "can mean",
+              "caravanserai meaning",
+              "valid alternative"
+            ]
+          ],
           "output_file": "original-history-memory-negative.md"
         },
         {
           "fixture_id": "F03-history-rabot-positive",
           "variant": "positive",
           "expected_outcome": "no_mismatch",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_file": "original-history-memory-positive.md"
         }
       ]
@@ -96,7 +131,7 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "practice-rlc",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "Sian is a city. Pomir, Mesopotamiya, and the Mediterranean are regions. The application must remain coherent after any answer because the learner may not receive the correct answer before the follow-up.",
       "cases": [
@@ -104,14 +139,26 @@
           "fixture_id": "F04-branch-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["aynan ushbu shaharni", "this city", "after any choice", "region"],
+          "decisive_evidence_all": [
+            [
+              "this city",
+              "ushbu shaharni"
+            ],
+            [
+              "assumes",
+              "presupposes",
+              "after choosing a region",
+              "not answerable after every choice",
+              "region is not a city"
+            ]
+          ],
           "output_md": "Choose one: A) Pomir region B) Sian city C) Mesopotamia D) Mediterranean coast.\n\nWhy did you choose this city as the route's starting city?"
         },
         {
           "fixture_id": "F04-branch-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "Choose one: A) Pomir region B) Sian city C) Mesopotamia D) Mediterranean coast.\n\nExplain your choice. Is the place you chose a city or a region, and does that fit a question asking for a starting city?"
         }
       ]
@@ -123,7 +170,7 @@
       "reviewer": "judge",
       "subject": "geografiya",
       "phase_name": "flashcards",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "Corrected lesson fact: ancient Chang'an, present-day Sian, is in the Wei River valley within the Yellow River drainage basin; the lesson does not place it on the Yellow River bank.",
       "cases": [
@@ -131,14 +178,27 @@
           "fixture_id": "F05-geography-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["directly on the Yellow River bank", "Yellow River bank", "Xuanxe daryosi bo‘yida"],
+          "decisive_evidence_all": [
+            [
+              "directly on the Yellow River bank",
+              "Yellow River bank",
+              "Xuanxe daryosi bo‘yida"
+            ],
+            [
+              "contradicts",
+              "not on",
+              "changes",
+              "Wei River valley",
+              "drainage basin"
+            ]
+          ],
           "output_md": "### Card\n**Front:** Where is Sian?\n**Back:** Sian stands directly on the Yellow River bank."
         },
         {
           "fixture_id": "F05-geography-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "### Card\n**Front:** Where is ancient Chang'an (present-day Sian)?\n**Back:** It is in the Wei River valley, within the Yellow River drainage basin."
         }
       ]
@@ -150,7 +210,7 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "practice-sentence",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "The textbook gives the Silk Road's service period as about seventeen centuries. It was a changing network of routes. Preserve approximation and do not add uninterrupted operation.",
       "cases": [
@@ -158,14 +218,27 @@
           "fixture_id": "F06-certainty-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["exactly seventeen centuries without interruption", "uzluksiz", "without interruption"],
+          "decisive_evidence_all": [
+            [
+              "exactly seventeen centuries without interruption",
+              "without interruption",
+              "uzluksiz"
+            ],
+            [
+              "adds certainty",
+              "changes the approximation",
+              "unsupported certainty",
+              "not supplied",
+              "changing routes"
+            ]
+          ],
           "output_md": "The Silk Road operated for exactly seventeen centuries without interruption along one fixed route."
         },
         {
           "fixture_id": "F06-certainty-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "The textbook gives the Silk Road's service period as about seventeen centuries. Its connected routes changed over time."
         }
       ]
@@ -177,23 +250,37 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "flashcards",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "Maintain the school route name La’l yo‘li. Ordinary Uzbek definitions distinguish red la’l from blue lojuvard, so the two stone names must not be asserted to be synonyms.",
-      "source_refs": ["https://izoh.uz/word/la%CA%BCl", "https://izoh.uz/word/lojuvard"],
+      "source_refs": [
+        "https://izoh.uz/word/la%CA%BCl",
+        "https://izoh.uz/word/lojuvard"
+      ],
       "cases": [
         {
           "fixture_id": "F07-terminology-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["La’l and lojuvard are two names for exactly the same", "exactly the same blue gemstone", "synonyms"],
+          "decisive_evidence_all": [
+            [
+              "La’l and lojuvard are two names",
+              "exactly the same blue gemstone"
+            ],
+            [
+              "false equivalence",
+              "not synonyms",
+              "distinct",
+              "incorrectly equates"
+            ]
+          ],
           "output_md": "### Card\n**Front:** La’l\n**Back:** La’l and lojuvard are two names for exactly the same blue gemstone."
         },
         {
           "fixture_id": "F07-terminology-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "### Card\n**Front:** La’l yo‘li\n**Back:** An ancient trade route named in the lesson for carrying valuable stones from the Pamir region."
         }
       ]
@@ -213,14 +300,25 @@
           "fixture_id": "F08-route-shape-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["later continued as one route", "one route", "later"],
+          "decisive_evidence_all": [
+            [
+              "later continued as one route",
+              "one route"
+            ],
+            [
+              "collapses",
+              "two directions",
+              "invents chronology",
+              "unsupported sequence"
+            ]
+          ],
           "output_md": "The Royal Road began at the Mediterranean and later continued as one route through Iran and Bactria to both Altai and India."
         },
         {
           "fixture_id": "F08-route-shape-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "The lesson gives two Royal Road directions: one linked Mediterranean cities with Iran; the other ran through Iran and Bactria toward Altai and India."
         }
       ]
@@ -232,23 +330,37 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "practice-rlc",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "The lesson teaches route chronology and the purpose of caravanserais. The later application must use a different situation and a different use of knowledge from the preview.",
-      "prior_outputs": {"case-based-preview": "Museum preview: choose Sian from four places, choose a written chronicle, then explain why Darius's Royal Road fact is irrelevant."},
+      "prior_outputs": {
+        "case-based-preview": "Information card: The lesson says the Silk Road began at Sian in the second century BCE. Darius I built the separate Royal Road. Museum preview task: choose Sian as the Silk Road starting city and explain why the Darius fact does not answer that question."
+      },
       "cases": [
         {
           "fixture_id": "F09-repetition-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["Museum preview", "museum", "Sian", "written chronicle", "repeats"],
-          "output_md": "Museum application: choose Sian from four places, choose a written chronicle, then explain why Darius's Royal Road fact is irrelevant."
+          "decisive_evidence_all": [
+            [
+              "Museum application",
+              "choose Sian",
+              "Darius's Royal Road fact"
+            ],
+            [
+              "repeats",
+              "same task as the preview",
+              "duplicates the preview",
+              "same situation and reasoning"
+            ]
+          ],
+          "output_md": "Information card: The lesson says the Silk Road began at Sian in the second century BCE. Darius I built the separate Royal Road.\n\nMuseum application: choose Sian as the Silk Road starting city and explain why Darius's Royal Road fact does not answer that question."
         },
         {
           "fixture_id": "F09-repetition-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "A caravan arrives after dark. Traders need rest and their goods need safe storage. Choose between a caravanserai, a mint, and a palace, then explain your decision."
         }
       ]
@@ -260,7 +372,7 @@
       "reviewer": "judge",
       "subject": "history",
       "phase_name": "memory-check",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": [],
       "lesson_context": "A caravanserai gave traders a place to rest and goods a place to be stored safely. Distractors should be plausible and parallel rather than signalling the key by absolutes.",
       "cases": [
@@ -268,14 +380,28 @@
           "fixture_id": "F10-style-negative",
           "variant": "negative",
           "expected_outcome": "finding",
-          "decisive_evidence_any": ["Faqat", "only", "style", "absolute"],
+          "decisive_evidence_all": [
+            [
+              "Only collect",
+              "Only carry",
+              "Only serve",
+              "all wrong choices"
+            ],
+            [
+              "style cue",
+              "signals the key",
+              "absolute wording",
+              "only appears in distractors",
+              "nonparallel"
+            ]
+          ],
           "output_md": "What was a caravanserai's main function?\nA) Only collect taxes\nB) Only carry military messages\nC) Give traders rest and store goods safely (correct)\nD) Only serve rulers"
         },
         {
           "fixture_id": "F10-style-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "What was a caravanserai's main function?\nA) Set prices in the market\nB) Mark routes on maps\nC) Give traders rest and store goods safely (correct)\nD) Mint coins used in trade"
         }
       ]
@@ -289,21 +415,33 @@
       "phase_name": "case-based-preview",
       "output_language": "uz",
       "control_tags": [],
-      "lesson_context": "Grade 5 task. Respectful Siz is appropriate, but the instruction should use familiar words and one clear action.",
+      "lesson_context": "Grade 5 task. Information card fact: Buyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan. Respectful Siz is appropriate, but the instruction should use familiar words and one clear action.",
       "cases": [
         {
           "fixture_id": "F11-register-negative",
           "variant": "negative",
           "expected_outcome": "finding",
-          "decisive_evidence_any": ["ilmiy xodim sifatida faoliyat yuritasiz", "ilmiy jihatdan determinatsiya", "bureaucratic", "adult"],
-          "output_md": "Siz viloyat tarixi muzeyida ilmiy xodim sifatida faoliyat yuritasiz. Ekspozitsiyaning institutsional konsepsiyasi doirasida yo‘nalishni ilmiy jihatdan determinatsiya qiling."
+          "decisive_evidence_all": [
+            [
+              "ilmiy xodim sifatida faoliyat yuritasiz",
+              "institutsional konsepsiyasi",
+              "ilmiy jihatdan determinatsiya"
+            ],
+            [
+              "bureaucratic",
+              "adult register",
+              "not grade-appropriate",
+              "professional wording"
+            ]
+          ],
+          "output_md": "## Ma’lumot kartochkasi\nBuyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nSiz viloyat tarixi muzeyida ilmiy xodim sifatida faoliyat yuritasiz. Ekspozitsiyaning institutsional konsepsiyasi doirasida yo‘nalishni ilmiy jihatdan determinatsiya qiling."
         },
         {
           "fixture_id": "F11-register-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
-          "output_md": "Tasavvur qiling, Siz muzey ko‘rgazmasini tayyorlashga yordam beryapsiz. Kartochkani o‘qing va yo‘l qayerdan boshlanganini toping."
+          "decisive_evidence_all": [],
+          "output_md": "## Ma’lumot kartochkasi\nBuyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nTasavvur qiling, Siz muzey ko‘rgazmasini tayyorlashga yordam beryapsiz. Kartochkani o‘qing va yo‘l qayerdan boshlanganini toping."
         }
       ]
     },
@@ -316,21 +454,35 @@
       "phase_name": "case-based-preview",
       "output_language": "uz",
       "control_tags": [],
-      "lesson_context": "Grade 5 lesson teaches route names, dates, places, and caravanserai purpose. It does not teach epigraphy, numismatics, or a formal source-criticism method.",
+      "lesson_context": "Grade 5 facts: La’l yo‘li began at Pomir in the 3–2 millennia BCE. Buyuk Ipak yo‘li began at Sian in the second century BCE. The lesson does not teach epigraphy, numismatics, or a formal source-criticism method.",
       "cases": [
         {
           "fixture_id": "F12-rubric-negative",
           "variant": "negative",
           "expected_outcome": "finding",
-          "decisive_evidence_any": ["epigrafik", "numizmatik", "boshqaruvchi tarixiy tushuncha", "all three"],
-          "output_md": "Epigrafik va yakka numizmatik manbalarni taqqoslang. Boshqaruvchi tarixiy tushunchani tanlang. Full credit requires all three: identify the author and purpose, analyse source limits, and reject an irrelevant fact in at least 80 characters."
+          "decisive_evidence_all": [
+            [
+              "Epigrafik",
+              "numizmatik",
+              "boshqaruvchi tarixiy tushuncha",
+              "uchala talab"
+            ],
+            [
+              "untaught",
+              "overloaded",
+              "not taught",
+              "too many required parts",
+              "Grade 5"
+            ]
+          ],
+          "output_md": "## Ma’lumot kartochkasi\nLa’l yo‘li miloddan avvalgi 3–2-ming yilliklarda Pomirdan boshlangan. Buyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nEpigrafik va yakka numizmatik manbalarni taqqoslang. Boshqaruvchi tarixiy tushunchani tanlang. To‘liq baho uchun uchala talab shart: muallif va maqsadni aniqlang, manba chegaralarini tahlil qiling va aloqasiz faktni kamida 80 belgida rad eting."
         },
         {
           "fixture_id": "F12-rubric-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
-          "output_md": "Kartochkada Buyuk Ipak yo‘li Sian shahridan boshlangani aytilgan. Sana va joy haqidagi ma’lumotdan foydalanib, bu yo‘l La’l yo‘li bilan qanday farq qilishini 1–2 gapda yozing."
+          "decisive_evidence_all": [],
+          "output_md": "## Ma’lumot kartochkasi\nLa’l yo‘li miloddan avvalgi 3–2-ming yilliklarda Pomirdan boshlangan. Buyuk Ipak yo‘li miloddan avvalgi II asrda Sian shahridan boshlangan.\n\nSana va joy haqidagi ma’lumotdan foydalanib, bu ikki yo‘lning bitta farqini 1–2 gapda yozing."
         }
       ]
     },
@@ -349,15 +501,28 @@
           "fixture_id": "F13-map-clarity-negative",
           "variant": "negative",
           "expected_outcome": "finding",
-          "decisive_evidence_any": ["Tarixiy xaritalarni tahlil qilmay", "map", "xarita", "tarixiy omillar"],
-          "output_md": "Qadimgi savdo yo'llarining davrlari va yo'nalishlarini to'g'ri aniqlashda qaysi tarixiy omillarga tayandingiz? Tarixiy xaritalarni tahlil qilmay, barcha qadimiy yo'llarni Buyuk Ipak yo'li bilan bir davrda vujudga kelgan deb hisoblagan o'quvchi qanday xronologik xatoga yo'l qo'yadi?"
+          "decisive_evidence_all": [
+            [
+              "Tarixiy xaritalarni tahlil qilmay",
+              "tarixiy omillar"
+            ],
+            [
+              "absent map",
+              "no map is supplied",
+              "not shown",
+              "unnecessary map reference",
+              "vague",
+              "unclear"
+            ]
+          ],
+          "output_md": "## Ko‘rinadigan sana ma’lumotlari\nLa’l yo‘li — miloddan avvalgi 3–2-ming yilliklar. Buyuk Ipak yo‘li — miloddan avvalgi II asr.\n\nQadimgi savdo yo'llarining davrlari va yo'nalishlarini to'g'ri aniqlashda qaysi tarixiy omillarga tayandingiz? Tarixiy xaritalarni tahlil qilmay, barcha qadimiy yo'llarni Buyuk Ipak yo'li bilan bir davrda vujudga kelgan deb hisoblagan o'quvchi qanday xronologik xatoga yo'l qo'yadi?"
         },
         {
           "fixture_id": "F13-map-clarity-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
-          "output_md": "Bir o‘quvchi: ‘La’l yo‘li ham Buyuk Ipak yo‘li bilan bir davrda paydo bo‘lgan’, dedi. Yuqoridagi 3–2-ming yilliklar va miloddan avvalgi II asr sanalaridan foydalanib, bu fikr nega xato ekanini 1–2 gapda yozing."
+          "decisive_evidence_all": [],
+          "output_md": "## Ko‘rinadigan sana ma’lumotlari\nLa’l yo‘li — miloddan avvalgi 3–2-ming yilliklar. Buyuk Ipak yo‘li — miloddan avvalgi II asr.\n\nBir o‘quvchi: ‘La’l yo‘li ham Buyuk Ipak yo‘li bilan bir davrda paydo bo‘lgan’, dedi. Yuqoridagi ikki sanadan foydalanib, bu fikr nega xato ekanini 1–2 gapda yozing."
         }
       ]
     },
@@ -368,23 +533,35 @@
       "reviewer": "judge",
       "subject": "english",
       "phase_name": "case-based-preview",
-      "output_language": "uz",
+      "output_language": "en",
       "control_tags": ["open-l2-passage"],
-      "lesson_context": "Grade 5 English L2 lesson. Target-language passage: ‘The traders reached the caravanserai at night. They slept there while their goods were stored safely.’ Open answers may quote or paraphrase visible evidence in English; scaffolding is Uzbek.",
+      "lesson_context": "Grade 5 English lesson. The visible passage must supply the action. Pronouns must identify whether traders or porters acted and whether boxes or bags were moved. Open answers may quote or paraphrase visible evidence in English.",
       "cases": [
         {
           "fixture_id": "F14-referent-negative",
           "variant": "negative",
           "expected_outcome": "finding",
-          "decisive_evidence_any": ["they do with them", "they", "them", "unclear"],
-          "output_md": "Read: ‘The traders reached the caravanserai with their goods.’\n\nWhat did they do with them there? Javobingizni matn bilan asoslang."
+          "decisive_evidence_all": [
+            [
+              "Why did they move them",
+              "they moved them"
+            ],
+            [
+              "competing referents",
+              "ambiguous pronouns",
+              "which group",
+              "traders or porters",
+              "boxes or bags"
+            ]
+          ],
+          "output_md": "Read: ‘The traders met the porters beside the boxes and bags. They moved them into the safe room before everyone rested.’\n\nWhy did they move them into the safe room? Support your answer with the passage."
         },
         {
           "fixture_id": "F14-referent-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
-          "output_md": "Read: ‘The traders reached the caravanserai at night. They slept there while their goods were stored safely.’\n\nWhy was the caravanserai useful? Answer in English. A supported answer may mention the traders' sleep, the goods' safe storage, or both."
+          "decisive_evidence_all": [],
+          "output_md": "Read: ‘The traders asked the porters to move the boxes and bags into the safe room before everyone rested.’\n\nWhy did the traders ask the porters to move the goods into the safe room? A supported answer may say that the goods needed safe storage."
         }
       ]
     },
@@ -403,14 +580,27 @@
           "fixture_id": "C01-math-equivalence-negative",
           "variant": "negative",
           "expected_outcome": "mismatch",
-          "decisive_evidence_any": ["1/2", "0.5", "both"],
+          "decisive_evidence_all": [
+            [
+              "1/2",
+              "one half"
+            ],
+            [
+              "0.5"
+            ],
+            [
+              "both",
+              "equivalent",
+              "second defensible answer"
+            ]
+          ],
           "output_md": "Which single option equals one half?\nA) 1/2\nB) 0.5\nC) 0.4\n**Correct answer:** A only"
         },
         {
           "fixture_id": "C01-math-equivalence-positive",
           "variant": "positive",
           "expected_outcome": "no_mismatch",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "Which single option equals one half?\nA) 1/2\nB) 0.4\nC) 0.2\n**Correct answer:** A"
         }
       ]
@@ -430,14 +620,26 @@
           "fixture_id": "C02-science-category-negative",
           "variant": "negative",
           "expected_outcome": "mismatch",
-          "decisive_evidence_any": ["mammal", "vertebrate", "both"],
+          "decisive_evidence_all": [
+            [
+              "mammal"
+            ],
+            [
+              "vertebrate"
+            ],
+            [
+              "both",
+              "overlapping categories",
+              "second defensible answer"
+            ]
+          ],
           "output_md": "Which single category does a whale belong to?\nA) Mammal\nB) Vertebrate\nC) Plant\n**Correct answer:** A only\n**Feedback for B:** A whale is not a vertebrate."
         },
         {
           "fixture_id": "C02-science-category-positive",
           "variant": "positive",
           "expected_outcome": "no_mismatch",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "Which class is identified here by feeding milk to its young?\nA) Mammal\nB) Fish\nC) Plant\n**Correct answer:** A"
         }
       ]
@@ -457,14 +659,26 @@
           "fixture_id": "C03-l2-synonym-negative",
           "variant": "negative",
           "expected_outcome": "mismatch",
-          "decisive_evidence_any": ["big", "large", "both", "synonym"],
+          "decisive_evidence_all": [
+            [
+              "big"
+            ],
+            [
+              "large"
+            ],
+            [
+              "both",
+              "synonym",
+              "second defensible answer"
+            ]
+          ],
           "output_md": "‘Katta’ ma'nosini beradigan bitta inglizcha so‘zni tanlang.\nA) big\nB) large\nC) small\n**To‘g‘ri javob:** A only\n**B uchun izoh:** large katta degani emas."
         },
         {
           "fixture_id": "C03-l2-synonym-positive",
           "variant": "positive",
           "expected_outcome": "no_mismatch",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "Matndagi aynan qaysi inglizcha so‘z ‘katta’ ma'nosida ishlatilgan: ‘The bag was large’?\nA) big\nB) large\nC) small\n**To‘g‘ri javob:** B"
         }
       ]
@@ -484,14 +698,25 @@
           "fixture_id": "C04-required-data-negative",
           "variant": "negative",
           "expected_outcome": "major",
-          "decisive_evidence_any": ["chart below", "chart is not shown", "missing data", "median"],
+          "decisive_evidence_all": [
+            [
+              "chart below",
+              "median"
+            ],
+            [
+              "chart is not shown",
+              "missing data",
+              "no chart",
+              "values are absent"
+            ]
+          ],
           "output_md": "Use the chart below to calculate the median number of books read by the class. Show the ordered data. [No chart or values are present.]"
         },
         {
           "fixture_id": "C04-required-data-positive",
           "variant": "positive",
           "expected_outcome": "no_major",
-          "decisive_evidence_any": [],
+          "decisive_evidence_all": [],
           "output_md": "Constructed practice data (books read): 2, 4, 4, 6, 9. Order the values and calculate the median."
         }
       ]
@@ -511,15 +736,27 @@
           "fixture_id": "C05-expanded-recall-negative",
           "variant": "negative",
           "expected_outcome": "mismatch",
-          "decisive_evidence_any": ["Pomir tog‘i tog‘idan", "Sian shahri shahridan", "redundant", "Muqobil"],
-          "output_md": "Fill the blanks.\n1. La’l yo‘li _____ tog‘idan boshlangan. Expected: Pomir. Accepted alternative: Pomir tog‘i.\n2. Buyuk Ipak yo‘li _____ shahridan boshlangan. Expected: Sian. Accepted alternative: Sian shahri."
+          "decisive_evidence_all": [
+            [
+              "Pomir tog‘i tog‘idan",
+              "Sian shahri shahridan",
+              "Pomir tog'i tog'idan",
+              "Sian shahri shahridan"
+            ],
+            [
+              "redundant",
+              "grammatically incorrect",
+              "literal insertion"
+            ]
+          ],
+          "output_md": "Ko‘rinadigan so‘zlar bankidagi javobni aynan yozilganidek bo‘sh joyga kiriting.\n\nSo‘zlar banki: Pomir | Pomir tog‘i | Sian | Sian shahri\n\n1. La’l yo‘li _____ tog‘idan boshlangan. Kalit: Pomir. Qabul qilinadi: Pomir tog‘i.\n2. Buyuk Ipak yo‘li _____ shahridan boshlangan. Kalit: Sian. Qabul qilinadi: Sian shahri."
         },
         {
           "fixture_id": "C05-expanded-recall-positive",
           "variant": "positive",
           "expected_outcome": "no_mismatch",
-          "decisive_evidence_any": [],
-          "output_md": "Answer with the place name.\n1. La’l yo‘li boshlangan tog‘ nomi? Expected: Pomir. Accepted: Pomir tog‘i.\n2. Buyuk Ipak yo‘li boshlangan shahar nomi? Expected: Sian. Accepted: Sian shahri."
+          "decisive_evidence_all": [],
+          "output_md": "Joy nomini yozing.\n1. La’l yo‘li boshlangan tog‘ nomi? Kutilgan javob: Pomir. Qabul qilinadi: Pomir tog‘i.\n2. Buyuk Ipak yo‘li boshlangan shahar nomi? Kutilgan javob: Sian. Qabul qilinadi: Sian shahri."
         }
       ]
     }

@@ -16,6 +16,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,8 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 FIXTURE_ROOT = ROOT / "tests" / "fixtures" / "homework_quality"
 DEFAULT_FIXTURES = FIXTURE_ROOT / "fixtures.json"
 LEARNER_POLICY = ROOT / "prompts" / "_general" / "_learner-quality.md"
@@ -54,7 +57,7 @@ class Fixture:
     prior_outputs: Mapping[str, str]
     output_md: str
     expected_outcome: str
-    decisive_evidence_any: tuple[str, ...]
+    decisive_evidence_groups: tuple[tuple[str, ...], ...]
 
     @property
     def contract_sha256(self) -> str:
@@ -112,7 +115,21 @@ def load_fixtures(path: Path | str = DEFAULT_FIXTURES) -> list[Fixture]:
         for pair in pairs:
             reviewer = pair["reviewer"]
             focused_contract = contracts[reviewer].strip()
-            contract = f"{policy}\n\n## Focused microfixture contract\n{focused_contract}"
+            output_language = pair["output_language"]
+            if pair["subject"] == "english" and output_language == "uz":
+                language_note = (
+                    "This learner-facing microfixture uses Uzbek scaffolding with English "
+                    "target-language terms."
+                )
+            else:
+                language_name = {"en": "English", "uz": "Uzbek", "ru": "Russian"}[
+                    output_language
+                ]
+                language_note = f"This learner-facing microfixture is in {language_name}."
+            contract = (
+                f"{policy}\n\n## Focused microfixture contract\n{focused_contract}\n"
+                f"{language_note}"
+            )
             for case in pair["cases"]:
                 output_md = case.get("output_md")
                 if output_md is None:
@@ -126,7 +143,7 @@ def load_fixtures(path: Path | str = DEFAULT_FIXTURES) -> list[Fixture]:
                     reviewer=reviewer,
                     subject=pair["subject"],
                     phase_name=pair["phase_name"],
-                    output_language=pair["output_language"],
+                    output_language=output_language,
                     control_tags=tuple(pair.get("control_tags", ())),
                     source_refs=tuple(pair.get("source_refs", ())),
                     contract=contract,
@@ -134,7 +151,9 @@ def load_fixtures(path: Path | str = DEFAULT_FIXTURES) -> list[Fixture]:
                     prior_outputs=dict(case.get("prior_outputs", pair.get("prior_outputs", {}))),
                     output_md=str(output_md).rstrip("\r\n"),
                     expected_outcome=case["expected_outcome"],
-                    decisive_evidence_any=tuple(case.get("decisive_evidence_any", ())),
+                    decisive_evidence_groups=tuple(
+                        tuple(group) for group in case.get("decisive_evidence_all", ())
+                    ),
                 ))
     except (KeyError, TypeError) as exc:
         raise FixtureError(f"malformed fixture catalogue near {exc}") from exc
@@ -166,8 +185,14 @@ def validate_fixtures(fixtures: Sequence[Fixture]) -> None:
             raise FixtureError(f"{fixture.fixture_id}: invalid expected outcome")
         if fixture.variant not in {"negative", "positive"}:
             raise FixtureError(f"{fixture.fixture_id}: invalid variant")
-        if fixture.variant == "negative" and not fixture.decisive_evidence_any:
-            raise FixtureError(f"{fixture.fixture_id}: negative needs decisive evidence")
+        if fixture.variant == "negative" and (
+            len(fixture.decisive_evidence_groups) < 2
+            or any(not group for group in fixture.decisive_evidence_groups)
+        ):
+            raise FixtureError(
+                f"{fixture.fixture_id}: negative needs separate decisive evidence "
+                "groups for the item and defect relationship"
+            )
         if not all((fixture.contract, fixture.lesson_context, fixture.output_md)):
             raise FixtureError(f"{fixture.fixture_id}: blank reviewer input")
     for pair_id, pair in group_pairs(fixtures).items():
@@ -184,35 +209,49 @@ def _outcome_text(outcome: Any) -> tuple[tuple[str, ...], str]:
     return warnings, feedback
 
 
+_WARNING_SEVERITY = re.compile(r"^\s*\[(major|minor|high|medium|low)\]", re.IGNORECASE)
+
+
+def _warning_severity(warning: str) -> str | None:
+    match = _WARNING_SEVERITY.match(warning)
+    return match.group(1).casefold() if match else None
+
+
 def classify_result(fixture: Fixture, outcome: Any) -> Classification:
     """Score a real reviewer outcome against verdict and planted-defect evidence."""
     if not getattr(outcome, "available", False) or getattr(outcome, "refused", False):
         return Classification("unverified", "unavailable")
     warnings, feedback = _outcome_text(outcome)
-    evidence_pool = warnings + ((feedback,) if feedback and feedback not in warnings else ())
-    anchors = tuple(anchor.casefold() for anchor in fixture.decisive_evidence_any)
-    decisive = tuple(
-        text for text in evidence_pool
-        if any(anchor in text.casefold() for anchor in anchors)
+    del feedback  # Combined feedback cannot link one severity to one intended defect.
+    groups = tuple(
+        tuple(anchor.casefold() for anchor in group)
+        for group in fixture.decisive_evidence_groups
     )
+    decisive = tuple(text for text in warnings if groups and all(
+        any(anchor in text.casefold() for anchor in group) for group in groups
+    ))
+    severities = {text: _warning_severity(text) for text in warnings}
     if fixture.reviewer == "judge":
         has_major = bool(getattr(outcome, "has_major", False))
-        observed = "major" if has_major else "finding" if evidence_pool else "clean"
+        linked = tuple(text for text in decisive if severities[text] == "major")
+        observed = "major" if has_major else "finding" if warnings else "clean"
         verdict_met = {
-            "major": has_major,
-            "finding": bool(evidence_pool),
-            "no_major": not has_major,
+            "major": has_major and bool(linked),
+            "finding": bool(decisive),
+            "no_major": not has_major and "major" not in severities.values(),
         }[fixture.expected_outcome]
     else:
         has_mismatch = bool(getattr(outcome, "has_mismatch", False))
-        observed = "mismatch" if has_mismatch else "finding" if evidence_pool else "clean"
+        linked = tuple(text for text in decisive if severities[text] == "high")
+        observed = "mismatch" if has_mismatch else "finding" if warnings else "clean"
         verdict_met = {
-            "mismatch": has_mismatch,
-            "finding": bool(evidence_pool),
-            "no_mismatch": not has_mismatch,
+            "mismatch": has_mismatch and bool(linked),
+            "finding": bool(decisive),
+            "no_mismatch": not has_mismatch and "high" not in severities.values(),
         }[fixture.expected_outcome]
     evidence_met = fixture.variant == "positive" or bool(decisive)
-    return Classification("met" if verdict_met and evidence_met else "unmet", observed, decisive)
+    credited = linked if fixture.expected_outcome in {"major", "mismatch"} else decisive
+    return Classification("met" if verdict_met and evidence_met else "unmet", observed, credited)
 
 
 def aggregate_pairs(results: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
